@@ -25,6 +25,8 @@ let app = Server::new(state)
     .await?;
 ```
 
+Installed app routes are served under `/api` by default. A viewset registered as `"/users"` is exposed as `/api/users`.
+
 Project-local `src/bin/manage.rs`:
 
 ```rust

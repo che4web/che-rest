@@ -187,11 +187,7 @@ fn models_ts(endpoints: &[ApiEndpoint]) -> String {
     for endpoint in endpoints {
         out.push_str(&format!("export interface {} {{\n", endpoint.model_name));
         for field in endpoint.fields.iter().filter(|field| !field.write_only) {
-            out.push_str(&format!(
-                "  {}: {};\n",
-                field.name,
-                ts_type(field.ty, field.nullable)
-            ));
+            out.push_str(&format!("  {}: {};\n", field.name, response_ts_type(field)));
         }
         out.push_str("}\n\n");
 
@@ -292,6 +288,14 @@ fn ts_type(ty: FieldType, nullable: bool) -> String {
     }
 }
 
+fn response_ts_type(field: &ApiField) -> String {
+    match &field.related_model {
+        Some(model) if field.nullable => format!("{model} | null"),
+        Some(model) => model.clone(),
+        None => ts_type(field.ty, field.nullable),
+    }
+}
+
 fn lower_first(value: &str) -> String {
     let mut chars = value.chars();
     match chars.next() {
@@ -333,7 +337,7 @@ export interface ModelApi<
 }
 
 export const apiClient = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL ?? "/",
+  baseURL: import.meta.env.VITE_API_BASE_URL ?? "/api",
   headers: {
     "Content-Type": "application/json",
   },

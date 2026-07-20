@@ -68,6 +68,7 @@ pub struct ApiField {
     pub name: String,
     pub source: String,
     pub ty: FieldType,
+    pub related_model: Option<String>,
     pub read_only: bool,
     pub write_only: bool,
     pub required: bool,
@@ -149,6 +150,9 @@ where
                 name: field.name.to_string(),
                 source: field.source.to_string(),
                 ty: model_field.ty,
+                related_model: field
+                    .relation
+                    .map(|relation| relation.model_name().to_string()),
                 read_only: field.read_only,
                 write_only: field.write_only,
                 required: field.required,
@@ -194,6 +198,7 @@ fn rust_type_name<M>() -> String {
 pub struct Server {
     state: AppState,
     modules: Vec<Box<dyn AppModule>>,
+    api_prefix: String,
 }
 
 impl Server {
@@ -201,6 +206,7 @@ impl Server {
         Self {
             state,
             modules: Vec::new(),
+            api_prefix: "/api".to_string(),
         }
     }
 
@@ -217,6 +223,11 @@ impl Server {
         self
     }
 
+    pub fn api_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.api_prefix = prefix.into();
+        self
+    }
+
     pub async fn build(self) -> AppResult<Router> {
         let mut ctx = ModuleContext::new();
 
@@ -228,11 +239,13 @@ impl Server {
             self.state.db().apply_sql(&sql).await?;
         }
 
-        let mut router = Router::new();
+        let mut api_router = Router::new();
         for module_router in ctx.routers {
-            router = router.merge(module_router);
+            api_router = api_router.merge(module_router);
         }
 
-        Ok(router.layer(Extension(self.state)))
+        Ok(Router::new()
+            .nest(&self.api_prefix, api_router)
+            .layer(Extension(self.state)))
     }
 }

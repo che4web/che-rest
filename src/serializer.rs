@@ -1,7 +1,64 @@
-use std::marker::PhantomData;
+use std::{future::Future, marker::PhantomData, pin::Pin};
 
-use che_orm::{FieldInfo, FieldType, Model, SqliteValue};
+use che_orm::{FieldInfo, FieldType, Model, SqliteBackend, SqliteModel, SqliteValue};
 use serde_json::{Map, Value};
+
+pub trait RelatedSerializer: std::fmt::Debug + Send + Sync {
+    fn model_name(&self) -> &'static str;
+
+    fn serialize<'a>(
+        &'a self,
+        db: &'a SqliteBackend,
+        id: i64,
+    ) -> Pin<Box<dyn Future<Output = che_orm::Result<Value>> + Send + 'a>>;
+}
+
+#[derive(Clone, Copy)]
+pub struct RelatedModel<M> {
+    serializer: fn() -> ModelSerializer<M>,
+    _model: PhantomData<M>,
+}
+
+impl<M> std::fmt::Debug for RelatedModel<M> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RelatedModel")
+            .field("model", &std::any::type_name::<M>())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<M> RelatedModel<M> {
+    pub const fn new(serializer: fn() -> ModelSerializer<M>) -> Self {
+        Self {
+            serializer,
+            _model: PhantomData,
+        }
+    }
+}
+
+impl<M> RelatedSerializer for RelatedModel<M>
+where
+    M: SqliteModel<Id = i64>,
+{
+    fn model_name(&self) -> &'static str {
+        std::any::type_name::<M>()
+            .rsplit("::")
+            .next()
+            .unwrap_or("Model")
+    }
+
+    fn serialize<'a>(
+        &'a self,
+        db: &'a SqliteBackend,
+        id: i64,
+    ) -> Pin<Box<dyn Future<Output = che_orm::Result<Value>> + Send + 'a>> {
+        Box::pin(async move {
+            let model = M::objects(db).get(id).await?;
+            (self.serializer)().to_json_async(db, &model).await
+        })
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct Field {
@@ -12,6 +69,7 @@ pub struct Field {
     pub write_only: bool,
     pub nullable: bool,
     pub max_length: Option<u32>,
+    pub relation: Option<&'static dyn RelatedSerializer>,
     default: Option<fn() -> Value>,
 }
 
@@ -25,6 +83,25 @@ impl Field {
             write_only: false,
             nullable: false,
             max_length: None,
+            relation: None,
+            default: None,
+        }
+    }
+
+    pub const fn related(
+        name: &'static str,
+        source: &'static str,
+        relation: &'static dyn RelatedSerializer,
+    ) -> Self {
+        Self {
+            name,
+            source,
+            required: false,
+            read_only: true,
+            write_only: false,
+            nullable: false,
+            max_length: None,
+            relation: Some(relation),
             default: None,
         }
     }
@@ -140,6 +217,10 @@ impl<M: Model> ModelSerializer<M> {
         serialize_model(model, self.fields)
     }
 
+    pub async fn to_json_async(&self, db: &SqliteBackend, model: &M) -> che_orm::Result<Value> {
+        serialize_model_async(db, model, self.fields).await
+    }
+
     pub fn validate_json(&self, value: Value) -> Result<Map<String, Value>> {
         validate_object::<M>(value, self.fields)
     }
@@ -173,6 +254,10 @@ pub fn serialize_model<M: Model>(model: &M, fields: &[Field]) -> Value {
             continue;
         }
 
+        if field.relation.is_some() {
+            continue;
+        }
+
         let value = model
             .get_value(field.source)
             .or_else(|| model.get_value(field.name))
@@ -181,6 +266,41 @@ pub fn serialize_model<M: Model>(model: &M, fields: &[Field]) -> Value {
     }
 
     Value::Object(object)
+}
+
+pub async fn serialize_model_async<M: Model>(
+    db: &SqliteBackend,
+    model: &M,
+    fields: &[Field],
+) -> che_orm::Result<Value> {
+    let mut object = Map::new();
+
+    for field in fields {
+        if field.write_only {
+            continue;
+        }
+
+        if let Some(relation) = field.relation {
+            let value = match model
+                .get_value(field.source)
+                .or_else(|| model.get_value(field.name))
+                .and_then(|value| value.as_i64())
+            {
+                Some(id) => relation.serialize(db, id).await?,
+                None => Value::Null,
+            };
+            object.insert(field.name.to_string(), value);
+            continue;
+        }
+
+        let value = model
+            .get_value(field.source)
+            .or_else(|| model.get_value(field.name))
+            .unwrap_or(Value::Null);
+        object.insert(field.name.to_string(), value);
+    }
+
+    Ok(Value::Object(object))
 }
 
 pub fn validate_object<M: Model>(value: Value, fields: &[Field]) -> Result<Map<String, Value>> {

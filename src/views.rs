@@ -48,10 +48,10 @@ where
     ) -> AppResult<Response> {
         let query = filterset.apply(M::objects(state.db()).query(), &params)?;
         let models = query.all().await?;
-        let results = models
-            .iter()
-            .map(|model| serializer.to_json(model))
-            .collect::<Vec<_>>();
+        let mut results = Vec::new();
+        for model in &models {
+            results.push(serializer.to_json_async(state.db(), model).await?);
+        }
 
         Ok(json_response(json!({
             "count": results.len(),
@@ -71,7 +71,8 @@ where
         }
 
         let model = create.execute().await?;
-        Ok((StatusCode::CREATED, Json(serializer.to_json(&model))).into_response())
+        let payload = serializer.to_json_async(state.db(), &model).await?;
+        Ok((StatusCode::CREATED, Json(payload)).into_response())
     }
 
     async fn retrieve(
@@ -80,7 +81,9 @@ where
         Path(id): Path<i64>,
     ) -> AppResult<Response> {
         let model = M::objects(state.db()).get(id).await?;
-        Ok(json_response(serializer.to_json(&model)))
+        Ok(json_response(
+            serializer.to_json_async(state.db(), &model).await?,
+        ))
     }
 
     async fn update(
@@ -96,7 +99,9 @@ where
         }
 
         let model = update.execute().await?;
-        Ok(json_response(serializer.to_json(&model)))
+        Ok(json_response(
+            serializer.to_json_async(state.db(), &model).await?,
+        ))
     }
 
     async fn destroy(
