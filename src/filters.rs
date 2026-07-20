@@ -154,7 +154,7 @@ where
 }
 
 impl Filter {
-    fn query_name(&self) -> String {
+    pub fn query_name(&self) -> String {
         match self.lookup {
             Lookup::Exact => self.name.to_string(),
             Lookup::Contains => format!("{}__contains", self.name),

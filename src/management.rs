@@ -1,9 +1,9 @@
 use std::{fs, path::PathBuf};
 
-use che_orm::{Schema, SqliteBackend, diff_schemas, sqlite_migration_sql};
+use che_orm::{FieldType, Schema, SqliteBackend, diff_schemas, sqlite_migration_sql};
 use clap::{Parser, Subcommand};
 
-use crate::{AppConfig, InstalledApps, ModuleContext};
+use crate::{ApiEndpoint, ApiField, AppConfig, InstalledApps, ModuleContext};
 
 type ManageResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -44,6 +44,10 @@ enum Command {
         #[arg(long)]
         database_url: Option<String>,
     },
+    GenerateTs {
+        #[arg(long, default_value = "src/generated")]
+        out: PathBuf,
+    },
 }
 
 pub struct Management {
@@ -76,6 +80,7 @@ impl Management {
                 self.migrate(app.as_deref(), apps_dir, config, database_url)
                     .await?
             }
+            Command::GenerateTs { out } => self.generate_ts(out)?,
         }
 
         Ok(())
@@ -146,12 +151,229 @@ impl Management {
 
         Ok(())
     }
+
+    fn generate_ts(&self, out: PathBuf) -> ManageResult<()> {
+        let endpoints = self.api_endpoints();
+        fs::create_dir_all(&out)?;
+        fs::write(out.join("api_client.ts"), api_client_ts())?;
+        fs::write(out.join("models.ts"), models_ts(&endpoints))?;
+        fs::write(out.join("api.ts"), api_ts(&endpoints))?;
+
+        println!("Generated TypeScript API in {}", out.display());
+        Ok(())
+    }
+
+    fn api_endpoints(&self) -> Vec<ApiEndpoint> {
+        let mut endpoints = Vec::new();
+        for module in self.apps.iter() {
+            let mut ctx = ModuleContext::new();
+            module.init(&mut ctx);
+            endpoints.extend(ctx.api_endpoints().iter().cloned());
+        }
+        endpoints.sort_by(|left, right| left.model_name.cmp(&right.model_name));
+        endpoints
+    }
 }
 
 fn app_schema(module: &dyn crate::AppModule) -> Schema {
     let mut ctx = ModuleContext::new();
     module.init(&mut ctx);
     Schema::from_models(ctx.model_schemas().to_vec())
+}
+
+fn models_ts(endpoints: &[ApiEndpoint]) -> String {
+    let mut out = String::from("import type { ListParams } from \"./api_client\";\n\n");
+
+    for endpoint in endpoints {
+        out.push_str(&format!("export interface {} {{\n", endpoint.model_name));
+        for field in endpoint.fields.iter().filter(|field| !field.write_only) {
+            out.push_str(&format!(
+                "  {}: {};\n",
+                field.name,
+                ts_type(field.ty, field.nullable)
+            ));
+        }
+        out.push_str("}\n\n");
+
+        out.push_str(&format!(
+            "export interface {}Create {{\n",
+            endpoint.model_name
+        ));
+        for field in endpoint.fields.iter().filter(|field| !field.read_only) {
+            out.push_str(&format!(
+                "  {}{}: {};\n",
+                field.name,
+                optional_marker(field),
+                ts_type(field.ty, field.nullable)
+            ));
+        }
+        out.push_str("}\n\n");
+
+        out.push_str(&format!(
+            "export interface {}Update {{\n",
+            endpoint.model_name
+        ));
+        for field in endpoint.fields.iter().filter(|field| !field.read_only) {
+            out.push_str(&format!(
+                "  {}?: {};\n",
+                field.name,
+                ts_type(field.ty, field.nullable)
+            ));
+        }
+        out.push_str("}\n\n");
+
+        out.push_str(&format!(
+            "export interface {}ListParams extends ListParams {{\n",
+            endpoint.model_name
+        ));
+        for filter in &endpoint.filters {
+            out.push_str(&format!(
+                "  {}?: {};\n",
+                filter.name,
+                ts_type(filter.ty, filter.nullable)
+            ));
+        }
+        out.push_str("}\n\n");
+    }
+
+    out
+}
+
+fn api_ts(endpoints: &[ApiEndpoint]) -> String {
+    let mut out = String::from("import { createModelApi } from \"./api_client\";\n");
+
+    if endpoints.is_empty() {
+        out.push('\n');
+        return out;
+    }
+
+    out.push_str("import type {\n");
+    for endpoint in endpoints {
+        out.push_str(&format!("  {},\n", endpoint.model_name));
+        out.push_str(&format!("  {}Create,\n", endpoint.model_name));
+        out.push_str(&format!("  {}Update,\n", endpoint.model_name));
+        out.push_str(&format!("  {}ListParams,\n", endpoint.model_name));
+    }
+    out.push_str("} from \"./models\";\n\n");
+
+    for endpoint in endpoints {
+        out.push_str(&format!(
+            "export const {}Api = createModelApi<{}, {}Create, {}Update, {}ListParams>(\"{}\");\n",
+            lower_first(&endpoint.model_name),
+            endpoint.model_name,
+            endpoint.model_name,
+            endpoint.model_name,
+            endpoint.model_name,
+            endpoint.resource
+        ));
+    }
+
+    out
+}
+
+fn optional_marker(field: &ApiField) -> &'static str {
+    if field.required && !field.has_default {
+        ""
+    } else {
+        "?"
+    }
+}
+
+fn ts_type(ty: FieldType, nullable: bool) -> String {
+    let base = match ty {
+        FieldType::Integer | FieldType::Real => "number",
+        FieldType::Text => "string",
+        FieldType::Boolean => "boolean",
+    };
+    if nullable {
+        format!("{base} | null")
+    } else {
+        base.to_string()
+    }
+}
+
+fn lower_first(value: &str) -> String {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) => first.to_ascii_lowercase().to_string() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+fn api_client_ts() -> &'static str {
+    r#"import axios from "axios";
+
+export interface BaseEntity {
+  id?: number;
+}
+
+export interface ListParams {
+  ordering?: string;
+  limit?: number;
+  offset?: number;
+  [key: string]: string | number | boolean | null | undefined;
+}
+
+export interface PaginatedResponse<T> {
+  count: number;
+  results: T[];
+}
+
+export interface ModelApi<
+  T extends BaseEntity,
+  CreateDTO = Partial<T>,
+  UpdateDTO = Partial<T>,
+  Params extends ListParams = ListParams,
+> {
+  list: (params?: Params) => Promise<PaginatedResponse<T>>;
+  retrieve: (id: number) => Promise<T>;
+  create: (payload: CreateDTO) => Promise<T>;
+  update: (id: number, payload: UpdateDTO) => Promise<T>;
+  remove: (id: number) => Promise<void>;
+}
+
+export const apiClient = axios.create({
+  baseURL: import.meta.env.VITE_API_BASE_URL ?? "/",
+  headers: {
+    "Content-Type": "application/json",
+  },
+});
+
+export function createModelApi<
+  T extends BaseEntity,
+  CreateDTO = Partial<T>,
+  UpdateDTO = Partial<T>,
+  Params extends ListParams = ListParams,
+>(resource: string): ModelApi<T, CreateDTO, UpdateDTO, Params> {
+  const normalized = resource.endsWith("/") ? resource : `${resource}/`;
+
+  return {
+    async list(params) {
+      const response = await apiClient.get<PaginatedResponse<T>>(normalized, { params });
+      return response.data;
+    },
+
+    async retrieve(id) {
+      const response = await apiClient.get<T>(`${normalized}${id}/`);
+      return response.data;
+    },
+
+    async create(payload) {
+      const response = await apiClient.post<T>(normalized, payload);
+      return response.data;
+    },
+
+    async update(id, payload) {
+      const response = await apiClient.patch<T>(`${normalized}${id}/`, payload);
+      return response.data;
+    },
+
+    async remove(id) {
+      await apiClient.delete(`${normalized}${id}/`);
+    },
+  };
+}
+"#
 }
 
 async fn apply_app_migrations(
@@ -294,11 +516,15 @@ impl AppModule for {module_type} {{
     }}
 
     fn init(&self, ctx: &mut ModuleContext) {{
-        ctx.model::<models::{model}>();
-        ctx.route(views::routes());
+        ctx.viewset::<models::{model}>(
+            "/{name}",
+            serializers::{fn_name}_serializer(),
+            filters::{fn_name}_filterset(),
+        );
     }}
 }}
-"#
+"#,
+        fn_name = singular_name(name)
     )
 }
 

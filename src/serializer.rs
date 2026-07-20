@@ -69,6 +69,10 @@ impl Field {
         self.default = None;
         self
     }
+
+    pub const fn has_default(&self) -> bool {
+        self.default.is_some()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

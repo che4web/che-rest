@@ -11,7 +11,9 @@ pub use config::{AppConfig, DatabaseConfig};
 pub use error::{AppError, AppResult};
 pub use filters::{Filter, FilterError, FilterSet, Lookup};
 pub use management::Management;
-pub use module::{AppModule, InstalledApps, ModuleContext, Server};
+pub use module::{
+    ApiEndpoint, ApiField, ApiFilter, AppModule, InstalledApps, ModuleContext, Server,
+};
 pub use serializer::{Field, ModelSerializer, SerializerError};
 pub use state::AppState;
 pub use views::ModelViewSet;

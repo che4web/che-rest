@@ -68,6 +68,21 @@ Create app-scoped migrations from the installed app metadata:
 cargo run --bin manage -- makemigrations users
 ```
 
+Generate TypeScript models and API client from installed app metadata:
+
+```bash
+cargo run --bin manage -- generate-ts --out src/generated
+```
+
+This writes:
+
+```text
+src/generated/
+  api_client.ts
+  models.ts
+  api.ts
+```
+
 Defaults:
 
 ```text

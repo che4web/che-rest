@@ -1,7 +1,10 @@
 use axum::{Extension, Router};
-use che_orm::{Model, ModelSchema, create_table_sql};
+use che_orm::{FieldType, Model, ModelSchema, SqliteModel, create_table_sql};
 
-use crate::{error::AppResult, state::AppState};
+use crate::{
+    error::AppResult, filters::FilterSet, serializer::ModelSerializer, state::AppState,
+    views::ModelViewSet,
+};
 
 pub trait AppModule {
     fn name(&self) -> &'static str;
@@ -48,6 +51,36 @@ pub struct ModuleContext {
     routers: Vec<Router>,
     sql: Vec<String>,
     schemas: Vec<ModelSchema>,
+    api_endpoints: Vec<ApiEndpoint>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ApiEndpoint {
+    pub model_name: String,
+    pub path: String,
+    pub resource: String,
+    pub fields: Vec<ApiField>,
+    pub filters: Vec<ApiFilter>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ApiField {
+    pub name: String,
+    pub source: String,
+    pub ty: FieldType,
+    pub read_only: bool,
+    pub write_only: bool,
+    pub required: bool,
+    pub nullable: bool,
+    pub has_default: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ApiFilter {
+    pub name: String,
+    pub source: String,
+    pub ty: FieldType,
+    pub nullable: bool,
 }
 
 impl ModuleContext {
@@ -74,9 +107,88 @@ impl ModuleContext {
         self.routers.push(router);
     }
 
+    pub fn viewset<M>(
+        &mut self,
+        base_path: &'static str,
+        serializer: ModelSerializer<M>,
+        filterset: FilterSet<M>,
+    ) where
+        M: SqliteModel<Id = i64>,
+    {
+        self.model::<M>();
+        self.api_endpoints
+            .push(api_endpoint::<M>(base_path, serializer, filterset));
+        self.route(ModelViewSet::<M>::router(base_path, serializer, filterset));
+    }
+
     pub fn model_schemas(&self) -> &[ModelSchema] {
         &self.schemas
     }
+
+    pub fn api_endpoints(&self) -> &[ApiEndpoint] {
+        &self.api_endpoints
+    }
+}
+
+fn api_endpoint<M>(
+    base_path: &'static str,
+    serializer: ModelSerializer<M>,
+    filterset: FilterSet<M>,
+) -> ApiEndpoint
+where
+    M: SqliteModel<Id = i64>,
+{
+    let fields = serializer
+        .fields()
+        .iter()
+        .filter_map(|field| {
+            let model_field = M::fields()
+                .iter()
+                .find(|model_field| model_field.db_name == field.source)?;
+            Some(ApiField {
+                name: field.name.to_string(),
+                source: field.source.to_string(),
+                ty: model_field.ty,
+                read_only: field.read_only,
+                write_only: field.write_only,
+                required: field.required,
+                nullable: field.nullable || model_field.nullable,
+                has_default: field.has_default() || model_field.default.is_some(),
+            })
+        })
+        .collect();
+
+    let filters = filterset
+        .filters()
+        .iter()
+        .filter_map(|filter| {
+            let model_field = M::fields()
+                .iter()
+                .find(|model_field| model_field.db_name == filter.source)?;
+            Some(ApiFilter {
+                name: filter.query_name(),
+                source: filter.source.to_string(),
+                ty: model_field.ty,
+                nullable: model_field.nullable,
+            })
+        })
+        .collect();
+
+    ApiEndpoint {
+        model_name: rust_type_name::<M>(),
+        path: base_path.to_string(),
+        resource: base_path.trim_matches('/').to_string(),
+        fields,
+        filters,
+    }
+}
+
+fn rust_type_name<M>() -> String {
+    std::any::type_name::<M>()
+        .rsplit("::")
+        .next()
+        .unwrap_or("Model")
+        .to_string()
 }
 
 pub struct Server {
