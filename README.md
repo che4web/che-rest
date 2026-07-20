@@ -2,12 +2,45 @@
 
 Base REST layer for `che-orm` applications.
 
-## CLI
+## Management
+
+Applications define one installed app list and use it for both the API server and management commands:
+
+```rust
+pub mod users;
+
+use che_rest::InstalledApps;
+
+pub fn installed_apps() -> InstalledApps {
+    InstalledApps::new().add(users::module())
+}
+```
+
+Server startup:
+
+```rust
+let app = Server::new(state)
+    .install(apps::installed_apps())
+    .build()
+    .await?;
+```
+
+Project-local `src/bin/manage.rs`:
+
+```rust
+use che_rest::Management;
+use simple_rest_demo::apps;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    Management::new(apps::installed_apps()).run().await
+}
+```
 
 Create a new app module in `src/apps/<name>`:
 
 ```bash
-che-rest startapp users
+cargo run --bin manage -- startapp users
 ```
 
 Generated files:
@@ -23,25 +56,21 @@ src/apps/
     views.rs
 ```
 
-Then add `mod apps;` to your crate root and register the app module:
+Then add the app to `apps::installed_apps()`:
 
 ```rust
-let app = Server::new(state)
-    .register(apps::users::module())
-    .build()
-    .await?;
+InstalledApps::new().add(users::module())
 ```
 
-Create app-scoped migrations from a generated schema snapshot:
+Create app-scoped migrations from the installed app metadata:
 
 ```bash
-che-rest makemigrations users
+cargo run --bin manage -- makemigrations users
 ```
 
 Defaults:
 
 ```text
---schema che_orm_schema.json
 --name auto
 ```
 
@@ -54,19 +83,18 @@ src/apps/users/migrations/
 Apply migrations for one app. The database URL is read from `[database].url` in `app.toml`:
 
 ```bash
-che-rest migrate users \
-  --config app.toml
+cargo run --bin manage -- migrate users
 ```
 
-Because `app.toml` is the default config path, this can be shortened to:
+Apply migrations for all installed apps:
 
 ```bash
-che-rest migrate users
+cargo run --bin manage -- migrate
 ```
 
 You can override the config database URL:
 
 ```bash
-che-rest migrate users \
+cargo run --bin manage -- migrate users \
   --database-url sqlite://db.sqlite?mode=rwc
 ```

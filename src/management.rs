@@ -1,15 +1,15 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::{fs, path::PathBuf};
 
 use che_orm::{Schema, SqliteBackend, diff_schemas, sqlite_migration_sql};
 use clap::{Parser, Subcommand};
-use serde::Deserialize;
+
+use crate::{AppConfig, InstalledApps, ModuleContext};
+
+type ManageResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 #[derive(Debug, Parser)]
-#[command(name = "che-rest")]
-#[command(about = "CLI tools for che-rest applications")]
+#[command(name = "manage")]
+#[command(about = "Project management commands for che-rest applications")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -21,7 +21,7 @@ enum Command {
         name: String,
 
         #[arg(long, default_value = "src/apps")]
-        apps_dir: String,
+        apps_dir: PathBuf,
     },
     Makemigrations {
         app: String,
@@ -29,14 +29,11 @@ enum Command {
         #[arg(long, default_value = "src/apps")]
         apps_dir: PathBuf,
 
-        #[arg(long, default_value = "che_orm_schema.json")]
-        schema: PathBuf,
-
         #[arg(long, default_value = "auto")]
         name: String,
     },
     Migrate {
-        app: String,
+        app: Option<String>,
 
         #[arg(long, default_value = "src/apps")]
         apps_dir: PathBuf,
@@ -49,40 +46,130 @@ enum Command {
     },
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cli = Cli::parse();
+pub struct Management {
+    apps: InstalledApps,
+}
 
-    match cli.command {
-        Command::Startapp { name, apps_dir } => startapp(&name, Path::new(&apps_dir))?,
-        Command::Makemigrations {
-            app,
-            apps_dir,
-            schema,
-            name,
-        } => makemigrations(&app, &apps_dir, &schema, &name)?,
-        Command::Migrate {
-            app,
-            apps_dir,
-            config,
-            database_url,
-        } => migrate(&app, &apps_dir, &config, database_url).await?,
+impl Management {
+    pub fn new(apps: InstalledApps) -> Self {
+        Self { apps }
     }
 
+    pub async fn run(self) -> ManageResult<()> {
+        self.run_from(Cli::parse()).await
+    }
+
+    async fn run_from(self, cli: Cli) -> ManageResult<()> {
+        match cli.command {
+            Command::Startapp { name, apps_dir } => startapp(&name, apps_dir)?,
+            Command::Makemigrations {
+                app,
+                apps_dir,
+                name,
+            } => self.makemigrations(&app, apps_dir, &name)?,
+            Command::Migrate {
+                app,
+                apps_dir,
+                config,
+                database_url,
+            } => {
+                self.migrate(app.as_deref(), apps_dir, config, database_url)
+                    .await?
+            }
+        }
+
+        Ok(())
+    }
+
+    fn makemigrations(&self, app: &str, apps_dir: PathBuf, name: &str) -> ManageResult<()> {
+        validate_app_name(app)?;
+        let module = self
+            .apps
+            .find(app)
+            .ok_or_else(|| format!("app is not installed: {app}"))?;
+
+        let migrations_dir = app_migrations_dir(&apps_dir, app);
+        fs::create_dir_all(&migrations_dir)?;
+
+        let snapshot_path = migrations_dir.join("schema.json");
+        let old_schema = Schema::load_or_empty(&snapshot_path)?;
+        let new_schema = app_schema(module);
+        let migration = diff_schemas(&old_schema, &new_schema);
+
+        if migration.changes.is_empty() {
+            println!("No schema changes detected for app {app}");
+            return Ok(());
+        }
+
+        let sql = sqlite_migration_sql(&migration);
+        let file_name = format!(
+            "{:04}_{}.sql",
+            next_migration_number(&migrations_dir)?,
+            slugify(name)
+        );
+        let migration_path = migrations_dir.join(file_name);
+        fs::write(&migration_path, format!("{sql}\n"))?;
+        new_schema.save(snapshot_path)?;
+
+        println!("Created {}", migration_path.display());
+
+        Ok(())
+    }
+
+    async fn migrate(
+        &self,
+        app: Option<&str>,
+        apps_dir: PathBuf,
+        config: PathBuf,
+        database_url: Option<String>,
+    ) -> ManageResult<()> {
+        let database_url = match database_url {
+            Some(database_url) => database_url,
+            None => AppConfig::from_file(config)?.database.url,
+        };
+        let db = SqliteBackend::connect(&database_url).await?;
+
+        match app {
+            Some(app) => {
+                validate_app_name(app)?;
+                if self.apps.find(app).is_none() {
+                    return Err(format!("app is not installed: {app}").into());
+                }
+                apply_app_migrations(&db, &apps_dir, app).await?;
+            }
+            None => {
+                for app in self.apps.names() {
+                    apply_app_migrations(&db, &apps_dir, app).await?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn app_schema(module: &dyn crate::AppModule) -> Schema {
+    let mut ctx = ModuleContext::new();
+    module.init(&mut ctx);
+    Schema::from_models(ctx.model_schemas().to_vec())
+}
+
+async fn apply_app_migrations(
+    db: &SqliteBackend,
+    apps_dir: &std::path::Path,
+    app: &str,
+) -> ManageResult<()> {
+    let migrations_dir = app_migrations_dir(apps_dir, app);
+    for name in db
+        .apply_migrations_dir_with_namespace(app, &migrations_dir)
+        .await?
+    {
+        println!("Applied {app}: {name}");
+    }
     Ok(())
 }
 
-#[derive(Debug, Deserialize)]
-struct AppConfig {
-    database: DatabaseConfig,
-}
-
-#[derive(Debug, Deserialize)]
-struct DatabaseConfig {
-    url: String,
-}
-
-fn startapp(name: &str, apps_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn startapp(name: &str, apps_dir: PathBuf) -> ManageResult<()> {
     validate_app_name(name)?;
 
     let app_dir = apps_dir.join(name);
@@ -97,97 +184,37 @@ fn startapp(name: &str, apps_dir: &Path) -> Result<(), Box<dyn std::error::Error
     fs::write(app_dir.join("filters.rs"), filters_template(name))?;
     fs::write(app_dir.join("views.rs"), views_template(name))?;
 
-    update_apps_mod(apps_dir, name)?;
+    update_apps_mod(&apps_dir, name)?;
 
     println!("created app {}", app_dir.display());
-    println!("add to your crate root: mod apps;");
-    println!("register it with: Server::new(state).register(apps::{name}::module())");
+    println!("add it to apps::installed_apps(): .add({name}::module())");
 
     Ok(())
 }
 
-fn makemigrations(
-    app: &str,
-    apps_dir: &Path,
-    schema_path: &Path,
-    name: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    validate_app_name(app)?;
-    ensure_app_exists(apps_dir, app)?;
+fn update_apps_mod(apps_dir: &std::path::Path, name: &str) -> ManageResult<()> {
+    fs::create_dir_all(apps_dir)?;
+    let mod_path = apps_dir.join("mod.rs");
+    let line = format!("pub mod {name};");
+    let mut content = fs::read_to_string(&mod_path).unwrap_or_default();
 
-    let migrations_dir = app_migrations_dir(apps_dir, app);
-    fs::create_dir_all(&migrations_dir)?;
-
-    let snapshot_path = migrations_dir.join("schema.json");
-    let old_schema = Schema::load_or_empty(&snapshot_path)?;
-    let new_schema = Schema::load(schema_path)?;
-    let migration = diff_schemas(&old_schema, &new_schema);
-
-    if migration.changes.is_empty() {
-        println!("No schema changes detected for app {app}");
-        return Ok(());
-    }
-
-    let sql = sqlite_migration_sql(&migration);
-    let file_name = format!(
-        "{:04}_{}.sql",
-        next_migration_number(&migrations_dir)?,
-        slugify(name)
-    );
-    let migration_path = migrations_dir.join(file_name);
-    fs::write(&migration_path, format!("{sql}\n"))?;
-    new_schema.save(snapshot_path)?;
-
-    println!("Created {}", migration_path.display());
-
-    Ok(())
-}
-
-async fn migrate(
-    app: &str,
-    apps_dir: &Path,
-    config: &Path,
-    database_url: Option<String>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    validate_app_name(app)?;
-    ensure_app_exists(apps_dir, app)?;
-
-    let database_url = match database_url {
-        Some(database_url) => database_url,
-        None => database_url_from_config(config)?,
-    };
-    let migrations_dir = app_migrations_dir(apps_dir, app);
-    let db = SqliteBackend::connect(&database_url).await?;
-
-    for name in db
-        .apply_migrations_dir_with_namespace(app, &migrations_dir)
-        .await?
-    {
-        println!("Applied {app}: {name}");
+    if !content.lines().any(|existing| existing.trim() == line) {
+        if !content.is_empty() && !content.ends_with('\n') {
+            content.push('\n');
+        }
+        content.push_str(&line);
+        content.push('\n');
+        fs::write(mod_path, content)?;
     }
 
     Ok(())
 }
 
-fn database_url_from_config(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
-    let config = fs::read_to_string(path)?;
-    let config: AppConfig = toml::from_str(&config)?;
-    Ok(config.database.url)
-}
-
-fn ensure_app_exists(apps_dir: &Path, app: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let app_dir = apps_dir.join(app);
-    if !app_dir.exists() {
-        return Err(format!("app does not exist: {}", app_dir.display()).into());
-    }
-    Ok(())
-}
-
-fn app_migrations_dir(apps_dir: &Path, app: &str) -> PathBuf {
+fn app_migrations_dir(apps_dir: &std::path::Path, app: &str) -> PathBuf {
     apps_dir.join(app).join("migrations")
 }
 
-fn migration_files(migrations_dir: &Path) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+fn migration_files(migrations_dir: &std::path::Path) -> ManageResult<Vec<PathBuf>> {
     if !migrations_dir.exists() {
         return Ok(Vec::new());
     }
@@ -202,7 +229,7 @@ fn migration_files(migrations_dir: &Path) -> Result<Vec<PathBuf>, Box<dyn std::e
     Ok(files)
 }
 
-fn next_migration_number(migrations_dir: &Path) -> Result<u32, Box<dyn std::error::Error>> {
+fn next_migration_number(migrations_dir: &std::path::Path) -> ManageResult<u32> {
     let max = migration_files(migrations_dir)?
         .iter()
         .filter_map(|path| path.file_name()?.to_str()?.get(0..4)?.parse::<u32>().ok())
@@ -220,10 +247,15 @@ fn slugify(value: &str) -> String {
             slug.push('_');
         }
     }
-    slug.trim_matches('_').to_string()
+    let slug = slug.trim_matches('_').to_string();
+    if slug.is_empty() {
+        "auto".to_string()
+    } else {
+        slug
+    }
 }
 
-fn validate_app_name(name: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn validate_app_name(name: &str) -> ManageResult<()> {
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
         return Err("app name cannot be empty".into());
@@ -236,24 +268,6 @@ fn validate_app_name(name: &str) -> Result<(), Box<dyn std::error::Error>> {
             "app name must contain only lowercase ascii letters, digits, and underscores".into(),
         );
     }
-    Ok(())
-}
-
-fn update_apps_mod(apps_dir: &Path, name: &str) -> Result<(), Box<dyn std::error::Error>> {
-    fs::create_dir_all(apps_dir)?;
-    let mod_path = apps_dir.join("mod.rs");
-    let line = format!("pub mod {name};");
-    let mut content = fs::read_to_string(&mod_path).unwrap_or_default();
-
-    if !content.lines().any(|existing| existing.trim() == line) {
-        if !content.is_empty() && !content.ends_with('\n') {
-            content.push('\n');
-        }
-        content.push_str(&line);
-        content.push('\n');
-        fs::write(mod_path, content)?;
-    }
-
     Ok(())
 }
 
@@ -280,7 +294,7 @@ impl AppModule for {module_type} {{
     }}
 
     fn init(&self, ctx: &mut ModuleContext) {{
-        ctx.create_table::<models::{model}>();
+        ctx.model::<models::{model}>();
         ctx.route(views::routes());
     }}
 }}
