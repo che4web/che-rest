@@ -1,4 +1,6 @@
-use che_orm::{FieldInfo, FieldType, Model};
+use std::marker::PhantomData;
+
+use che_orm::{FieldInfo, FieldType, Model, SqliteValue};
 use serde_json::{Map, Value};
 
 #[derive(Debug, Clone, Copy)]
@@ -62,6 +64,11 @@ impl Field {
         self.default = Some(default);
         self
     }
+
+    pub const fn without_default(mut self) -> Self {
+        self.default = None;
+        self
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -99,15 +106,58 @@ pub enum SerializerError {
 
 pub type Result<T> = std::result::Result<T, SerializerError>;
 
-pub trait Serializer<M: Model> {
-    fn fields() -> &'static [Field];
+#[derive(Debug)]
+pub struct ModelSerializer<M> {
+    fields: &'static [Field],
+    _model: PhantomData<M>,
+}
 
-    fn to_json(model: &M) -> Value {
-        serialize_model(model, Self::fields())
+impl<M> Clone for ModelSerializer<M> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<M> Copy for ModelSerializer<M> {}
+
+impl<M: Model> ModelSerializer<M> {
+    pub const fn new(fields: &'static [Field]) -> Self {
+        Self {
+            fields,
+            _model: PhantomData,
+        }
     }
 
-    fn validate_json(value: Value) -> Result<Map<String, Value>> {
-        validate_object::<M>(value, Self::fields())
+    pub fn fields(&self) -> &'static [Field] {
+        self.fields
+    }
+
+    pub fn to_json(&self, model: &M) -> Value {
+        serialize_model(model, self.fields)
+    }
+
+    pub fn validate_json(&self, value: Value) -> Result<Map<String, Value>> {
+        validate_object::<M>(value, self.fields)
+    }
+
+    pub fn create_values(&self, value: Value) -> Result<Vec<(&'static str, SqliteValue)>> {
+        validated_values::<M>(value, self.fields)
+    }
+
+    pub fn update_values(&self, value: Value) -> Result<Vec<(&'static str, SqliteValue)>> {
+        let fields = self
+            .fields
+            .iter()
+            .map(|field| {
+                if field.read_only {
+                    *field
+                } else {
+                    field.required(false).without_default()
+                }
+            })
+            .collect::<Vec<_>>();
+
+        validated_values::<M>(value, &fields)
     }
 }
 
@@ -177,6 +227,66 @@ pub fn validate_object<M: Model>(value: Value, fields: &[Field]) -> Result<Map<S
     }
 
     Ok(validated)
+}
+
+fn validated_values<M: Model>(
+    value: Value,
+    fields: &[Field],
+) -> Result<Vec<(&'static str, SqliteValue)>> {
+    let data = validate_object::<M>(value, fields)?;
+    let mut values = Vec::new();
+
+    for (name, value) in data {
+        let field = find_model_field(M::fields(), &name)
+            .ok_or_else(|| SerializerError::InvalidModelField(name.clone()))?;
+        values.push((field.db_name, json_to_sqlite_value(field, value)?));
+    }
+
+    Ok(values)
+}
+
+fn json_to_sqlite_value(field: &FieldInfo, value: Value) -> Result<SqliteValue> {
+    if value.is_null() {
+        return Ok(SqliteValue::Null);
+    }
+
+    match field.ty {
+        FieldType::Integer => value
+            .as_i64()
+            .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
+            .map(SqliteValue::from)
+            .ok_or_else(|| SerializerError::InvalidType {
+                field: field.rust_name.to_string(),
+                expected: "integer",
+            }),
+        FieldType::Text => {
+            value
+                .as_str()
+                .map(SqliteValue::from)
+                .ok_or_else(|| SerializerError::InvalidType {
+                    field: field.rust_name.to_string(),
+                    expected: "string",
+                })
+        }
+        FieldType::Boolean => {
+            value
+                .as_bool()
+                .map(SqliteValue::from)
+                .ok_or_else(|| SerializerError::InvalidType {
+                    field: field.rust_name.to_string(),
+                    expected: "boolean",
+                })
+        }
+        FieldType::Real => {
+            value
+                .as_f64()
+                .map(SqliteValue::from)
+                .ok_or_else(|| SerializerError::InvalidType {
+                    field: field.rust_name.to_string(),
+                    expected: "number",
+                })
+        }
+    }
 }
 
 fn find_model_field<'a>(fields: &'a [FieldInfo], name: &str) -> Option<&'a FieldInfo> {
