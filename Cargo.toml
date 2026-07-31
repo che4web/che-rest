@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 argon2 = "0.5"
+async-trait = "0.1"
 axum = "0.8"
 che-orm = { path = "../che-orm/crates/che-orm" }
 clap = { version = "4", features = ["derive"] }

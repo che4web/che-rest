@@ -1,20 +1,81 @@
-use std::marker::PhantomData;
+use std::{collections::HashMap, marker::PhantomData};
 
+use async_trait::async_trait;
 use axum::{
     Extension, Json, Router,
+    body::{Body, to_bytes},
     extract::{Path, Query},
-    http::StatusCode,
+    http::{Extensions, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
 };
 use che_orm::SqliteModel;
 use serde_json::{Value, json};
-use std::collections::HashMap;
 
-use crate::{error::AppResult, filters::FilterSet, serializer::ModelSerializer, state::AppState};
+use crate::{
+    error::{AppError, AppResult},
+    filters::FilterSet,
+    serializer::ModelSerializer,
+    state::AppState,
+};
 
-pub struct ModelViewSet<M> {
-    _marker: PhantomData<M>,
+pub struct ModelViewSet<M, V = DefaultViewSet<M>> {
+    _marker: PhantomData<(M, V)>,
+}
+
+#[async_trait]
+pub trait ViewSet: Clone + Send + Sync + 'static {
+    type Model: SqliteModel<Id = i64>;
+
+    fn serializer(&self) -> ModelSerializer<Self::Model>;
+    fn filterset(&self) -> FilterSet<Self::Model>;
+
+    async fn perform_create(
+        &self,
+        _state: &AppState,
+        _extensions: &Extensions,
+        payload: Value,
+    ) -> AppResult<Value> {
+        Ok(payload)
+    }
+}
+
+pub struct DefaultViewSet<M> {
+    serializer: ModelSerializer<M>,
+    filterset: FilterSet<M>,
+}
+
+impl<M> Clone for DefaultViewSet<M> {
+    fn clone(&self) -> Self {
+        Self {
+            serializer: self.serializer,
+            filterset: self.filterset,
+        }
+    }
+}
+
+impl<M> DefaultViewSet<M> {
+    pub const fn new(serializer: ModelSerializer<M>, filterset: FilterSet<M>) -> Self {
+        Self {
+            serializer,
+            filterset,
+        }
+    }
+}
+
+impl<M> ViewSet for DefaultViewSet<M>
+where
+    M: SqliteModel<Id = i64>,
+{
+    type Model = M;
+
+    fn serializer(&self) -> ModelSerializer<M> {
+        self.serializer
+    }
+
+    fn filterset(&self) -> FilterSet<M> {
+        self.filterset
+    }
 }
 
 impl<M> ModelViewSet<M>
@@ -26,6 +87,16 @@ where
         serializer: ModelSerializer<M>,
         filterset: FilterSet<M>,
     ) -> Router {
+        Self::router_with(base_path, DefaultViewSet::new(serializer, filterset))
+    }
+}
+
+impl<M, V> ModelViewSet<M, V>
+where
+    M: SqliteModel<Id = i64>,
+    V: ViewSet<Model = M>,
+{
+    pub fn router_with(base_path: &'static str, viewset: V) -> Router {
         let detail_path = format!("{base_path}/{{id}}");
 
         Router::new()
@@ -36,17 +107,18 @@ where
                     .patch(Self::update)
                     .delete(Self::destroy),
             )
-            .layer(Extension(serializer))
-            .layer(Extension(filterset))
+            .layer(Extension(viewset))
     }
 
     async fn list(
         Extension(state): Extension<AppState>,
-        Extension(serializer): Extension<ModelSerializer<M>>,
-        Extension(filterset): Extension<FilterSet<M>>,
+        Extension(viewset): Extension<V>,
         Query(params): Query<HashMap<String, String>>,
     ) -> AppResult<Response> {
-        let query = filterset.apply(M::objects(state.db()).query(), &params)?;
+        let serializer = viewset.serializer();
+        let query = viewset
+            .filterset()
+            .apply(M::objects(state.db()).query(), &params)?;
         let models = query.all().await?;
         let mut results = Vec::new();
         for model in &models {
@@ -61,9 +133,20 @@ where
 
     async fn create(
         Extension(state): Extension<AppState>,
-        Extension(serializer): Extension<ModelSerializer<M>>,
-        Json(payload): Json<Value>,
+        Extension(viewset): Extension<V>,
+        request: axum::extract::Request<Body>,
     ) -> AppResult<Response> {
+        let (parts, body) = request.into_parts();
+        let bytes = to_bytes(body, usize::MAX)
+            .await
+            .map_err(|error| AppError::BadRequest(error.to_string()))?;
+        let payload = serde_json::from_slice(bytes.as_ref())
+            .map_err(|error| AppError::BadRequest(error.to_string()))?;
+        let payload = viewset
+            .perform_create(&state, &parts.extensions, payload)
+            .await?;
+
+        let serializer = viewset.serializer();
         let mut create = M::objects(state.db()).create();
 
         for (field, value) in serializer.create_values(payload)? {
@@ -77,10 +160,11 @@ where
 
     async fn retrieve(
         Extension(state): Extension<AppState>,
-        Extension(serializer): Extension<ModelSerializer<M>>,
+        Extension(viewset): Extension<V>,
         Path(id): Path<i64>,
     ) -> AppResult<Response> {
         let model = M::objects(state.db()).get(id).await?;
+        let serializer = viewset.serializer();
         Ok(json_response(
             serializer.to_json_async(state.db(), &model).await?,
         ))
@@ -88,10 +172,11 @@ where
 
     async fn update(
         Extension(state): Extension<AppState>,
-        Extension(serializer): Extension<ModelSerializer<M>>,
+        Extension(viewset): Extension<V>,
         Path(id): Path<i64>,
         Json(payload): Json<Value>,
     ) -> AppResult<Response> {
+        let serializer = viewset.serializer();
         let mut update = M::objects(state.db()).update_fields(id);
 
         for (field, value) in serializer.update_values(payload)? {

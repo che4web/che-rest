@@ -27,6 +27,9 @@ pub enum AppError {
 
     #[error("{0}")]
     Unauthorized(String),
+
+    #[error("{0}")]
+    BadRequest(String),
 }
 
 pub type AppResult<T> = std::result::Result<T, AppError>;
@@ -35,6 +38,7 @@ impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let status = match &self {
             Self::Unauthorized(_) => StatusCode::UNAUTHORIZED,
+            Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::Serializer(_) | Self::Filter(_) => StatusCode::BAD_REQUEST,
             Self::Orm(che_orm::Error::UnknownField(_)) => StatusCode::BAD_REQUEST,
             Self::Orm(che_orm::Error::ReadonlyField(_)) => StatusCode::BAD_REQUEST,

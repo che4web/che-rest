@@ -8,6 +8,7 @@ pub mod serializer;
 pub mod state;
 pub mod views;
 
+pub use async_trait::async_trait;
 pub use config::{AppConfig, DatabaseConfig};
 pub use error::{AppError, AppResult};
 pub use filters::{Filter, FilterError, FilterSet, Lookup};
@@ -17,4 +18,4 @@ pub use module::{
 };
 pub use serializer::{Field, ModelSerializer, RelatedModel, RelatedSerializer, SerializerError};
 pub use state::AppState;
-pub use views::ModelViewSet;
+pub use views::{DefaultViewSet, ModelViewSet, ViewSet};

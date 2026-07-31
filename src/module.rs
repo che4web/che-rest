@@ -2,8 +2,12 @@ use axum::{Extension, Router, middleware};
 use che_orm::{FieldType, Model, ModelSchema, SqliteModel, create_table_sql};
 
 use crate::{
-    auth, error::AppResult, filters::FilterSet, serializer::ModelSerializer, state::AppState,
-    views::ModelViewSet,
+    auth,
+    error::AppResult,
+    filters::FilterSet,
+    serializer::ModelSerializer,
+    state::AppState,
+    views::{ModelViewSet, ViewSet},
 };
 
 pub trait AppModule {
@@ -121,6 +125,19 @@ impl ModuleContext {
         self.api_endpoints
             .push(api_endpoint::<M>(base_path, serializer, filterset));
         self.route(ModelViewSet::<M>::router(base_path, serializer, filterset));
+    }
+
+    pub fn viewset_with<V>(&mut self, base_path: &'static str, viewset: V)
+    where
+        V: ViewSet,
+    {
+        let serializer = viewset.serializer();
+        let filterset = viewset.filterset();
+
+        self.model::<V::Model>();
+        self.api_endpoints
+            .push(api_endpoint::<V::Model>(base_path, serializer, filterset));
+        self.route(ModelViewSet::<V::Model, V>::router_with(base_path, viewset));
     }
 
     pub fn enable_auth(&mut self) {
