@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use crate::{
     error::{AppError, AppResult},
     filters::FilterSet,
-    serializer::ModelSerializer,
+    serializer::{ModelSerializer, Serializer},
     state::AppState,
 };
 
@@ -26,9 +26,14 @@ pub struct ModelViewSet<M, V = DefaultViewSet<M>> {
 #[async_trait]
 pub trait ViewSet: Clone + Send + Sync + 'static {
     type Model: SqliteModel<Id = i64>;
+    type Serializer: Serializer<Model = Self::Model>;
 
-    fn serializer(&self) -> ModelSerializer<Self::Model>;
+    fn serializer(&self) -> Self::Serializer;
     fn filterset(&self) -> FilterSet<Self::Model>;
+
+    fn extra_routes(&self) -> Router {
+        Router::new()
+    }
 
     async fn perform_create(
         &self,
@@ -68,6 +73,7 @@ where
     M: SqliteModel<Id = i64>,
 {
     type Model = M;
+    type Serializer = ModelSerializer<M>;
 
     fn serializer(&self) -> ModelSerializer<M> {
         self.serializer
@@ -97,16 +103,19 @@ where
     V: ViewSet<Model = M>,
 {
     pub fn router_with(base_path: &'static str, viewset: V) -> Router {
-        let detail_path = format!("{base_path}/{{id}}");
+        let collection_path = trailing_slash(base_path);
+        let detail_path = format!("{}{{id}}/", collection_path);
+        let extra_routes = viewset.extra_routes();
 
         Router::new()
-            .route(base_path, get(Self::list).post(Self::create))
+            .route(&collection_path, get(Self::list).post(Self::create))
             .route(
                 &detail_path,
                 get(Self::retrieve)
                     .patch(Self::update)
                     .delete(Self::destroy),
             )
+            .merge(extra_routes)
             .layer(Extension(viewset))
     }
 
@@ -115,7 +124,7 @@ where
         Extension(viewset): Extension<V>,
         Query(params): Query<HashMap<String, String>>,
     ) -> AppResult<Response> {
-        let serializer = viewset.serializer();
+        let serializer = viewset.serializer().model_serializer();
         let query = viewset
             .filterset()
             .apply(M::objects(state.db()).query(), &params)?;
@@ -146,7 +155,7 @@ where
             .perform_create(&state, &parts.extensions, payload)
             .await?;
 
-        let serializer = viewset.serializer();
+        let serializer = viewset.serializer().model_serializer();
         let mut create = M::objects(state.db()).create();
 
         for (field, value) in serializer.create_values(payload)? {
@@ -164,7 +173,7 @@ where
         Path(id): Path<i64>,
     ) -> AppResult<Response> {
         let model = M::objects(state.db()).get(id).await?;
-        let serializer = viewset.serializer();
+        let serializer = viewset.serializer().model_serializer();
         Ok(json_response(
             serializer.to_json_async(state.db(), &model).await?,
         ))
@@ -176,7 +185,7 @@ where
         Path(id): Path<i64>,
         Json(payload): Json<Value>,
     ) -> AppResult<Response> {
-        let serializer = viewset.serializer();
+        let serializer = viewset.serializer().model_serializer();
         let mut update = M::objects(state.db()).update_fields(id);
 
         for (field, value) in serializer.update_values(payload)? {
@@ -201,4 +210,12 @@ where
 
 fn json_response(value: Value) -> Response {
     Json(value).into_response()
+}
+
+fn trailing_slash(path: &str) -> String {
+    if path.ends_with('/') {
+        path.to_string()
+    } else {
+        format!("{path}/")
+    }
 }

@@ -16,6 +16,8 @@ pub use management::Management;
 pub use module::{
     ApiEndpoint, ApiField, ApiFilter, AppModule, InstalledApps, ModuleContext, Server,
 };
-pub use serializer::{Field, ModelSerializer, RelatedModel, RelatedSerializer, SerializerError};
+pub use serializer::{
+    Field, ModelSerializer, RelatedModel, RelatedSerializer, Serializer, SerializerError,
+};
 pub use state::AppState;
 pub use views::{DefaultViewSet, ModelViewSet, ViewSet};

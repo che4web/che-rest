@@ -5,7 +5,7 @@ use crate::{
     auth,
     error::AppResult,
     filters::FilterSet,
-    serializer::ModelSerializer,
+    serializer::{ModelSerializer, Serializer},
     state::AppState,
     views::{ModelViewSet, ViewSet},
 };
@@ -131,7 +131,7 @@ impl ModuleContext {
     where
         V: ViewSet,
     {
-        let serializer = viewset.serializer();
+        let serializer = viewset.serializer().model_serializer();
         let filterset = viewset.filterset();
 
         self.model::<V::Model>();

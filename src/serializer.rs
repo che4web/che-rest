@@ -201,6 +201,27 @@ impl<M> Clone for ModelSerializer<M> {
 
 impl<M> Copy for ModelSerializer<M> {}
 
+pub trait Serializer: Clone + Send + Sync + 'static {
+    type Model: Model;
+
+    fn fields(&self) -> &'static [Field];
+
+    fn model_serializer(&self) -> ModelSerializer<Self::Model> {
+        ModelSerializer::new(self.fields())
+    }
+}
+
+impl<M> Serializer for ModelSerializer<M>
+where
+    M: Model,
+{
+    type Model = M;
+
+    fn fields(&self) -> &'static [Field] {
+        self.fields
+    }
+}
+
 impl<M: Model> ModelSerializer<M> {
     pub const fn new(fields: &'static [Field]) -> Self {
         Self {
