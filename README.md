@@ -27,6 +27,50 @@ let app = Server::new(state)
 
 Installed app routes are served under `/api` by default. A viewset registered as `"/users"` is exposed as `/api/users`.
 
+## Auth
+
+`che-rest` includes an optional auth app. Install it to enable token authentication for all routes under `/api`:
+
+```rust
+pub fn installed_apps() -> InstalledApps {
+    InstalledApps::new()
+        .add(che_rest::auth::module())
+        .add(users::module())
+}
+```
+
+Create the first superuser:
+
+```bash
+cargo run --bin manage -- migrate auth
+```
+
+Then create the first superuser:
+
+```bash
+cargo run --bin manage -- createsuperuser \
+  --username admin \
+  --password secret
+```
+
+Get a token with the Django REST Framework compatible endpoint:
+
+```bash
+curl -X POST http://127.0.0.1:3000/api-token-auth/ \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"secret"}'
+```
+
+Use the returned token for API requests:
+
+```text
+Authorization: Token <token>
+```
+
+Generated TypeScript clients expose `setAuthToken(token)` in `api_client.ts`.
+
+Admin-only routers can use `che_rest::auth::admin_required_middleware`. It allows users with `is_admin` or `is_superuser`.
+
 Project-local `src/bin/manage.rs`:
 
 ```rust

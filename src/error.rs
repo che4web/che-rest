@@ -24,6 +24,9 @@ pub enum AppError {
 
     #[error(transparent)]
     Toml(#[from] toml::de::Error),
+
+    #[error("{0}")]
+    Unauthorized(String),
 }
 
 pub type AppResult<T> = std::result::Result<T, AppError>;
@@ -31,6 +34,7 @@ pub type AppResult<T> = std::result::Result<T, AppError>;
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let status = match &self {
+            Self::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             Self::Serializer(_) | Self::Filter(_) => StatusCode::BAD_REQUEST,
             Self::Orm(che_orm::Error::UnknownField(_)) => StatusCode::BAD_REQUEST,
             Self::Orm(che_orm::Error::ReadonlyField(_)) => StatusCode::BAD_REQUEST,

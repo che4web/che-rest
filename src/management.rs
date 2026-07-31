@@ -1,9 +1,9 @@
 use std::{fs, path::PathBuf};
 
-use che_orm::{FieldType, Schema, SqliteBackend, diff_schemas, sqlite_migration_sql};
+use che_orm::{FieldType, Model, Schema, SqliteBackend, diff_schemas, sqlite_migration_sql};
 use clap::{Parser, Subcommand};
 
-use crate::{ApiEndpoint, ApiField, AppConfig, InstalledApps, ModuleContext};
+use crate::{ApiEndpoint, ApiField, AppConfig, InstalledApps, ModuleContext, auth};
 
 type ManageResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -48,6 +48,19 @@ enum Command {
         #[arg(long, default_value = "src/generated")]
         out: PathBuf,
     },
+    Createsuperuser {
+        #[arg(long, default_value = "app.toml")]
+        config: PathBuf,
+
+        #[arg(long)]
+        database_url: Option<String>,
+
+        #[arg(long)]
+        username: String,
+
+        #[arg(long)]
+        password: String,
+    },
 }
 
 pub struct Management {
@@ -81,6 +94,12 @@ impl Management {
                     .await?
             }
             Command::GenerateTs { out } => self.generate_ts(out)?,
+            Command::Createsuperuser {
+                config,
+                database_url,
+                username,
+                password,
+            } => createsuperuser(config, database_url, &username, &password).await?,
         }
 
         Ok(())
@@ -173,6 +192,47 @@ impl Management {
         endpoints.sort_by(|left, right| left.model_name.cmp(&right.model_name));
         endpoints
     }
+}
+
+async fn createsuperuser(
+    config: PathBuf,
+    database_url: Option<String>,
+    username: &str,
+    password: &str,
+) -> ManageResult<()> {
+    let database_url = match database_url {
+        Some(database_url) => database_url,
+        None => AppConfig::from_file(config)?.database.url,
+    };
+    let db = SqliteBackend::connect(&database_url).await?;
+    db.create_table::<auth::models::User>().await?;
+    db.create_table::<auth::models::AuthToken>().await?;
+
+    let existing = auth::models::User::objects(&db)
+        .query()
+        .eq("username", username)
+        .limit(1)
+        .all()
+        .await?;
+    if !existing.is_empty() {
+        return Err(format!("user already exists: {username}").into());
+    }
+
+    let password_hash = auth::models::hash_password(password)
+        .map_err(|error| format!("failed to hash password: {error}"))?;
+    auth::models::User::objects(&db)
+        .create()
+        .set("username", username)
+        .set("password_hash", password_hash)
+        .set("is_active", true)
+        .set("is_staff", true)
+        .set("is_admin", true)
+        .set("is_superuser", true)
+        .execute()
+        .await?;
+
+    println!("Created superuser {username}");
+    Ok(())
 }
 
 fn app_schema(module: &dyn crate::AppModule) -> Schema {
@@ -343,6 +403,21 @@ export const apiClient = axios.create({
   },
 });
 
+let authToken: string | null = null;
+
+export function setAuthToken(token: string | null) {
+  authToken = token;
+}
+
+apiClient.interceptors.request.use((config) => {
+  if (authToken) {
+    config.headers.Authorization = `Token ${authToken}`;
+  } else {
+    delete config.headers.Authorization;
+  }
+  return config;
+});
+
 export function createModelApi<
   T extends BaseEntity,
   CreateDTO = Partial<T>,
@@ -385,7 +460,7 @@ async fn apply_app_migrations(
     apps_dir: &std::path::Path,
     app: &str,
 ) -> ManageResult<()> {
-    let migrations_dir = app_migrations_dir(apps_dir, app);
+    let migrations_dir = migrations_dir(apps_dir, app);
     for name in db
         .apply_migrations_dir_with_namespace(app, &migrations_dir)
         .await?
@@ -393,6 +468,15 @@ async fn apply_app_migrations(
         println!("Applied {app}: {name}");
     }
     Ok(())
+}
+
+fn migrations_dir(apps_dir: &std::path::Path, app: &str) -> PathBuf {
+    let project_dir = app_migrations_dir(apps_dir, app);
+    if project_dir.exists() || app != "auth" {
+        return project_dir;
+    }
+
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/auth/migrations")
 }
 
 fn startapp(name: &str, apps_dir: PathBuf) -> ManageResult<()> {

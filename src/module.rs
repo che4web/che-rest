@@ -1,8 +1,8 @@
-use axum::{Extension, Router};
+use axum::{Extension, Router, middleware};
 use che_orm::{FieldType, Model, ModelSchema, SqliteModel, create_table_sql};
 
 use crate::{
-    error::AppResult, filters::FilterSet, serializer::ModelSerializer, state::AppState,
+    auth, error::AppResult, filters::FilterSet, serializer::ModelSerializer, state::AppState,
     views::ModelViewSet,
 };
 
@@ -52,6 +52,7 @@ pub struct ModuleContext {
     sql: Vec<String>,
     schemas: Vec<ModelSchema>,
     api_endpoints: Vec<ApiEndpoint>,
+    auth_enabled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -120,6 +121,14 @@ impl ModuleContext {
         self.api_endpoints
             .push(api_endpoint::<M>(base_path, serializer, filterset));
         self.route(ModelViewSet::<M>::router(base_path, serializer, filterset));
+    }
+
+    pub fn enable_auth(&mut self) {
+        self.auth_enabled = true;
+    }
+
+    pub fn auth_enabled(&self) -> bool {
+        self.auth_enabled
     }
 
     pub fn model_schemas(&self) -> &[ModelSchema] {
@@ -235,6 +244,8 @@ impl Server {
             module.init(&mut ctx);
         }
 
+        let auth_enabled = ctx.auth_enabled();
+
         for sql in ctx.sql {
             self.state.db().apply_sql(&sql).await?;
         }
@@ -244,8 +255,16 @@ impl Server {
             api_router = api_router.merge(module_router);
         }
 
-        Ok(Router::new()
-            .nest(&self.api_prefix, api_router)
-            .layer(Extension(self.state)))
+        if auth_enabled {
+            api_router = api_router.layer(middleware::from_fn(auth::auth_middleware));
+        }
+
+        let mut router = Router::new().nest(&self.api_prefix, api_router);
+
+        if auth_enabled {
+            router = router.merge(auth::views::routes());
+        }
+
+        Ok(router.layer(Extension(self.state)))
     }
 }
