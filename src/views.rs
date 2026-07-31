@@ -19,6 +19,8 @@ use crate::{
     state::AppState,
 };
 
+const DEFAULT_PAGE_LIMIT: u32 = 20;
+
 pub struct ModelViewSet<M, V = DefaultViewSet<M>> {
     _marker: PhantomData<(M, V)>,
 }
@@ -125,9 +127,15 @@ where
         Query(params): Query<HashMap<String, String>>,
     ) -> AppResult<Response> {
         let serializer = viewset.serializer().model_serializer();
-        let query = viewset
-            .filterset()
-            .apply(M::objects(state.db()).query(), &params)?;
+        let filterset = viewset.filterset();
+        let total = filterset
+            .apply_for_count(M::objects(state.db()).query(), &params)?
+            .count()
+            .await?;
+        let mut query = filterset.apply(M::objects(state.db()).query(), &params)?;
+        if !params.contains_key("limit") {
+            query = query.limit(DEFAULT_PAGE_LIMIT);
+        }
         let models = query.all().await?;
         let mut results = Vec::new();
         for model in &models {
@@ -135,7 +143,7 @@ where
         }
 
         Ok(json_response(json!({
-            "count": results.len(),
+            "count": total,
             "results": results,
         })))
     }

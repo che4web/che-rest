@@ -128,6 +128,38 @@ where
         Ok(query)
     }
 
+    pub fn apply_for_count<'db>(
+        &self,
+        mut query: QueryBuilder<'db, M>,
+        params: &HashMap<String, String>,
+    ) -> AppResult<QueryBuilder<'db, M>> {
+        for (name, value) in params {
+            match name.as_str() {
+                "ordering" | "limit" | "offset" => {}
+                name => {
+                    let filter = self
+                        .filters
+                        .iter()
+                        .find(|filter| filter.query_name() == name)
+                        .ok_or_else(|| FilterError::UnknownFilter(name.to_string()))?;
+                    let field = model_field::<M>(filter.source)?;
+                    validate_lookup(field, filter.lookup)?;
+                    let value = parse_value(field, value)?;
+                    query = match filter.lookup {
+                        Lookup::Exact => query.eq(filter.source, value),
+                        Lookup::Contains => query.contains(filter.source, value),
+                        Lookup::Gt => query.gt(filter.source, value),
+                        Lookup::Gte => query.gte(filter.source, value),
+                        Lookup::Lt => query.lt(filter.source, value),
+                        Lookup::Lte => query.lte(filter.source, value),
+                    };
+                }
+            }
+        }
+
+        Ok(query)
+    }
+
     fn apply_ordering<'db>(
         &self,
         query: QueryBuilder<'db, M>,
