@@ -1,0 +1,91 @@
+html,
+body,
+#app {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+}
+
+.che-admin-layout {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.che-admin-sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  padding: 1.5rem;
+}
+
+.che-admin-brand {
+  font-size: 1.25rem;
+  font-weight: 800;
+}
+
+.che-admin-nav-title {
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.che-admin-nav-link {
+  background: transparent;
+  border: 0;
+  border-radius: 0.5rem !important;
+  color: rgba(255, 255, 255, 0.75);
+  margin-bottom: 0.25rem;
+}
+
+.che-admin-nav-link:hover,
+.che-admin-nav-link.router-link-active {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+.che-admin-main {
+  min-width: 0;
+}
+
+.che-admin-login {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 1rem;
+}
+
+.che-admin-login-card {
+  max-width: 420px;
+  width: 100%;
+}
+
+.che-admin-model-card {
+  transition: transform 0.16s ease, box-shadow 0.16s ease;
+}
+
+.che-admin-model-card:hover {
+  box-shadow: 0 0.75rem 2rem rgba(33, 37, 41, 0.12);
+  transform: translateY(-2px);
+}
+
+.che-admin-actions-column {
+  width: 150px;
+}
+
+.che-admin-form-card {
+  max-width: 720px;
+}
+
+@media (max-width: 991.98px) {
+  .che-admin-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .che-admin-sidebar {
+    min-height: auto;
+  }
+}

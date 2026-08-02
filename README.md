@@ -129,6 +129,97 @@ src/generated/
   api.ts
 ```
 
+Generate a standalone Vue admin project from installed app metadata:
+
+```bash
+cargo run --bin manage -- generate-admin --out frontend/admin
+cd frontend/admin
+npm install
+npm run dev
+```
+
+This writes a Vite + Vue + Bootstrap project:
+
+```text
+frontend/admin/
+  package.json
+  index.html
+  vite.config.ts
+  tsconfig.json
+  .env.example
+  src/
+    main.ts
+    App.vue
+    router.ts
+    admin/
+      AdminApp.vue
+      AdminLogin.vue
+      AdminModelList.vue
+      AdminModelTable.vue
+      AdminModelForm.vue
+      adminRoutes.ts
+      admin.css
+      adminSchema.ts
+      components/
+        GenericModelTable.vue
+        GenericModelForm.vue
+      pages/
+        UserList.vue
+        UserForm.vue
+      generated/
+        adminSchema.ts
+        adminRoutes.ts
+    generated/
+      api_client.ts
+      models.ts
+      api.ts
+      useModelList.ts
+      useModelItem.ts
+```
+
+The first run creates the full project and one editable list/form page pair for each model.
+Later runs update generated files and create missing model pages, but leave existing Vue, CSS,
+config, package, and model page files untouched so local admin customizations are preserved.
+Use `--force` to overwrite static project files from templates:
+
+```bash
+cargo run --bin manage -- generate-admin --out frontend/admin --force
+```
+
+The generated admin login uses `/api-token-auth/` and stores the returned token in `localStorage`.
+It requires `che_rest::auth::module()` to be installed. The generated Vite dev server proxies
+`/api` and `/api-token-auth/` to `http://127.0.0.1:3000` by default.
+Configure API URLs with Vite env variables for deployments or a different backend URL:
+
+```env
+VITE_API_BASE_URL=http://127.0.0.1:3000/api
+VITE_AUTH_URL=http://127.0.0.1:3000/api-token-auth/
+```
+
+Override static admin templates by mirroring output paths in a templates directory:
+
+```bash
+cargo run --bin manage -- generate-admin \
+  --out frontend/admin \
+  --templates-dir admin_templates
+```
+
+Example overrides:
+
+```text
+admin_templates/
+  src/admin/components/GenericModelTable.vue
+  src/admin/admin.css
+```
+
+Dynamic files are always regenerated from installed app metadata and are not read from `--templates-dir`:
+`src/admin/generated/adminSchema.ts`, `src/admin/generated/adminRoutes.ts`, the compatibility shim
+`src/admin/adminSchema.ts`, and `src/generated/*`.
+
+Per-model pages in `src/admin/pages` are generated as thin wrappers around the generic CRUD
+components. Customize those page files for model-specific fields, actions, and layout; they are
+not overwritten on later runs unless `--force` is passed.
+
 Defaults:
 
 ```text
