@@ -48,6 +48,10 @@ enum Command {
         #[arg(long, default_value = "src/generated")]
         out: PathBuf,
     },
+    GenerateAdmin {
+        #[arg(long, default_value = "frontend/src/admin")]
+        out: PathBuf,
+    },
     Createsuperuser {
         #[arg(long, default_value = "app.toml")]
         config: PathBuf,
@@ -94,6 +98,7 @@ impl Management {
                     .await?
             }
             Command::GenerateTs { out } => self.generate_ts(out)?,
+            Command::GenerateAdmin { out } => self.generate_admin(out)?,
             Command::Createsuperuser {
                 config,
                 database_url,
@@ -177,8 +182,24 @@ impl Management {
         fs::write(out.join("api_client.ts"), api_client_ts())?;
         fs::write(out.join("models.ts"), models_ts(&endpoints))?;
         fs::write(out.join("api.ts"), api_ts(&endpoints))?;
+        fs::write(out.join("useModelList.ts"), use_model_list_ts())?;
+        fs::write(out.join("useModelItem.ts"), use_model_item_ts())?;
 
         println!("Generated TypeScript API in {}", out.display());
+        Ok(())
+    }
+
+    fn generate_admin(&self, out: PathBuf) -> ManageResult<()> {
+        let endpoints = self.admin_endpoints();
+        fs::create_dir_all(&out)?;
+        fs::write(out.join("adminSchema.ts"), admin_schema_ts(&endpoints))?;
+        fs::write(out.join("AdminApp.vue"), admin_app_vue())?;
+        fs::write(out.join("AdminModelList.vue"), admin_model_list_vue())?;
+        fs::write(out.join("AdminModelTable.vue"), admin_model_table_vue())?;
+        fs::write(out.join("AdminModelForm.vue"), admin_model_form_vue())?;
+        fs::write(out.join("adminRoutes.ts"), admin_routes_ts())?;
+
+        println!("Generated Vue admin in {}", out.display());
         Ok(())
     }
 
@@ -192,6 +213,35 @@ impl Management {
         endpoints.sort_by(|left, right| left.model_name.cmp(&right.model_name));
         endpoints
     }
+
+    fn admin_endpoints(&self) -> Vec<AdminEndpoint> {
+        let mut endpoints = Vec::new();
+        for module in self.apps.iter() {
+            let mut ctx = ModuleContext::new();
+            module.init(&mut ctx);
+            endpoints.extend(
+                ctx.api_endpoints()
+                    .iter()
+                    .cloned()
+                    .map(|endpoint| AdminEndpoint {
+                        app_name: module.name().to_string(),
+                        endpoint,
+                    }),
+            );
+        }
+        endpoints.sort_by(|left, right| {
+            left.app_name
+                .cmp(&right.app_name)
+                .then_with(|| left.endpoint.model_name.cmp(&right.endpoint.model_name))
+        });
+        endpoints
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AdminEndpoint {
+    app_name: String,
+    endpoint: ApiEndpoint,
 }
 
 async fn createsuperuser(
@@ -453,6 +503,1317 @@ export function createModelApi<
   };
 }
 "#
+}
+
+fn use_model_list_ts() -> &'static str {
+    r#"import { onMounted, reactive, ref, shallowRef, watch } from "vue";
+import type { BaseEntity, ListParams, ModelApi } from "./api_client";
+
+export interface UseModelListOptions<Params extends ListParams> {
+  defaultFilters?: Partial<Params>;
+  autoLoad?: boolean;
+  reloadOnFilterChange?: boolean;
+  debounceMs?: number;
+  onError?: (message: string, error: unknown) => void;
+}
+
+export function useModelList<
+  T extends BaseEntity,
+  CreateDTO = Partial<T>,
+  UpdateDTO = Partial<T>,
+  Params extends ListParams = ListParams,
+>(api: ModelApi<T, CreateDTO, UpdateDTO, Params>, options: UseModelListOptions<Params> = {}) {
+  const items = shallowRef<T[]>([]);
+  const filters = reactive({ ...(options.defaultFilters ?? {}) } as Params) as Params;
+  const count = ref(0);
+  const loading = ref(false);
+  const error = ref("");
+  let loadTimer: ReturnType<typeof setTimeout> | undefined;
+  let skipNextFilterReload = false;
+
+  async function load(params?: Partial<Params>) {
+    if (params) {
+      skipNextFilterReload = true;
+      Object.assign(filters, params);
+    }
+
+    loading.value = true;
+    error.value = "";
+
+    try {
+      const response = await api.list(cleanParams(filters) as Params);
+      items.value = response.results;
+      count.value = response.count;
+      return response;
+    } catch (err) {
+      handleError(err, "Unable to load objects");
+      return null;
+    } finally {
+      loading.value = false;
+    }
+  }
+
+  async function remove(id: number) {
+    loading.value = true;
+    error.value = "";
+
+    try {
+      await api.remove(id);
+      await load();
+      return true;
+    } catch (err) {
+      handleError(err, "Unable to delete object");
+      return false;
+    } finally {
+      loading.value = false;
+    }
+  }
+
+  function scheduleLoad() {
+    clearTimeout(loadTimer);
+    loadTimer = setTimeout(() => {
+      load();
+    }, options.debounceMs ?? 250);
+  }
+
+  function handleError(err: unknown, fallback: string) {
+    const message = errorMessage(err, fallback);
+    error.value = message;
+    options.onError?.(message, err);
+  }
+
+  if (options.reloadOnFilterChange) {
+    watch(filters, () => {
+      if (skipNextFilterReload) {
+        skipNextFilterReload = false;
+        return;
+      }
+
+      scheduleLoad();
+    });
+  }
+
+  if (options.autoLoad) {
+    onMounted(() => {
+      load();
+    });
+  }
+
+  return {
+    items,
+    filters,
+    count,
+    loading,
+    error,
+    load,
+    remove,
+  };
+}
+
+function cleanParams(params: ListParams) {
+  const clean: ListParams = {};
+
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== "" && value !== null && value !== undefined) {
+      clean[key] = value;
+    }
+  }
+
+  return clean;
+}
+
+function errorMessage(err: unknown, fallback: string) {
+  if (typeof err === "object" && err && "detail" in err) {
+    return String((err as { detail: unknown }).detail);
+  }
+
+  if (err instanceof Error) {
+    return err.message;
+  }
+
+  return fallback;
+}
+"#
+}
+
+fn use_model_item_ts() -> &'static str {
+    r#"import { ref, shallowRef } from "vue";
+import type { BaseEntity, ListParams, ModelApi } from "./api_client";
+
+export interface UseModelItemOptions {
+  onError?: (message: string, error: unknown) => void;
+}
+
+export function useModelItem<
+  T extends BaseEntity,
+  CreateDTO = Partial<T>,
+  UpdateDTO = Partial<T>,
+  Params extends ListParams = ListParams,
+>(api: ModelApi<T, CreateDTO, UpdateDTO, Params>, options: UseModelItemOptions = {}) {
+  const item = shallowRef<T | null>(null);
+  const loading = ref(false);
+  const error = ref("");
+
+  async function retrieve(id: number) {
+    loading.value = true;
+    error.value = "";
+
+    try {
+      item.value = await api.retrieve(id);
+      return item.value;
+    } catch (err) {
+      handleError(err, "Unable to load object");
+      return null;
+    } finally {
+      loading.value = false;
+    }
+  }
+
+  async function create(payload: CreateDTO) {
+    loading.value = true;
+    error.value = "";
+
+    try {
+      item.value = await api.create(payload);
+      return item.value;
+    } catch (err) {
+      handleError(err, "Unable to create object");
+      return null;
+    } finally {
+      loading.value = false;
+    }
+  }
+
+  async function update(id: number, payload: UpdateDTO) {
+    loading.value = true;
+    error.value = "";
+
+    try {
+      item.value = await api.update(id, payload);
+      return item.value;
+    } catch (err) {
+      handleError(err, "Unable to update object");
+      return null;
+    } finally {
+      loading.value = false;
+    }
+  }
+
+  async function remove(id: number) {
+    loading.value = true;
+    error.value = "";
+
+    try {
+      await api.remove(id);
+      item.value = null;
+      return true;
+    } catch (err) {
+      handleError(err, "Unable to delete object");
+      return false;
+    } finally {
+      loading.value = false;
+    }
+  }
+
+  function handleError(err: unknown, fallback: string) {
+    const message = errorMessage(err, fallback);
+    error.value = message;
+    options.onError?.(message, err);
+  }
+
+  return {
+    item,
+    loading,
+    error,
+    retrieve,
+    create,
+    update,
+    remove,
+  };
+}
+
+function errorMessage(err: unknown, fallback: string) {
+  if (typeof err === "object" && err && "detail" in err) {
+    return String((err as { detail: unknown }).detail);
+  }
+
+  if (err instanceof Error) {
+    return err.message;
+  }
+
+  return fallback;
+}
+"#
+}
+
+fn admin_schema_ts(endpoints: &[AdminEndpoint]) -> String {
+    let mut out = String::new();
+
+    if endpoints.is_empty() {
+        out.push_str(
+            "export type AdminFieldType = \"integer\" | \"text\" | \"boolean\" | \"real\";\n\n",
+        );
+        out.push_str(admin_schema_types_ts());
+        out.push_str("export const adminModels: AdminModel[] = [];\n");
+        out.push_str("export const adminApps: AdminApp[] = [];\n");
+        return out;
+    }
+
+    out.push_str("import {\n");
+    for admin_endpoint in endpoints {
+        let endpoint = &admin_endpoint.endpoint;
+        out.push_str(&format!("  {}Api,\n", lower_first(&endpoint.model_name)));
+    }
+    out.push_str("} from \"../generated/api\";\n\n");
+    out.push_str(
+        "export type AdminFieldType = \"integer\" | \"text\" | \"boolean\" | \"real\";\n\n",
+    );
+    out.push_str(admin_schema_types_ts());
+    out.push_str("export const adminModels: AdminModel[] = [\n");
+
+    for admin_endpoint in endpoints {
+        let endpoint = &admin_endpoint.endpoint;
+        out.push_str("  {\n");
+        out.push_str(&format!(
+            "    appName: {},\n",
+            js_string(&admin_endpoint.app_name)
+        ));
+        out.push_str(&format!("    name: {},\n", js_string(&endpoint.model_name)));
+        out.push_str(&format!(
+            "    resource: {},\n",
+            js_string(&endpoint.resource)
+        ));
+        out.push_str(&format!(
+            "    api: {}Api,\n",
+            lower_first(&endpoint.model_name)
+        ));
+        out.push_str("    fields: [\n");
+        for field in &endpoint.fields {
+            let relation_field = endpoint
+                .fields
+                .iter()
+                .find(|candidate| {
+                    candidate.source == field.source
+                        && candidate.related_model.is_some()
+                        && candidate.read_only
+                        && candidate.name != field.name
+                })
+                .map(|candidate| candidate.name.as_str());
+            let related_model = field.related_model.as_deref().or_else(|| {
+                endpoint
+                    .fields
+                    .iter()
+                    .find(|candidate| {
+                        candidate.source == field.source
+                            && candidate.related_model.is_some()
+                            && candidate.read_only
+                    })
+                    .and_then(|candidate| candidate.related_model.as_deref())
+            });
+
+            out.push_str("      {\n");
+            out.push_str(&format!("        name: {},\n", js_string(&field.name)));
+            out.push_str(&format!("        source: {},\n", js_string(&field.source)));
+            out.push_str(&format!(
+                "        type: {},\n",
+                js_string(admin_field_type(field.ty))
+            ));
+            out.push_str(&format!(
+                "        label: {},\n",
+                js_string(&human_label(&field.name))
+            ));
+            out.push_str(&format!("        readOnly: {},\n", field.read_only));
+            out.push_str(&format!("        writeOnly: {},\n", field.write_only));
+            out.push_str(&format!("        required: {},\n", field.required));
+            out.push_str(&format!("        nullable: {},\n", field.nullable));
+            out.push_str(&format!("        hasDefault: {},\n", field.has_default));
+            if let Some(model) = related_model {
+                out.push_str(&format!("        relatedModel: {},\n", js_string(model)));
+            }
+            if let Some(relation_field) = relation_field {
+                out.push_str(&format!(
+                    "        relationField: {},\n",
+                    js_string(relation_field)
+                ));
+            }
+            out.push_str("      },\n");
+        }
+        out.push_str("    ],\n");
+        out.push_str("    filters: [\n");
+        for filter in &endpoint.filters {
+            out.push_str("      {\n");
+            out.push_str(&format!("        name: {},\n", js_string(&filter.name)));
+            out.push_str(&format!("        source: {},\n", js_string(&filter.source)));
+            out.push_str(&format!(
+                "        type: {},\n",
+                js_string(admin_field_type(filter.ty))
+            ));
+            out.push_str(&format!(
+                "        label: {},\n",
+                js_string(&human_label(&filter.name))
+            ));
+            out.push_str(&format!("        nullable: {},\n", filter.nullable));
+            out.push_str("      },\n");
+        }
+        out.push_str("    ],\n");
+        out.push_str("  },\n");
+    }
+
+    out.push_str("];\n");
+    out.push_str("\nexport const adminApps: AdminApp[] = [\n");
+
+    let mut current_app: Option<&str> = None;
+    for admin_endpoint in endpoints {
+        if current_app == Some(admin_endpoint.app_name.as_str()) {
+            continue;
+        }
+
+        current_app = Some(admin_endpoint.app_name.as_str());
+        out.push_str("  {\n");
+        out.push_str(&format!(
+            "    name: {},\n",
+            js_string(&admin_endpoint.app_name)
+        ));
+        out.push_str("    models: adminModels.filter((model) => model.appName === ");
+        out.push_str(&js_string(&admin_endpoint.app_name));
+        out.push_str("),\n");
+        out.push_str("  },\n");
+    }
+
+    out.push_str("];\n");
+    out
+}
+
+fn admin_schema_types_ts() -> &'static str {
+    r#"export interface AdminField {
+  name: string;
+  source: string;
+  type: AdminFieldType;
+  label: string;
+  readOnly: boolean;
+  writeOnly: boolean;
+  required: boolean;
+  nullable: boolean;
+  hasDefault: boolean;
+  relatedModel?: string;
+  relationField?: string;
+}
+
+export interface AdminFilter {
+  name: string;
+  source: string;
+  type: AdminFieldType;
+  label: string;
+  nullable: boolean;
+}
+
+export interface AdminModelApi {
+  list: (params?: any) => Promise<{ count: number; results: any[] }>;
+  retrieve: (id: number) => Promise<any>;
+  create: (payload: any) => Promise<any>;
+  update: (id: number, payload: any) => Promise<any>;
+  remove: (id: number) => Promise<void>;
+}
+
+export interface AdminModel {
+  appName: string;
+  name: string;
+  resource: string;
+  api: AdminModelApi;
+  fields: AdminField[];
+  filters: AdminFilter[];
+}
+
+export interface AdminApp {
+  name: string;
+  models: AdminModel[];
+}
+
+"#
+}
+
+fn admin_app_vue() -> &'static str {
+    r#"<script setup lang="ts">
+import { adminApps } from "./adminSchema";
+</script>
+
+<template>
+  <section class="che-admin">
+    <aside class="che-admin-sidebar">
+      <RouterLink class="che-admin-brand" to="/admin">Admin</RouterLink>
+      <nav class="che-admin-nav">
+        <section v-for="app in adminApps" :key="app.name" class="che-admin-nav-group">
+          <p>{{ app.name }}</p>
+          <RouterLink
+            v-for="model in app.models"
+            :key="model.resource"
+            :to="`/admin/${model.resource}`"
+          >
+            {{ model.name }}
+          </RouterLink>
+        </section>
+      </nav>
+    </aside>
+
+    <main class="che-admin-main">
+      <RouterView />
+    </main>
+  </section>
+</template>
+
+<style scoped>
+.che-admin {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  min-height: calc(100vh - 72px);
+  background: #f6f7fb;
+  color: #172033;
+}
+
+.che-admin-sidebar {
+  border-right: 1px solid #dde2ee;
+  background: #ffffff;
+  padding: 24px;
+}
+
+.che-admin-brand {
+  color: #172033;
+  display: inline-flex;
+  font-size: 20px;
+  font-weight: 800;
+  margin-bottom: 24px;
+  text-decoration: none;
+}
+
+.che-admin-nav {
+  display: grid;
+  gap: 18px;
+}
+
+.che-admin-nav-group {
+  display: grid;
+  gap: 8px;
+}
+
+.che-admin-nav-group p {
+  color: #64708a;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  margin: 0 0 2px;
+  text-transform: uppercase;
+}
+
+.che-admin-nav-group a {
+  border-radius: 10px;
+  color: #4f5b73;
+  padding: 10px 12px;
+  text-decoration: none;
+}
+
+.che-admin-nav-group a.router-link-active {
+  background: #edf2ff;
+  color: #2446c6;
+  font-weight: 700;
+}
+
+.che-admin-main {
+  min-width: 0;
+  padding: 32px;
+}
+
+@media (max-width: 760px) {
+  .che-admin {
+    grid-template-columns: 1fr;
+  }
+
+  .che-admin-sidebar {
+    border-right: 0;
+    border-bottom: 1px solid #dde2ee;
+  }
+}
+</style>
+"#
+}
+
+fn admin_model_list_vue() -> &'static str {
+    r#"<script setup lang="ts">
+import { adminApps } from "./adminSchema";
+</script>
+
+<template>
+  <section class="admin-panel">
+    <div class="admin-heading">
+      <p>Generated admin</p>
+      <h1>Models</h1>
+    </div>
+
+    <section v-for="app in adminApps" :key="app.name" class="app-group">
+      <div class="app-heading">
+        <h2>{{ app.name }}</h2>
+        <span>{{ app.models.length }} models</span>
+      </div>
+
+      <div class="model-grid">
+        <RouterLink
+          v-for="model in app.models"
+          :key="model.resource"
+          class="model-card"
+          :to="`/admin/${model.resource}`"
+        >
+          <span>{{ model.name }}</span>
+          <small>{{ model.resource }}</small>
+        </RouterLink>
+      </div>
+    </section>
+  </section>
+</template>
+
+<style scoped>
+.admin-panel {
+  display: grid;
+  gap: 24px;
+}
+
+.admin-heading p {
+  color: #64708a;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  margin: 0 0 4px;
+  text-transform: uppercase;
+}
+
+.admin-heading h1 {
+  font-size: 34px;
+  margin: 0;
+}
+
+.app-group {
+  display: grid;
+  gap: 14px;
+}
+
+.app-heading {
+  align-items: end;
+  display: flex;
+  gap: 10px;
+}
+
+.app-heading h2 {
+  font-size: 22px;
+  margin: 0;
+}
+
+.app-heading span {
+  color: #64708a;
+  font-size: 13px;
+  padding-bottom: 2px;
+}
+
+.model-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.model-card {
+  background: #ffffff;
+  border: 1px solid #dde2ee;
+  border-radius: 18px;
+  box-shadow: 0 12px 36px rgba(23, 32, 51, 0.08);
+  color: #172033;
+  display: grid;
+  gap: 6px;
+  padding: 20px;
+  text-decoration: none;
+}
+
+.model-card span {
+  font-size: 20px;
+  font-weight: 800;
+}
+
+.model-card small {
+  color: #64708a;
+}
+</style>
+"#
+}
+
+fn admin_model_table_vue() -> &'static str {
+    r#"<script setup lang="ts">
+import { computed, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
+import { adminModels, type AdminFilter } from "./adminSchema";
+
+const route = useRoute();
+const router = useRouter();
+const rows = ref<Record<string, unknown>[]>([]);
+const filterValues = ref<Record<string, string | number | boolean | null>>({});
+const count = ref(0);
+const loading = ref(false);
+const error = ref("");
+
+const resource = computed(() => String(route.params.resource ?? ""));
+const model = computed(() => adminModels.find((item) => item.resource === resource.value));
+const columns = computed(() => model.value?.fields.filter((field) => !field.writeOnly) ?? []);
+
+function initFilters() {
+  filterValues.value = Object.fromEntries(
+    (model.value?.filters ?? []).map((filter) => [filter.name, filter.type === "boolean" ? null : ""]),
+  );
+}
+
+async function loadRows() {
+  if (!model.value) {
+    rows.value = [];
+    return;
+  }
+
+  loading.value = true;
+  error.value = "";
+
+  try {
+    const response = await model.value.api.list({ limit: 100, ...cleanFilters() });
+    rows.value = response.results;
+    count.value = response.count;
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : "Unable to load objects";
+  } finally {
+    loading.value = false;
+  }
+}
+
+function filterInputType(filter: AdminFilter) {
+  return filter.type === "integer" || filter.type === "real" ? "number" : "text";
+}
+
+function cleanFilters() {
+  const params: Record<string, string | number | boolean | null> = {};
+
+  for (const filter of model.value?.filters ?? []) {
+    const value = filterValues.value[filter.name];
+    if (value === "" || value === null || value === undefined) {
+      continue;
+    }
+
+    if (filter.type === "integer" || filter.type === "real") {
+      params[filter.name] = Number(value);
+    } else {
+      params[filter.name] = value;
+    }
+  }
+
+  return params;
+}
+
+async function resetFilters() {
+  initFilters();
+  await loadRows();
+}
+
+async function removeRow(row: Record<string, unknown>) {
+  if (!model.value || typeof row.id !== "number") {
+    return;
+  }
+
+  if (!window.confirm(`Delete ${model.value.name} #${row.id}?`)) {
+    return;
+  }
+
+  await model.value.api.remove(row.id);
+  await loadRows();
+}
+
+function displayValue(value: unknown) {
+  if (value === null || value === undefined) {
+    return "-";
+  }
+
+  if (typeof value === "boolean") {
+    return value ? "Yes" : "No";
+  }
+
+  if (typeof value === "object") {
+    const objectValue = value as Record<string, unknown>;
+    return objectValue.name ?? objectValue.title ?? objectValue.username ?? objectValue.email ?? objectValue.id ?? JSON.stringify(value);
+  }
+
+  return value;
+}
+
+watch(resource, async () => {
+  initFilters();
+  await loadRows();
+}, { immediate: true });
+</script>
+
+<template>
+  <section v-if="model" class="admin-panel">
+    <div class="admin-toolbar">
+      <div>
+        <p>{{ model.resource }}</p>
+        <h1>{{ model.name }}</h1>
+      </div>
+      <div class="admin-actions">
+        <button type="button" @click="loadRows">Refresh</button>
+        <RouterLink class="primary-link" :to="`/admin/${model.resource}/new`">Create</RouterLink>
+      </div>
+    </div>
+
+    <form v-if="model.filters.length > 0" class="filter-card" @submit.prevent="loadRows">
+      <div class="filter-heading">
+        <h2>Filters</h2>
+        <span>{{ model.filters.length }} available</span>
+      </div>
+
+      <div class="filter-grid">
+        <label v-for="filter in model.filters" :key="filter.name">
+          <span>{{ filter.label }}</span>
+          <select v-if="filter.type === 'boolean'" v-model="filterValues[filter.name]">
+            <option :value="null">Any</option>
+            <option :value="true">Yes</option>
+            <option :value="false">No</option>
+          </select>
+          <input
+            v-else
+            v-model="filterValues[filter.name]"
+            :step="filter.type === 'real' ? 'any' : '1'"
+            :type="filterInputType(filter)"
+          />
+        </label>
+      </div>
+
+      <div class="filter-actions">
+        <button type="submit">Apply filters</button>
+        <button type="button" @click="resetFilters">Reset</button>
+      </div>
+    </form>
+
+    <p v-if="loading" class="state-message">Loading...</p>
+    <p v-else-if="error" class="error-message">{{ error }}</p>
+
+    <div v-else class="table-card">
+      <div class="table-meta">{{ rows.length }} of {{ count }} objects</div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th v-for="field in columns" :key="field.name">{{ field.label }}</th>
+              <th class="actions-column">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="rows.length === 0">
+              <td :colspan="columns.length + 1">No objects yet.</td>
+            </tr>
+            <tr v-for="row in rows" :key="String(row.id)">
+              <td v-for="field in columns" :key="field.name">
+                {{ displayValue(row[field.name]) }}
+              </td>
+              <td class="row-actions">
+                <button type="button" @click="router.push(`/admin/${model.resource}/${row.id}/edit`)">Edit</button>
+                <button class="danger-button" type="button" @click="removeRow(row)">Delete</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <p v-else class="error-message">Unknown admin model: {{ resource }}</p>
+</template>
+
+<style scoped>
+.admin-panel {
+  display: grid;
+  gap: 24px;
+}
+
+.admin-toolbar {
+  align-items: center;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+.admin-toolbar p,
+.table-meta {
+  color: #64708a;
+  margin: 0;
+}
+
+.admin-toolbar h1 {
+  font-size: 34px;
+  margin: 4px 0 0;
+}
+
+.admin-actions,
+.row-actions {
+  display: flex;
+  gap: 8px;
+}
+
+button,
+.primary-link {
+  border: 1px solid #cbd4e4;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #172033;
+  cursor: pointer;
+  font: inherit;
+  padding: 9px 12px;
+  text-decoration: none;
+}
+
+.filter-card {
+  background: #ffffff;
+  border: 1px solid #dde2ee;
+  border-radius: 18px;
+  box-shadow: 0 12px 36px rgba(23, 32, 51, 0.08);
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+}
+
+.filter-heading {
+  align-items: end;
+  display: flex;
+  gap: 10px;
+}
+
+.filter-heading h2 {
+  font-size: 20px;
+  margin: 0;
+}
+
+.filter-heading span {
+  color: #64708a;
+  font-size: 13px;
+  padding-bottom: 2px;
+}
+
+.filter-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.filter-grid label {
+  color: #344054;
+  display: grid;
+  gap: 7px;
+  font-weight: 700;
+}
+
+.filter-grid input,
+.filter-grid select {
+  border: 1px solid #cbd4e4;
+  border-radius: 10px;
+  color: #172033;
+  font: inherit;
+  padding: 9px 12px;
+}
+
+.filter-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.primary-link {
+  background: #2446c6;
+  border-color: #2446c6;
+  color: #ffffff;
+}
+
+.danger-button {
+  color: #b42318;
+}
+
+.table-card {
+  background: #ffffff;
+  border: 1px solid #dde2ee;
+  border-radius: 18px;
+  box-shadow: 0 12px 36px rgba(23, 32, 51, 0.08);
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+table {
+  border-collapse: collapse;
+  min-width: 720px;
+  width: 100%;
+}
+
+th,
+td {
+  border-bottom: 1px solid #edf0f6;
+  padding: 12px;
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  color: #64708a;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.actions-column {
+  width: 160px;
+}
+
+.state-message,
+.error-message {
+  background: #ffffff;
+  border-radius: 14px;
+  padding: 16px;
+}
+
+.error-message {
+  color: #b42318;
+}
+
+@media (max-width: 760px) {
+  .admin-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+</style>
+"#
+}
+
+fn admin_model_form_vue() -> &'static str {
+    r#"<script setup lang="ts">
+import { computed, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
+import { adminModels, type AdminField } from "./adminSchema";
+
+const route = useRoute();
+const router = useRouter();
+const form = ref<Record<string, string | number | boolean | null>>({});
+const loading = ref(false);
+const saving = ref(false);
+const error = ref("");
+
+const resource = computed(() => String(route.params.resource ?? ""));
+const id = computed(() => Number(route.params.id));
+const isEdit = computed(() => Number.isFinite(id.value));
+const model = computed(() => adminModels.find((item) => item.resource === resource.value));
+const fields = computed(() => model.value?.fields.filter((field) => !field.readOnly) ?? []);
+
+function emptyValue(field: AdminField) {
+  return field.type === "boolean" ? false : "";
+}
+
+function inputType(field: AdminField) {
+  return field.type === "integer" || field.type === "real" ? "number" : "text";
+}
+
+async function loadObject() {
+  if (!model.value) {
+    return;
+  }
+
+  form.value = Object.fromEntries(fields.value.map((field) => [field.name, emptyValue(field)]));
+
+  if (!isEdit.value) {
+    return;
+  }
+
+  loading.value = true;
+  error.value = "";
+
+  try {
+    const object = await model.value.api.retrieve(id.value);
+    const nextForm: Record<string, string | number | boolean | null> = {};
+    for (const field of fields.value) {
+      const directValue = object[field.name];
+      const relationValue = field.relationField ? object[field.relationField] : undefined;
+      const relationId = relationValue && typeof relationValue === "object"
+        ? (relationValue as Record<string, unknown>).id
+        : undefined;
+      const value = directValue ?? relationId ?? emptyValue(field);
+      nextForm[field.name] = value as string | number | boolean | null;
+    }
+    form.value = nextForm;
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : "Unable to load object";
+  } finally {
+    loading.value = false;
+  }
+}
+
+function normalizeValue(field: AdminField) {
+  const value = form.value[field.name];
+
+  if (field.type === "boolean") {
+    return Boolean(value);
+  }
+
+  if (value === "") {
+    if (field.nullable) {
+      return null;
+    }
+    if (field.type === "text") {
+      return "";
+    }
+    return undefined;
+  }
+
+  if (field.type === "integer" || field.type === "real") {
+    return Number(value);
+  }
+
+  return value;
+}
+
+async function submit() {
+  if (!model.value) {
+    return;
+  }
+
+  saving.value = true;
+  error.value = "";
+
+  const payload: Record<string, unknown> = {};
+  for (const field of fields.value) {
+    const value = normalizeValue(field);
+    if (value !== undefined) {
+      payload[field.name] = value;
+    }
+  }
+
+  try {
+    if (isEdit.value) {
+      await model.value.api.update(id.value, payload);
+    } else {
+      await model.value.api.create(payload);
+    }
+    router.push(`/admin/${model.value.resource}`);
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : "Unable to save object";
+  } finally {
+    saving.value = false;
+  }
+}
+
+watch(() => [resource.value, route.params.id], loadObject, { immediate: true });
+</script>
+
+<template>
+  <section v-if="model" class="admin-panel">
+    <div class="admin-toolbar">
+      <div>
+        <p>{{ model.resource }}</p>
+        <h1>{{ isEdit ? `Edit ${model.name}` : `Create ${model.name}` }}</h1>
+      </div>
+      <RouterLink class="secondary-link" :to="`/admin/${model.resource}`">Back to list</RouterLink>
+    </div>
+
+    <p v-if="loading" class="state-message">Loading...</p>
+
+    <form v-else class="admin-form" @submit.prevent="submit">
+      <label v-for="field in fields" :key="field.name" :class="{ checkbox: field.type === 'boolean' }">
+        <span>{{ field.label }}</span>
+        <input
+          v-if="field.type === 'boolean'"
+          v-model="form[field.name]"
+          type="checkbox"
+        />
+        <input
+          v-else
+          v-model="form[field.name]"
+          :min="field.type === 'integer' || field.type === 'real' ? undefined : undefined"
+          :required="field.required && !field.hasDefault && !field.nullable"
+          :step="field.type === 'real' ? 'any' : '1'"
+          :type="inputType(field)"
+        />
+        <small v-if="field.relatedModel">{{ field.relatedModel }} id</small>
+      </label>
+
+      <p v-if="error" class="error-message">{{ error }}</p>
+
+      <div class="form-actions">
+        <button class="primary-button" :disabled="saving" type="submit">
+          {{ saving ? "Saving..." : "Save" }}
+        </button>
+        <RouterLink class="secondary-link" :to="`/admin/${model.resource}`">Cancel</RouterLink>
+      </div>
+    </form>
+  </section>
+
+  <p v-else class="error-message">Unknown admin model: {{ resource }}</p>
+</template>
+
+<style scoped>
+.admin-panel {
+  display: grid;
+  gap: 24px;
+}
+
+.admin-toolbar {
+  align-items: center;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+.admin-toolbar p {
+  color: #64708a;
+  margin: 0;
+}
+
+.admin-toolbar h1 {
+  font-size: 34px;
+  margin: 4px 0 0;
+}
+
+.admin-form {
+  background: #ffffff;
+  border: 1px solid #dde2ee;
+  border-radius: 18px;
+  box-shadow: 0 12px 36px rgba(23, 32, 51, 0.08);
+  display: grid;
+  gap: 18px;
+  max-width: 680px;
+  padding: 22px;
+}
+
+label {
+  color: #344054;
+  display: grid;
+  gap: 7px;
+  font-weight: 700;
+}
+
+label.checkbox {
+  align-items: center;
+  display: flex;
+}
+
+input {
+  border: 1px solid #cbd4e4;
+  border-radius: 10px;
+  color: #172033;
+  font: inherit;
+  padding: 10px 12px;
+}
+
+input[type="checkbox"] {
+  height: 18px;
+  width: 18px;
+}
+
+small {
+  color: #64708a;
+  font-weight: 400;
+}
+
+.form-actions {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+
+.primary-button,
+.secondary-link {
+  border: 1px solid #2446c6;
+  border-radius: 10px;
+  cursor: pointer;
+  font: inherit;
+  padding: 10px 14px;
+  text-decoration: none;
+}
+
+.primary-button {
+  background: #2446c6;
+  color: #ffffff;
+}
+
+.secondary-link {
+  background: #ffffff;
+  color: #2446c6;
+}
+
+.state-message,
+.error-message {
+  background: #ffffff;
+  border-radius: 14px;
+  padding: 16px;
+}
+
+.error-message {
+  color: #b42318;
+}
+
+@media (max-width: 760px) {
+  .admin-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+</style>
+"#
+}
+
+fn admin_routes_ts() -> &'static str {
+    r#"import type { RouteRecordRaw } from "vue-router";
+import AdminModelForm from "./AdminModelForm.vue";
+import AdminModelList from "./AdminModelList.vue";
+import AdminModelTable from "./AdminModelTable.vue";
+
+export const adminRoutes: RouteRecordRaw[] = [
+  { path: "", component: AdminModelList },
+  { path: ":resource", component: AdminModelTable },
+  { path: ":resource/new", component: AdminModelForm },
+  { path: ":resource/:id/edit", component: AdminModelForm },
+];
+"#
+}
+
+fn admin_field_type(ty: FieldType) -> &'static str {
+    match ty {
+        FieldType::Integer => "integer",
+        FieldType::Text => "text",
+        FieldType::Boolean => "boolean",
+        FieldType::Real => "real",
+    }
+}
+
+fn human_label(value: &str) -> String {
+    let mut label = String::new();
+    for part in value.split('_').filter(|part| !part.is_empty()) {
+        if !label.is_empty() {
+            label.push(' ');
+        }
+        let mut chars = part.chars();
+        match chars.next() {
+            Some(first) => {
+                label.push(first.to_ascii_uppercase());
+                label.push_str(chars.as_str());
+            }
+            None => {}
+        }
+    }
+    if label.is_empty() {
+        value.to_string()
+    } else {
+        label
+    }
+}
+
+fn js_string(value: &str) -> String {
+    serde_json::to_string(value).expect("serializing string cannot fail")
 }
 
 async fn apply_app_migrations(
