@@ -1,6 +1,6 @@
 use std::{collections::HashMap, marker::PhantomData};
 
-use che_orm::{FieldInfo, FieldType, Model, QueryBuilder, SqliteModel, SqliteValue};
+use che_orm::{FieldInfo, FieldType, Model, NaiveDateTime, QueryBuilder, SqliteModel, SqliteValue};
 
 use crate::error::AppResult;
 
@@ -240,6 +240,9 @@ fn parse_value(field: &FieldInfo, value: &str) -> Result<SqliteValue, FilterErro
             .parse::<f64>()
             .map(SqliteValue::from)
             .map_err(|_| invalid_value(field, "number")),
+        FieldType::DateTime => parse_datetime(value)
+            .map(SqliteValue::from)
+            .ok_or_else(|| invalid_value(field, "datetime string")),
     }
 }
 
@@ -248,12 +251,21 @@ fn validate_lookup(field: &FieldInfo, lookup: Lookup) -> Result<(), FilterError>
         Lookup::Exact => Ok(()),
         Lookup::Contains if field.ty == FieldType::Text => Ok(()),
         Lookup::Gt | Lookup::Gte | Lookup::Lt | Lookup::Lte
-            if matches!(field.ty, FieldType::Integer | FieldType::Real) =>
+            if matches!(
+                field.ty,
+                FieldType::Integer | FieldType::Real | FieldType::DateTime
+            ) =>
         {
             Ok(())
         }
         _ => Err(FilterError::InvalidLookup(field.rust_name.to_string())),
     }
+}
+
+fn parse_datetime(value: &str) -> Option<NaiveDateTime> {
+    NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")
+        .or_else(|_| NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S"))
+        .ok()
 }
 
 fn parse_bool(value: &str) -> Option<bool> {

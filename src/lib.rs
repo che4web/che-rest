@@ -4,6 +4,8 @@ pub mod error;
 pub mod filters;
 pub mod management;
 pub mod module;
+pub mod openapi;
+pub mod project;
 pub mod serializer;
 pub mod state;
 pub mod views;

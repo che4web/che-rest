@@ -6,7 +6,7 @@ use std::{
 use che_orm::{FieldType, Model, Schema, SqliteBackend, diff_schemas, sqlite_migration_sql};
 use clap::{Parser, Subcommand};
 
-use crate::{ApiEndpoint, ApiField, AppConfig, InstalledApps, ModuleContext, auth};
+use crate::{ApiEndpoint, ApiField, AppConfig, InstalledApps, ModuleContext, auth, openapi};
 
 type ManageResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -63,6 +63,19 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    GenerateOpenapi {
+        #[arg(long, default_value = "openapi.json")]
+        out: PathBuf,
+
+        #[arg(long, default_value = "che-rest API")]
+        title: String,
+
+        #[arg(long, default_value = "0.1.0")]
+        version: String,
+
+        #[arg(long, default_value = "/api")]
+        api_prefix: String,
+    },
     Createsuperuser {
         #[arg(long, default_value = "app.toml")]
         config: PathBuf,
@@ -114,6 +127,12 @@ impl Management {
                 templates_dir,
                 force,
             } => self.generate_admin(out, templates_dir, force)?,
+            Command::GenerateOpenapi {
+                out,
+                title,
+                version,
+                api_prefix,
+            } => self.generate_openapi(out, title, version, api_prefix)?,
             Command::Createsuperuser {
                 config,
                 database_url,
@@ -122,6 +141,30 @@ impl Management {
             } => createsuperuser(config, database_url, &username, &password).await?,
         }
 
+        Ok(())
+    }
+
+    fn generate_openapi(
+        &self,
+        out: PathBuf,
+        title: String,
+        version: String,
+        api_prefix: String,
+    ) -> ManageResult<()> {
+        let spec = openapi::openapi_json(
+            &self.api_endpoints(),
+            openapi::OpenApiOptions {
+                title,
+                version,
+                api_prefix,
+            },
+        );
+        if let Some(parent) = out.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&out, serde_json::to_string_pretty(&spec)?)?;
+
+        println!("Generated OpenAPI schema in {}", out.display());
         Ok(())
     }
 
@@ -623,7 +666,7 @@ fn optional_marker(field: &ApiField) -> &'static str {
 fn ts_type(ty: FieldType, nullable: bool) -> String {
     let base = match ty {
         FieldType::Integer | FieldType::Real => "number",
-        FieldType::Text => "string",
+        FieldType::Text | FieldType::DateTime => "string",
         FieldType::Boolean => "boolean",
     };
     if nullable {
@@ -2091,6 +2134,7 @@ fn admin_field_type(ty: FieldType) -> &'static str {
         FieldType::Text => "text",
         FieldType::Boolean => "boolean",
         FieldType::Real => "real",
+        FieldType::DateTime => "datetime",
     }
 }
 

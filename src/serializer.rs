@@ -1,6 +1,8 @@
 use std::{future::Future, marker::PhantomData, pin::Pin};
 
-use che_orm::{FieldInfo, FieldType, Model, SqliteBackend, SqliteModel, SqliteValue};
+use che_orm::{
+    FieldInfo, FieldType, Model, NaiveDateTime, SqliteBackend, SqliteModel, SqliteValue,
+};
 use serde_json::{Map, Value};
 
 pub trait RelatedSerializer: std::fmt::Debug + Send + Sync {
@@ -431,6 +433,14 @@ fn json_to_sqlite_value(field: &FieldInfo, value: Value) -> Result<SqliteValue> 
                     expected: "number",
                 })
         }
+        FieldType::DateTime => value
+            .as_str()
+            .and_then(parse_datetime)
+            .map(SqliteValue::from)
+            .ok_or_else(|| SerializerError::InvalidType {
+                field: field.rust_name.to_string(),
+                expected: "datetime string",
+            }),
     }
 }
 
@@ -466,12 +476,24 @@ fn validate_type(field: &str, ty: FieldType, value: &Value) -> Result<()> {
             }
             "number"
         }
+        FieldType::DateTime => {
+            if value.as_str().and_then(parse_datetime).is_some() {
+                return Ok(());
+            }
+            "datetime string"
+        }
     };
 
     Err(SerializerError::InvalidType {
         field: field.to_string(),
         expected,
     })
+}
+
+fn parse_datetime(value: &str) -> Option<NaiveDateTime> {
+    NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")
+        .or_else(|_| NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S"))
+        .ok()
 }
 
 fn validate_max_length(field: &str, max_length: u32, value: &Value) -> Result<()> {

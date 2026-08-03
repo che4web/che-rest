@@ -2,6 +2,44 @@
 
 Base REST layer for `che-orm` applications.
 
+## Start a Project
+
+Create a new runnable `che-rest` application:
+
+```bash
+cargo run --bin che-rest -- startproject my_project
+cd my_project
+cargo run
+```
+
+The generated project includes `app.toml`, a server entrypoint, an empty `apps::installed_apps()`
+registry, and a local `manage` binary. Create the first app with:
+
+```bash
+cargo run --bin manage -- startapp users
+```
+
+By default the generator assumes this repo layout:
+
+```text
+../che-rest
+../che-orm/crates/che-orm
+```
+
+Override paths when needed:
+
+```bash
+cargo run --bin che-rest -- startproject my_project \
+  --che-rest-path ../che-rest \
+  --che-orm-path ../che-orm/crates/che-orm
+```
+
+Include the built-in auth module in the generated app registry:
+
+```bash
+cargo run --bin che-rest -- startproject my_project --with-auth
+```
+
 ## Management
 
 Applications define one installed app list and use it for both the API server and management commands:
@@ -26,6 +64,27 @@ let app = Server::new(state)
 ```
 
 Installed app routes are served under `/api` by default. A viewset registered as `"/users"` is exposed as `/api/users`.
+Swagger UI is exposed at `/api/` and the OpenAPI JSON schema at `/api/openapi.json`.
+Customize the displayed API metadata during server setup:
+
+```rust
+let app = Server::new(state)
+    .install(apps::installed_apps())
+    .openapi_title("My API")
+    .openapi_version("0.1.0")
+    .build()
+    .await?;
+```
+
+Disable the runtime Swagger UI if needed:
+
+```rust
+let app = Server::new(state)
+    .install(apps::installed_apps())
+    .swagger_ui(false)
+    .build()
+    .await?;
+```
 
 ## Auth
 
@@ -128,6 +187,28 @@ src/generated/
   models.ts
   api.ts
 ```
+
+Generate an OpenAPI 3.0 JSON schema from installed viewsets, serializers, and filters:
+
+```bash
+cargo run --bin manage -- generate-openapi --out openapi.json
+```
+
+Configure the generated API metadata:
+
+```bash
+cargo run --bin manage -- generate-openapi \
+  --out openapi.json \
+  --title "My API" \
+  --version "0.1.0" \
+  --api-prefix /api
+```
+
+The generator describes CRUD routes registered with `ModuleContext::viewset` and
+`viewset_with`, including list filters, `limit`, `offset`, and `ordering` query
+parameters. Custom `extra_routes()` are not included automatically.
+The same schema is also served by running applications at `/api/openapi.json`, with
+Swagger UI available at `/api/` by default.
 
 Generate a standalone Vue admin project from installed app metadata:
 

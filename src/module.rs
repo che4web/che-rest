@@ -1,10 +1,11 @@
-use axum::{Extension, Router, middleware};
+use axum::{Extension, Json, Router, middleware, response::Html, routing::get};
 use che_orm::{FieldType, Model, ModelSchema, SqliteModel, create_table_sql};
 
 use crate::{
     auth,
     error::AppResult,
     filters::FilterSet,
+    openapi,
     serializer::{ModelSerializer, Serializer},
     state::AppState,
     views::{ModelViewSet, ViewSet},
@@ -225,6 +226,9 @@ pub struct Server {
     state: AppState,
     modules: Vec<Box<dyn AppModule>>,
     api_prefix: String,
+    openapi_title: String,
+    openapi_version: String,
+    swagger_ui_enabled: bool,
 }
 
 impl Server {
@@ -233,6 +237,9 @@ impl Server {
             state,
             modules: Vec::new(),
             api_prefix: "/api".to_string(),
+            openapi_title: "che-rest API".to_string(),
+            openapi_version: "0.1.0".to_string(),
+            swagger_ui_enabled: true,
         }
     }
 
@@ -254,6 +261,21 @@ impl Server {
         self
     }
 
+    pub fn openapi_title(mut self, title: impl Into<String>) -> Self {
+        self.openapi_title = title.into();
+        self
+    }
+
+    pub fn openapi_version(mut self, version: impl Into<String>) -> Self {
+        self.openapi_version = version.into();
+        self
+    }
+
+    pub fn swagger_ui(mut self, enabled: bool) -> Self {
+        self.swagger_ui_enabled = enabled;
+        self
+    }
+
     pub async fn build(self) -> AppResult<Router> {
         let mut ctx = ModuleContext::new();
 
@@ -262,21 +284,57 @@ impl Server {
         }
 
         let auth_enabled = ctx.auth_enabled();
+        let api_endpoints = ctx.api_endpoints().to_vec();
 
         for sql in ctx.sql {
             self.state.db().apply_sql(&sql).await?;
         }
 
-        let mut api_router = Router::new();
+        let openapi_spec = openapi::openapi_json(
+            &api_endpoints,
+            openapi::OpenApiOptions {
+                title: self.openapi_title.clone(),
+                version: self.openapi_version.clone(),
+                api_prefix: self.api_prefix.clone(),
+            },
+        );
+        let openapi_json = openapi_spec.clone();
+        let mut docs_router = Router::new().route(
+            "/openapi.json",
+            get(move || async move { Json(openapi_json.clone()) }),
+        );
+
+        if self.swagger_ui_enabled {
+            let openapi_json_url =
+                format!("{}/openapi.json", self.api_prefix.trim_end_matches('/'));
+            let swagger_html = openapi::swagger_ui_html(&openapi_json_url, &self.openapi_title);
+            docs_router =
+                docs_router.route("/", get(move || async move { Html(swagger_html.clone()) }));
+        }
+
+        let mut app_router = Router::new();
         for module_router in ctx.routers {
-            api_router = api_router.merge(module_router);
+            app_router = app_router.merge(module_router);
         }
 
         if auth_enabled {
-            api_router = api_router.layer(middleware::from_fn(auth::auth_middleware));
+            app_router = app_router.layer(middleware::from_fn(auth::auth_middleware));
         }
 
+        let api_router = docs_router.merge(app_router);
+
         let mut router = Router::new().nest(&self.api_prefix, api_router);
+
+        if self.swagger_ui_enabled {
+            let openapi_json_url =
+                format!("{}/openapi.json", self.api_prefix.trim_end_matches('/'));
+            let swagger_html = openapi::swagger_ui_html(&openapi_json_url, &self.openapi_title);
+            let swagger_slash_path = format!("{}/", self.api_prefix.trim_end_matches('/'));
+            router = router.route(
+                &swagger_slash_path,
+                get(move || async move { Html(swagger_html.clone()) }),
+            );
+        }
 
         if auth_enabled {
             router = router.merge(auth::views::routes());
