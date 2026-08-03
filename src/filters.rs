@@ -243,6 +243,9 @@ fn parse_value(field: &FieldInfo, value: &str) -> Result<SqliteValue, FilterErro
         FieldType::DateTime => parse_datetime(value)
             .map(SqliteValue::from)
             .ok_or_else(|| invalid_value(field, "datetime string")),
+        FieldType::Json => serde_json::from_str::<serde_json::Value>(value)
+            .map(SqliteValue::from)
+            .map_err(|_| invalid_value(field, "json")),
     }
 }
 

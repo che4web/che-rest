@@ -145,15 +145,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Create a new app module in `src/apps/<name>`:
 
 ```bash
-cargo run --bin manage -- startapp users
+cargo run --bin manage -- startapp taskapp
 ```
+
+By default `startapp` creates one model from the app name. If the app name ends with
+`app`, that suffix is removed first, so `taskapp` creates model `Task`.
+Pass one or more `--model` options to generate specific models:
+
+```bash
+cargo run --bin manage -- startapp taskapp --model Task --model Comment
+```
+
+Generated tables use `<app>_<model_snake_case>` names, for example `taskapp_task`.
+Routes use the model snake-case without adding an `s`, for example `/api/task/`.
 
 Generated files:
 
 ```text
 src/apps/
   mod.rs
-  users/
+  taskapp/
     mod.rs
     models.rs
     serializers.rs
@@ -164,7 +175,7 @@ src/apps/
 Then add the app to `apps::installed_apps()`:
 
 ```rust
-InstalledApps::new().add(users::module())
+InstalledApps::new().add(taskapp::module())
 ```
 
 Create app-scoped migrations from the installed app metadata:

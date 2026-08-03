@@ -274,6 +274,7 @@ fn field_schema(ty: FieldType, nullable: bool) -> Value {
         FieldType::Boolean => json!({ "type": "boolean" }),
         FieldType::Real => json!({ "type": "number", "format": "double" }),
         FieldType::DateTime => json!({ "type": "string", "format": "date-time" }),
+        FieldType::Json => json!({}),
     };
 
     if nullable {

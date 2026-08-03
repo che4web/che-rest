@@ -441,6 +441,7 @@ fn json_to_sqlite_value(field: &FieldInfo, value: Value) -> Result<SqliteValue> 
                 field: field.rust_name.to_string(),
                 expected: "datetime string",
             }),
+        FieldType::Json => Ok(SqliteValue::from(value)),
     }
 }
 
@@ -482,6 +483,7 @@ fn validate_type(field: &str, ty: FieldType, value: &Value) -> Result<()> {
             }
             "datetime string"
         }
+        FieldType::Json => return Ok(()),
     };
 
     Err(SerializerError::InvalidType {

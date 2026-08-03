@@ -27,6 +27,9 @@ enum Command {
 
         #[arg(long, default_value = "src/apps")]
         apps_dir: PathBuf,
+
+        #[arg(long = "model")]
+        models: Vec<String>,
     },
     Makemigrations {
         app: String,
@@ -106,7 +109,11 @@ impl Management {
 
     async fn run_from(self, cli: Cli) -> ManageResult<()> {
         match cli.command {
-            Command::Startapp { name, apps_dir } => startapp(&name, apps_dir)?,
+            Command::Startapp {
+                name,
+                apps_dir,
+                models,
+            } => startapp(&name, apps_dir, models)?,
             Command::Makemigrations {
                 app,
                 apps_dir,
@@ -668,6 +675,7 @@ fn ts_type(ty: FieldType, nullable: bool) -> String {
         FieldType::Integer | FieldType::Real => "number",
         FieldType::Text | FieldType::DateTime => "string",
         FieldType::Boolean => "boolean",
+        FieldType::Json => "unknown",
     };
     if nullable {
         format!("{base} | null")
@@ -2135,6 +2143,7 @@ fn admin_field_type(ty: FieldType) -> &'static str {
         FieldType::Boolean => "boolean",
         FieldType::Real => "real",
         FieldType::DateTime => "datetime",
+        FieldType::Json => "json",
     }
 }
 
@@ -2188,8 +2197,20 @@ fn migrations_dir(apps_dir: &std::path::Path, app: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/auth/migrations")
 }
 
-fn startapp(name: &str, apps_dir: PathBuf) -> ManageResult<()> {
+#[derive(Debug, Clone)]
+struct GeneratedModel {
+    rust_name: String,
+    snake_name: String,
+    table_name: String,
+    const_name: String,
+    serializer_fn: String,
+    filterset_fn: String,
+    viewset_name: String,
+}
+
+fn startapp(name: &str, apps_dir: PathBuf, models: Vec<String>) -> ManageResult<()> {
     validate_app_name(name)?;
+    let models = generated_models(name, models)?;
 
     let app_dir = apps_dir.join(name);
     if app_dir.exists() {
@@ -2197,18 +2218,69 @@ fn startapp(name: &str, apps_dir: PathBuf) -> ManageResult<()> {
     }
 
     fs::create_dir_all(&app_dir)?;
-    fs::write(app_dir.join("mod.rs"), mod_template(name))?;
-    fs::write(app_dir.join("models.rs"), models_template(name))?;
-    fs::write(app_dir.join("serializers.rs"), serializers_template(name))?;
-    fs::write(app_dir.join("filters.rs"), filters_template(name))?;
-    fs::write(app_dir.join("views.rs"), views_template(name))?;
+    fs::write(app_dir.join("mod.rs"), mod_template(name, &models))?;
+    fs::write(app_dir.join("models.rs"), models_template(&models))?;
+    fs::write(
+        app_dir.join("serializers.rs"),
+        serializers_template(&models),
+    )?;
+    fs::write(app_dir.join("filters.rs"), filters_template(&models))?;
+    fs::write(app_dir.join("views.rs"), views_template(&models))?;
 
     update_apps_mod(&apps_dir, name)?;
 
     println!("created app {}", app_dir.display());
+    println!(
+        "created models: {}",
+        models
+            .iter()
+            .map(|model| model.rust_name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     println!("add it to apps::installed_apps(): .add({name}::module())");
 
     Ok(())
+}
+
+fn generated_models(app: &str, models: Vec<String>) -> ManageResult<Vec<GeneratedModel>> {
+    let models = if models.is_empty() {
+        vec![default_model_name(app)]
+    } else {
+        models
+    };
+
+    let mut generated = Vec::new();
+    for model in models {
+        validate_model_name(&model)?;
+        let snake_name = pascal_to_snake(&model);
+        if generated
+            .iter()
+            .any(|existing: &GeneratedModel| existing.snake_name == snake_name)
+        {
+            return Err(format!("duplicate model name after normalization: {model}").into());
+        }
+
+        generated.push(GeneratedModel {
+            rust_name: model.clone(),
+            snake_name: snake_name.clone(),
+            table_name: format!("{app}_{snake_name}"),
+            const_name: snake_name.to_ascii_uppercase(),
+            serializer_fn: format!("{snake_name}_serializer"),
+            filterset_fn: format!("{snake_name}_filterset"),
+            viewset_name: format!("{model}ViewSet"),
+        });
+    }
+
+    Ok(generated)
+}
+
+fn default_model_name(app: &str) -> String {
+    let base = app
+        .strip_suffix("app")
+        .filter(|base| !base.is_empty())
+        .unwrap_or(app);
+    camel_case(base)
 }
 
 fn update_apps_mod(apps_dir: &std::path::Path, name: &str) -> ManageResult<()> {
@@ -2290,9 +2362,38 @@ fn validate_app_name(name: &str) -> ManageResult<()> {
     Ok(())
 }
 
-fn mod_template(name: &str) -> String {
-    let module_type = format!("{}Module", plural_camel(name));
-    let model = singular_camel(name);
+fn validate_model_name(name: &str) -> ManageResult<()> {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return Err("model name cannot be empty".into());
+    };
+    if !first.is_ascii_uppercase() {
+        return Err("model name must start with an uppercase ascii letter".into());
+    }
+    if !chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+        return Err("model name must contain only ascii letters, digits, and underscores".into());
+    }
+    Ok(())
+}
+
+fn mod_template(name: &str, models: &[GeneratedModel]) -> String {
+    let module_type = format!("{}Module", camel_case(name));
+    let mut registrations = String::new();
+    for model in models {
+        registrations.push_str(&format!(
+            r#"        ctx.viewset::<models::{rust_name}>(
+            "/{snake_name}",
+            serializers::{serializer_fn}(),
+            filters::{filterset_fn}(),
+        );
+"#,
+            rust_name = model.rust_name,
+            snake_name = model.snake_name,
+            serializer_fn = model.serializer_fn,
+            filterset_fn = model.filterset_fn,
+        ));
+    }
+
     format!(
         r#"pub mod filters;
 pub mod models;
@@ -2313,112 +2414,179 @@ impl AppModule for {module_type} {{
     }}
 
     fn init(&self, ctx: &mut ModuleContext) {{
-        ctx.viewset::<models::{model}>(
-            "/{name}",
-            serializers::{fn_name}_serializer(),
-            filters::{fn_name}_filterset(),
-        );
-    }}
+{registrations}    }}
 }}
-"#,
-        fn_name = singular_name(name)
+"#
     )
 }
 
-fn models_template(name: &str) -> String {
-    let model = singular_camel(name);
-    format!(
-        r#"use che_orm::Model;
-
-#[derive(Debug, Clone, Model)]
-#[model(table = "{name}")]
-pub struct {model} {{
+fn models_template(models: &[GeneratedModel]) -> String {
+    let mut out = String::from("use che_orm::{Model, NaiveDateTime};\n\n");
+    for model in models {
+        out.push_str(&format!(
+            r#"#[derive(Debug, Clone, Model)]
+#[model(table = "{table_name}")]
+pub struct {rust_name} {{
     #[field(primary_key)]
     pub id: i64,
 
     pub name: String,
+
+    #[field(auto_now_add)]
+    pub created_at: NaiveDateTime,
+
+    #[field(auto_now)]
+    pub updated_at: NaiveDateTime,
 }}
-"#
-    )
+
+"#,
+            table_name = model.table_name,
+            rust_name = model.rust_name,
+        ));
+    }
+    out
 }
 
-fn serializers_template(name: &str) -> String {
-    let model = singular_camel(name);
-    let fn_name = singular_name(name);
-    format!(
-        r#"use che_rest::{{Field, ModelSerializer}};
+fn serializers_template(models: &[GeneratedModel]) -> String {
+    let mut out = String::from("use che_rest::{Field, ModelSerializer};\n\nuse super::models::{");
+    out.push_str(
+        &models
+            .iter()
+            .map(|model| model.rust_name.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+    out.push_str("};\n\n");
 
-use super::models::{model};
-
-static {const_name}_FIELDS: &[Field] = &[
+    for model in models {
+        out.push_str(&format!(
+            r#"static {const_name}_FIELDS: &[Field] = &[
     Field::new("id").read_only(),
     Field::new("name"),
+    Field::new("created_at").read_only(),
+    Field::new("updated_at").read_only(),
 ];
 
-pub fn {fn_name}_serializer() -> ModelSerializer<{model}> {{
+pub fn {serializer_fn}() -> ModelSerializer<{rust_name}> {{
     ModelSerializer::new({const_name}_FIELDS)
 }}
+
 "#,
-        const_name = name.to_ascii_uppercase()
-    )
+            const_name = model.const_name,
+            serializer_fn = model.serializer_fn,
+            rust_name = model.rust_name,
+        ));
+    }
+    out
 }
 
-fn filters_template(name: &str) -> String {
-    let model = singular_camel(name);
-    let fn_name = singular_name(name);
-    format!(
-        r#"use che_rest::{{Filter, FilterSet}};
+fn filters_template(models: &[GeneratedModel]) -> String {
+    let mut out = String::from("use che_rest::{Filter, FilterSet};\n\nuse super::models::{");
+    out.push_str(
+        &models
+            .iter()
+            .map(|model| model.rust_name.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+    out.push_str("};\n\n");
 
-use super::models::{model};
-
-static {const_name}_FILTERS: &[Filter] = &[
+    for model in models {
+        out.push_str(&format!(
+            r#"static {const_name}_FILTERS: &[Filter] = &[
     Filter::exact("name"),
     Filter::contains("name"),
+    Filter::gte("created_at"),
+    Filter::lte("created_at"),
+    Filter::gte("updated_at"),
+    Filter::lte("updated_at"),
 ];
 
-pub fn {fn_name}_filterset() -> FilterSet<{model}> {{
+pub fn {filterset_fn}() -> FilterSet<{rust_name}> {{
     FilterSet::new({const_name}_FILTERS)
 }}
+
 "#,
-        const_name = name.to_ascii_uppercase()
-    )
-}
-
-fn views_template(name: &str) -> String {
-    let model = singular_camel(name);
-    let viewset = format!("{}ViewSet", singular_camel(name));
-    let fn_name = singular_name(name);
-    format!(
-        r#"use axum::Router;
-use che_rest::ModelViewSet;
-
-use super::{{filters::{fn_name}_filterset, models::{model}, serializers::{fn_name}_serializer}};
-
-type {viewset} = ModelViewSet<{model}>;
-
-pub fn routes() -> Router {{
-    {viewset}::router("/{name}", {fn_name}_serializer(), {fn_name}_filterset())
-}}
-"#
-    )
-}
-
-fn singular_name(name: &str) -> String {
-    if let Some(stem) = name.strip_suffix("ies") {
-        format!("{stem}y")
-    } else if name.ends_with("ss") {
-        name.to_string()
-    } else {
-        name.strip_suffix('s').unwrap_or(name).to_string()
+            const_name = model.const_name,
+            filterset_fn = model.filterset_fn,
+            rust_name = model.rust_name,
+        ));
     }
+    out
 }
 
-fn singular_camel(name: &str) -> String {
-    camel_case(&singular_name(name))
+fn views_template(models: &[GeneratedModel]) -> String {
+    let mut out = String::from(
+        "use axum::Router;\nuse che_rest::ModelViewSet;\n\nuse super::{\n    filters::{",
+    );
+    out.push_str(
+        &models
+            .iter()
+            .map(|model| model.filterset_fn.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+    out.push_str("},\n    models::{");
+    out.push_str(
+        &models
+            .iter()
+            .map(|model| model.rust_name.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+    out.push_str("},\n    serializers::{");
+    out.push_str(
+        &models
+            .iter()
+            .map(|model| model.serializer_fn.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+    out.push_str("},\n};\n\n");
+
+    for model in models {
+        out.push_str(&format!(
+            "type {viewset_name} = ModelViewSet<{rust_name}>;\n",
+            viewset_name = model.viewset_name,
+            rust_name = model.rust_name,
+        ));
+    }
+    out.push_str("\npub fn routes() -> Router {\n    Router::new()");
+    for model in models {
+        out.push_str(&format!(
+            r#"
+        .merge({viewset_name}::router(
+            "/{snake_name}",
+            {serializer_fn}(),
+            {filterset_fn}(),
+        ))"#,
+            viewset_name = model.viewset_name,
+            snake_name = model.snake_name,
+            serializer_fn = model.serializer_fn,
+            filterset_fn = model.filterset_fn,
+        ));
+    }
+    out.push_str("\n}\n");
+    out
 }
 
-fn plural_camel(name: &str) -> String {
-    camel_case(name)
+fn pascal_to_snake(name: &str) -> String {
+    let mut out = String::new();
+    for (index, ch) in name.chars().enumerate() {
+        if ch == '_' {
+            if !out.ends_with('_') {
+                out.push('_');
+            }
+        } else if ch.is_ascii_uppercase() {
+            if index > 0 && !out.ends_with('_') {
+                out.push('_');
+            }
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out.trim_matches('_').to_string()
 }
 
 fn camel_case(name: &str) -> String {
