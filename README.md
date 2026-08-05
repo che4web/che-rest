@@ -76,6 +76,92 @@ let app = Server::new(state)
     .await?;
 ```
 
+## Typed ViewSets
+
+Generated and custom viewsets use associated types for their serializer, filters, and permissions:
+
+```rust
+use che_rest::{AllowAny, Field, Filter, FilterSetSpec, Serializer, ViewSet};
+
+#[derive(Clone, Copy, Default)]
+pub struct TaskSerializer;
+
+impl Serializer for TaskSerializer {
+    type Model = Task;
+
+    fn fields(&self) -> &'static [Field] {
+        TASK_FIELDS
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct TaskFilterSet;
+
+impl FilterSetSpec for TaskFilterSet {
+    type Model = Task;
+
+    fn filters(&self) -> &'static [Filter] {
+        TASK_FILTERS
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct TaskViewSet;
+
+#[che_rest::async_trait]
+impl ViewSet for TaskViewSet {
+    type Model = Task;
+    type Serializer = TaskSerializer;
+    type FilterSet = TaskFilterSet;
+    type Permission = AllowAny;
+}
+```
+
+Register a typed viewset with `viewset_with`; this also registers its model schema and API metadata:
+
+```rust
+ctx.viewset_with("/tasks", TaskViewSet);
+```
+
+`Serializer` and `FilterSetSpec` types must implement `Default`. Their default values are used by the
+viewset, so no `serializer()` or `filterset()` method is required. Built-in permissions include
+`AllowAny`, `IsAuthenticated`, and `IsAdminUser`.
+
+Relations use the related serializer type directly:
+
+```rust
+Field::related::<EmployeeSerializer>("author", "author_id")
+```
+
+Fields populated by the server can be marked as system fields. They are rejected from client input,
+omitted from responses, and validated only through `system_create_values`:
+
+```rust
+static TASK_FIELDS: &[Field] = &[
+    Field::new("author_id").system(),
+    Field::new("title"),
+];
+
+#[che_rest::async_trait]
+impl ViewSet for TaskViewSet {
+    type Model = Task;
+    type Serializer = TaskSerializer;
+    type FilterSet = TaskFilterSet;
+    type Permission = IsAuthenticated;
+
+    async fn system_create_values(
+        &self,
+        state: &AppState,
+        extensions: &axum::http::Extensions,
+    ) -> che_rest::AppResult<serde_json::Map<String, serde_json::Value>> {
+        let employee = current_employee(state, extensions).await?;
+        Ok([(String::from("author_id"), serde_json::json!(employee.id))]
+            .into_iter()
+            .collect())
+    }
+}
+```
+
 Disable the runtime Swagger UI if needed:
 
 ```rust
@@ -88,7 +174,8 @@ let app = Server::new(state)
 
 ## Auth
 
-`che-rest` includes an optional auth app. Install it to enable token authentication for all routes under `/api`:
+`che-rest` includes an optional auth app. Install it to resolve token credentials and add
+`CurrentUser` to request extensions:
 
 ```rust
 pub fn installed_apps() -> InstalledApps {
@@ -125,6 +212,10 @@ Use the returned token for API requests:
 ```text
 Authorization: Token <token>
 ```
+
+Authentication is optional at the middleware level. Protect a typed viewset by selecting
+`type Permission = IsAuthenticated`; unauthenticated requests then receive `401`. Use
+`AllowAny` for public viewsets and `IsAdminUser` for administrator-only viewsets.
 
 Generated TypeScript clients expose `setAuthToken(token)` in `api_client.ts`.
 
@@ -171,6 +262,9 @@ src/apps/
     filters.rs
     views.rs
 ```
+
+The generated `serializers.rs`, `filters.rs`, and `views.rs` use the typed API shown above;
+the app module registers each generated viewset with `ctx.viewset_with(...)`.
 
 Then add the app to `apps::installed_apps()`:
 
