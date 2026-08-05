@@ -1,6 +1,8 @@
 use std::{collections::HashMap, marker::PhantomData};
 
-use che_orm::{FieldInfo, FieldType, Model, NaiveDateTime, QueryBuilder, SqliteModel, SqliteValue};
+use che_orm::{
+    FieldInfo, FieldType, Model, ModelField, NaiveDateTime, QueryBuilder, SqliteModel, SqliteValue,
+};
 
 use crate::error::AppResult;
 
@@ -15,39 +17,40 @@ pub enum Lookup {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct Filter {
+pub struct Filter<M = ()> {
     pub name: &'static str,
     pub source: &'static str,
     pub lookup: Lookup,
+    _model: PhantomData<fn() -> M>,
 }
 
-impl Filter {
-    pub const fn exact(name: &'static str) -> Self {
-        Self::new(name, name, Lookup::Exact)
+impl<M> Filter<M> {
+    pub const fn exact(field: ModelField<M>) -> Self {
+        Self::new(field.db_name(), field.db_name(), Lookup::Exact)
     }
 
-    pub const fn contains(name: &'static str) -> Self {
-        Self::new(name, name, Lookup::Contains)
+    pub const fn contains(field: ModelField<M>) -> Self {
+        Self::new(field.db_name(), field.db_name(), Lookup::Contains)
     }
 
-    pub const fn gt(name: &'static str) -> Self {
-        Self::new(name, name, Lookup::Gt)
+    pub const fn gt(field: ModelField<M>) -> Self {
+        Self::new(field.db_name(), field.db_name(), Lookup::Gt)
     }
 
-    pub const fn gte(name: &'static str) -> Self {
-        Self::new(name, name, Lookup::Gte)
+    pub const fn gte(field: ModelField<M>) -> Self {
+        Self::new(field.db_name(), field.db_name(), Lookup::Gte)
     }
 
-    pub const fn lt(name: &'static str) -> Self {
-        Self::new(name, name, Lookup::Lt)
+    pub const fn lt(field: ModelField<M>) -> Self {
+        Self::new(field.db_name(), field.db_name(), Lookup::Lt)
     }
 
-    pub const fn lte(name: &'static str) -> Self {
-        Self::new(name, name, Lookup::Lte)
+    pub const fn lte(field: ModelField<M>) -> Self {
+        Self::new(field.db_name(), field.db_name(), Lookup::Lte)
     }
 
-    pub const fn exact_source(name: &'static str, source: &'static str) -> Self {
-        Self::new(name, source, Lookup::Exact)
+    pub const fn exact_source(name: &'static str, field: ModelField<M>) -> Self {
+        Self::exact_as(name, field)
     }
 
     pub const fn new(name: &'static str, source: &'static str, lookup: Lookup) -> Self {
@@ -55,14 +58,19 @@ impl Filter {
             name,
             source,
             lookup,
+            _model: PhantomData,
         }
+    }
+
+    pub const fn exact_as(name: &'static str, field: ModelField<M>) -> Self {
+        Self::new(name, field.db_name(), Lookup::Exact)
     }
 }
 
 #[derive(Debug)]
-pub struct FilterSet<M> {
-    filters: &'static [Filter],
-    _model: PhantomData<M>,
+pub struct FilterSet<M: 'static> {
+    filters: &'static [Filter<M>],
+    _model: PhantomData<fn() -> M>,
 }
 
 impl<M> Default for FilterSet<M> {
@@ -77,7 +85,7 @@ impl<M> Default for FilterSet<M> {
 pub trait FilterSetSpec: Clone + Send + Sync + 'static {
     type Model: SqliteModel;
 
-    fn filters(&self) -> &'static [Filter];
+    fn filters(&self) -> &'static [Filter<Self::Model>];
 
     fn filterset(&self) -> FilterSet<Self::Model> {
         FilterSet::new(self.filters())
@@ -98,7 +106,7 @@ where
 {
     type Model = M;
 
-    fn filters(&self) -> &'static [Filter] {
+    fn filters(&self) -> &'static [Filter<M>] {
         self.filters
     }
 }
@@ -107,14 +115,14 @@ impl<M> FilterSet<M>
 where
     M: SqliteModel,
 {
-    pub const fn new(filters: &'static [Filter]) -> Self {
+    pub const fn new(filters: &'static [Filter<M>]) -> Self {
         Self {
             filters,
             _model: PhantomData,
         }
     }
 
-    pub fn filters(&self) -> &'static [Filter] {
+    pub fn filters(&self) -> &'static [Filter<M>] {
         self.filters
     }
 
@@ -208,14 +216,14 @@ where
         model_field::<M>(source)?;
 
         Ok(if value.starts_with('-') {
-            query.order_by(&format!("-{source}"))
+            query.order_by(format!("-{source}").as_str())
         } else {
             query.order_by(source)
         })
     }
 }
 
-impl Filter {
+impl<M> Filter<M> {
     pub fn query_name(&self) -> String {
         match self.lookup {
             Lookup::Exact => self.name.to_string(),
@@ -274,6 +282,16 @@ fn parse_value(field: &FieldInfo, value: &str) -> Result<SqliteValue, FilterErro
             .map(SqliteValue::from)
             .map_err(|_| invalid_value(field, "integer")),
         FieldType::Text => Ok(SqliteValue::from(value)),
+        FieldType::Choice => {
+            if field
+                .choices
+                .is_some_and(|choices| choices.contains(&value))
+            {
+                Ok(SqliteValue::from(value))
+            } else {
+                Err(invalid_value(field, "allowed choice"))
+            }
+        }
         FieldType::Boolean => parse_bool(value)
             .map(SqliteValue::from)
             .ok_or_else(|| invalid_value(field, "boolean")),

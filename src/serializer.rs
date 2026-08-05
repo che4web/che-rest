@@ -199,6 +199,9 @@ pub enum SerializerError {
         expected: &'static str,
     },
 
+    #[error("invalid choice for field {field}: {value}")]
+    InvalidChoice { field: String, value: String },
+
     #[error("field {field} exceeds max length {max_length}")]
     MaxLengthExceeded { field: String, max_length: u32 },
 
@@ -397,6 +400,7 @@ fn validate_object_internal<M: Model>(
             }
             Some(value) => {
                 validate_type(field.name, model_field.ty, value)?;
+                validate_choice(field.name, model_field, value)?;
                 if let Some(max_length) = field.max_length {
                     validate_max_length(field.name, max_length, value)?;
                 }
@@ -455,6 +459,7 @@ fn validated_system_values<M: Model>(
             }
         } else {
             validate_type(name, model_field.ty, value)?;
+            validate_choice(name, model_field, value)?;
             if let Some(max_length) = field.max_length {
                 validate_max_length(name, max_length, value)?;
             }
@@ -483,7 +488,7 @@ fn json_to_sqlite_value(field: &FieldInfo, value: Value) -> Result<SqliteValue> 
                 field: field.rust_name.to_string(),
                 expected: "integer",
             }),
-        FieldType::Text => {
+        FieldType::Text | FieldType::Choice => {
             value
                 .as_str()
                 .map(SqliteValue::from)
@@ -536,7 +541,7 @@ fn validate_type(field: &str, ty: FieldType, value: &Value) -> Result<()> {
             }
             "integer"
         }
-        FieldType::Text => {
+        FieldType::Text | FieldType::Choice => {
             if value.as_str().is_some() {
                 return Ok(());
             }
@@ -567,6 +572,28 @@ fn validate_type(field: &str, ty: FieldType, value: &Value) -> Result<()> {
         field: field.to_string(),
         expected,
     })
+}
+
+fn validate_choice(field: &str, model_field: &FieldInfo, value: &Value) -> Result<()> {
+    if model_field.ty != FieldType::Choice {
+        return Ok(());
+    }
+
+    let value = value.as_str().ok_or_else(|| SerializerError::InvalidType {
+        field: field.to_string(),
+        expected: "string",
+    })?;
+    if model_field
+        .choices
+        .is_some_and(|choices| choices.contains(&value))
+    {
+        Ok(())
+    } else {
+        Err(SerializerError::InvalidChoice {
+            field: field.to_string(),
+            value: value.to_string(),
+        })
+    }
 }
 
 fn parse_datetime(value: &str) -> Option<NaiveDateTime> {

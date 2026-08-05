@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
+import { adminModels } from "../generated/adminSchema";
 import type { AdminField, AdminModel } from "../generated/adminSchema";
+import AsyncRelationSelect from "./AsyncRelationSelect.vue";
 
 const props = defineProps<{
   model: AdminModel;
@@ -17,6 +19,19 @@ const error = ref("");
 const id = computed(() => Number(route.params.id));
 const isEdit = computed(() => Number.isFinite(id.value));
 const fields = computed(() => props.model.fields.filter((field) => !field.readOnly));
+
+function modelFor(field: AdminField) {
+  return adminModels.find((model) => model.name === field.relatedModel);
+}
+
+function relationValue(field: AdminField) {
+  const value = form.value[field.name];
+  return typeof value === "number" ? value : null;
+}
+
+function setRelationValue(field: AdminField, value: number | null) {
+  form.value[field.name] = value;
+}
 
 function emptyValue(field: AdminField) {
   return field.type === "boolean" ? false : "";
@@ -128,6 +143,24 @@ watch(() => [props.model.resource, route.params.id], loadObject, { immediate: tr
               <input :id="field.name" v-model="form[field.name]" class="form-check-input" type="checkbox" />
               <label class="form-check-label" :for="field.name">{{ field.label }}</label>
             </div>
+            <select
+              v-else-if="field.choices"
+              :id="field.name"
+              v-model="form[field.name]"
+              class="form-select"
+              :required="field.required && !field.hasDefault && !field.nullable"
+            >
+              <option v-if="field.nullable" :value="null">No selection</option>
+              <option v-for="choice in field.choices" :key="choice" :value="choice">{{ choice }}</option>
+            </select>
+            <AsyncRelationSelect
+              v-else-if="field.relatedModel && modelFor(field)"
+              :model-value="relationValue(field)"
+              :field="field"
+              :model="modelFor(field)!"
+              :nullable="field.nullable"
+              @update:model-value="setRelationValue(field, $event)"
+            />
             <template v-else>
               <label class="form-label" :for="field.name">{{ field.label }}</label>
               <input

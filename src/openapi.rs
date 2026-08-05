@@ -203,7 +203,12 @@ fn create_schema(endpoint: &ApiEndpoint) -> Value {
             .fields
             .iter()
             .filter(|field| !field.read_only)
-            .map(|field| (field.name.clone(), field_schema(field.ty, field.nullable)))
+            .map(|field| {
+                (
+                    field.name.clone(),
+                    field_schema(field.ty, field.nullable, field.choices.as_deref()),
+                )
+            })
             .collect(),
         endpoint
             .fields
@@ -220,7 +225,12 @@ fn update_schema(endpoint: &ApiEndpoint) -> Value {
             .fields
             .iter()
             .filter(|field| !field.read_only)
-            .map(|field| (field.name.clone(), field_schema(field.ty, field.nullable)))
+            .map(|field| {
+                (
+                    field.name.clone(),
+                    field_schema(field.ty, field.nullable, field.choices.as_deref()),
+                )
+            })
             .collect(),
         Vec::new(),
     )
@@ -263,14 +273,14 @@ fn response_field_schema(field: &ApiField) -> Value {
             schema
         }
         Some(model) => schema_ref(model),
-        None => field_schema(field.ty, field.nullable),
+        None => field_schema(field.ty, field.nullable, field.choices.as_deref()),
     }
 }
 
-fn field_schema(ty: FieldType, nullable: bool) -> Value {
+fn field_schema(ty: FieldType, nullable: bool, choices: Option<&[String]>) -> Value {
     let mut schema = match ty {
         FieldType::Integer => json!({ "type": "integer", "format": "int64" }),
-        FieldType::Text => json!({ "type": "string" }),
+        FieldType::Text | FieldType::Choice => json!({ "type": "string" }),
         FieldType::Boolean => json!({ "type": "boolean" }),
         FieldType::Real => json!({ "type": "number", "format": "double" }),
         FieldType::DateTime => json!({ "type": "string", "format": "date-time" }),
@@ -279,6 +289,9 @@ fn field_schema(ty: FieldType, nullable: bool) -> Value {
 
     if nullable {
         schema["nullable"] = json!(true);
+    }
+    if let Some(choices) = choices {
+        schema["enum"] = json!(choices);
     }
 
     schema
@@ -291,12 +304,9 @@ fn list_parameters(endpoint: &ApiEndpoint) -> Vec<Value> {
         query_parameter("ordering", json!({ "type": "string" })),
     ];
 
-    parameters.extend(
-        endpoint
-            .filters
-            .iter()
-            .map(|filter| query_parameter(&filter.name, field_schema(filter.ty, filter.nullable))),
-    );
+    parameters.extend(endpoint.filters.iter().map(|filter| {
+        query_parameter(&filter.name, field_schema(filter.ty, filter.nullable, None))
+    }));
 
     parameters
 }

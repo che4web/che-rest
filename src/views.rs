@@ -63,7 +63,7 @@ pub trait ViewSet: Clone + Send + Sync + 'static {
     }
 }
 
-pub struct DefaultViewSet<M> {
+pub struct DefaultViewSet<M: 'static> {
     serializer: ModelSerializer<M>,
     filterset: FilterSet<M>,
 }

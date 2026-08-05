@@ -127,6 +127,30 @@ ctx.viewset_with("/tasks", TaskViewSet);
 viewset, so no `serializer()` or `filterset()` method is required. Built-in permissions include
 `AllowAny`, `IsAuthenticated`, and `IsAdminUser`.
 
+The `Model` derive generates a `<Model>Fields` type with compile-time-safe database field constants.
+Use those constants when declaring filters:
+
+```rust
+static TASK_FILTERS: &[Filter<Task>] = &[
+    Filter::exact(TaskFields::COMPLETED),
+    Filter::contains(TaskFields::TITLE),
+    Filter::gte(TaskFields::CREATED_AT),
+];
+```
+
+The model type is part of `Filter<M>`, so a filter for one model cannot be accidentally used in
+another model's `FilterSet`. `Filter::exact_as("assignee", TaskFields::EXECUTOR_ID)` can be used
+when the public query name should differ from the database field name. Query builders also accept
+typed fields directly:
+
+```rust
+Task::objects(db)
+    .query()
+    .eq(TaskFields::COMPLETED, false)
+    .all()
+    .await?;
+```
+
 Relations use the related serializer type directly:
 
 ```rust

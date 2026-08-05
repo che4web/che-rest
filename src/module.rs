@@ -80,6 +80,7 @@ pub struct ApiField {
     pub required: bool,
     pub nullable: bool,
     pub has_default: bool,
+    pub choices: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -185,6 +186,9 @@ where
                 required: field.required,
                 nullable: field.nullable || model_field.nullable,
                 has_default: field.has_default() || model_field.default.is_some(),
+                choices: model_field
+                    .choices
+                    .map(|choices| choices.iter().map(|choice| choice.to_string()).collect()),
             })
         })
         .collect();

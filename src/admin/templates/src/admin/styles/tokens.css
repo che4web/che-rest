@@ -1,0 +1,24 @@
+:root {
+  --che-ink: #172033;
+  --che-muted: #69758b;
+  --che-subtle: #8b96aa;
+  --che-border: #e4e8f0;
+  --che-border-strong: #d7deea;
+  --che-surface: #ffffff;
+  --che-surface-soft: #f7f8fb;
+  --che-page: #f1f4f8;
+  --che-sidebar: #182131;
+  --che-sidebar-soft: #222d40;
+  --che-sidebar-text: #f6f8fc;
+  --che-sidebar-muted: #9ca9bc;
+  --che-accent: #3d63dd;
+  --che-accent-dark: #2f4fbd;
+  --che-accent-soft: #edf1ff;
+  --che-danger: #c43d55;
+  --che-danger-soft: #fff0f2;
+  --che-success: #21805d;
+  --che-radius-sm: 0.55rem;
+  --che-radius: 0.8rem;
+  --che-shadow: 0 0.55rem 1.8rem rgba(31, 43, 68, 0.07);
+  --che-shadow-hover: 0 0.9rem 2.5rem rgba(31, 43, 68, 0.12);
+}

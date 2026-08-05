@@ -429,12 +429,28 @@ static ADMIN_TEMPLATES: &[AdminTemplate] = &[
         content: include_str!("admin/templates/src/admin/components/GenericModelForm.vue"),
     },
     AdminTemplate {
+        path: "src/admin/components/AsyncRelationSelect.vue",
+        content: include_str!("admin/templates/src/admin/components/AsyncRelationSelect.vue"),
+    },
+    AdminTemplate {
         path: "src/admin/adminRoutes.ts",
         content: include_str!("admin/templates/src/admin/adminRoutes.ts"),
     },
     AdminTemplate {
         path: "src/admin/admin.css",
         content: include_str!("admin/templates/src/admin/admin.css"),
+    },
+    AdminTemplate {
+        path: "src/admin/styles/tokens.css",
+        content: include_str!("admin/templates/src/admin/styles/tokens.css"),
+    },
+    AdminTemplate {
+        path: "src/admin/styles/base.css",
+        content: include_str!("admin/templates/src/admin/styles/base.css"),
+    },
+    AdminTemplate {
+        path: "src/admin/styles/components.css",
+        content: include_str!("admin/templates/src/admin/styles/components.css"),
     },
 ];
 
@@ -673,7 +689,7 @@ fn optional_marker(field: &ApiField) -> &'static str {
 fn ts_type(ty: FieldType, nullable: bool) -> String {
     let base = match ty {
         FieldType::Integer | FieldType::Real => "number",
-        FieldType::Text | FieldType::DateTime => "string",
+        FieldType::Text | FieldType::DateTime | FieldType::Choice => "string",
         FieldType::Boolean => "boolean",
         FieldType::Json => "unknown",
     };
@@ -1046,7 +1062,7 @@ fn admin_schema_ts(endpoints: &[AdminEndpoint]) -> String {
 
     if endpoints.is_empty() {
         out.push_str(
-            "export type AdminFieldType = \"integer\" | \"text\" | \"boolean\" | \"real\";\n\n",
+            "export type AdminFieldType = \"integer\" | \"text\" | \"boolean\" | \"real\" | \"datetime\";\n\n",
         );
         out.push_str(admin_schema_types_ts());
         out.push_str("export const adminModels: AdminModel[] = [];\n");
@@ -1061,7 +1077,7 @@ fn admin_schema_ts(endpoints: &[AdminEndpoint]) -> String {
     }
     out.push_str("} from \"../../generated/api\";\n\n");
     out.push_str(
-        "export type AdminFieldType = \"integer\" | \"text\" | \"boolean\" | \"real\";\n\n",
+        "export type AdminFieldType = \"integer\" | \"text\" | \"boolean\" | \"real\" | \"datetime\";\n\n",
     );
     out.push_str(admin_schema_types_ts());
     out.push_str("export const adminModels: AdminModel[] = [\n");
@@ -1122,6 +1138,12 @@ fn admin_schema_ts(endpoints: &[AdminEndpoint]) -> String {
             out.push_str(&format!("        required: {},\n", field.required));
             out.push_str(&format!("        nullable: {},\n", field.nullable));
             out.push_str(&format!("        hasDefault: {},\n", field.has_default));
+            if let Some(choices) = &field.choices {
+                out.push_str(&format!(
+                    "        choices: {},\n",
+                    serde_json::to_string(choices).expect("serializing choices cannot fail")
+                ));
+            }
             if let Some(model) = related_model {
                 out.push_str(&format!("        relatedModel: {},\n", js_string(model)));
             }
@@ -1245,6 +1267,7 @@ fn admin_schema_types_ts() -> &'static str {
   required: boolean;
   nullable: boolean;
   hasDefault: boolean;
+  choices?: string[];
   relatedModel?: string;
   relationField?: string;
 }
@@ -2144,6 +2167,7 @@ fn admin_field_type(ty: FieldType) -> &'static str {
         FieldType::Real => "real",
         FieldType::DateTime => "datetime",
         FieldType::Json => "json",
+        FieldType::Choice => "text",
     }
 }
 
@@ -2486,7 +2510,7 @@ fn filters_template(models: &[GeneratedModel]) -> String {
     out.push_str(
         &models
             .iter()
-            .map(|model| model.rust_name.as_str())
+            .map(|model| format!("{}, {}Fields", model.rust_name, model.rust_name))
             .collect::<Vec<_>>()
             .join(", "),
     );
@@ -2494,13 +2518,13 @@ fn filters_template(models: &[GeneratedModel]) -> String {
 
     for model in models {
         out.push_str(&format!(
-            r#"static {const_name}_FILTERS: &[Filter] = &[
-    Filter::exact("name"),
-    Filter::contains("name"),
-    Filter::gte("created_at"),
-    Filter::lte("created_at"),
-    Filter::gte("updated_at"),
-    Filter::lte("updated_at"),
+            r#"static {const_name}_FILTERS: &[Filter<{rust_name}>] = &[
+    Filter::exact({rust_name}Fields::NAME),
+    Filter::contains({rust_name}Fields::NAME),
+    Filter::gte({rust_name}Fields::CREATED_AT),
+    Filter::lte({rust_name}Fields::CREATED_AT),
+    Filter::gte({rust_name}Fields::UPDATED_AT),
+    Filter::lte({rust_name}Fields::UPDATED_AT),
 ];
 
 #[derive(Clone, Copy, Default)]
@@ -2509,7 +2533,7 @@ pub struct {filterset_name};
 impl FilterSetSpec for {filterset_name} {{
     type Model = {rust_name};
 
-    fn filters(&self) -> &'static [Filter] {{
+    fn filters(&self) -> &'static [Filter<{rust_name}>] {{
         {const_name}_FILTERS
     }}
 }}
