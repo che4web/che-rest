@@ -2,7 +2,7 @@ use argon2::{
     Argon2,
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
 };
-use che_orm::Model;
+use che_orm::{Model, NaiveDateTime};
 
 #[derive(Debug, Clone, Model)]
 #[model(table = "auth_users")]
@@ -39,6 +39,27 @@ pub struct AuthToken {
 
     #[field(unique, max_length = 64)]
     pub key_hash: String,
+}
+
+#[derive(Debug, Clone, Model)]
+#[model(table = "auth_sessions")]
+pub struct AuthSession {
+    #[field(primary_key)]
+    pub id: i64,
+
+    #[field(foreign_key = User)]
+    pub user_id: i64,
+
+    #[field(unique, max_length = 64)]
+    pub key_hash: String,
+
+    pub csrf_hash: String,
+    pub data: String,
+    pub revision: i64,
+    pub expires_at: NaiveDateTime,
+
+    #[field(auto_now_add)]
+    pub created_at: NaiveDateTime,
 }
 
 pub fn hash_password(password: &str) -> Result<String, argon2::password_hash::Error> {

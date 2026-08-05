@@ -556,6 +556,7 @@ async fn createsuperuser(
     let db = SqliteBackend::connect(&database_url).await?;
     db.create_table::<auth::models::User>().await?;
     db.create_table::<auth::models::AuthToken>().await?;
+    db.create_table::<auth::models::AuthSession>().await?;
 
     let existing = auth::models::User::objects(&db)
         .query()
@@ -753,6 +754,9 @@ export interface ModelApi<
 
 export const apiClient = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL ?? "/api",
+  withCredentials: true,
+  xsrfCookieName: "che_rest_csrf",
+  xsrfHeaderName: "X-CSRF-Token",
   headers: {
     "Content-Type": "application/json",
   },

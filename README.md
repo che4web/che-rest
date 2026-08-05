@@ -243,6 +243,60 @@ Authentication is optional at the middleware level. Protect a typed viewset by s
 
 Generated TypeScript clients expose `setAuthToken(token)` in `api_client.ts`.
 
+### Cookie Sessions
+
+Token authentication and cookie sessions can be enabled together. Sessions use an `HttpOnly`
+cookie and a readable CSRF cookie. For same-origin applications, add optional configuration:
+
+```toml
+[auth.session]
+cookie_name = "che_rest_session"
+csrf_cookie_name = "che_rest_csrf"
+ttl_seconds = 604800
+secure = false # set true when serving over HTTPS
+same_site = "Lax"
+```
+
+Login with a session cookie:
+
+```bash
+curl -i -c cookies.txt -X POST http://127.0.0.1:3000/api-session-auth/login/ \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"secret"}'
+```
+
+Unsafe requests made with a session must include the value from the `che_rest_csrf` cookie in
+the `X-CSRF-Token` header. Token-authenticated requests do not require CSRF validation.
+
+Session data can be typed by a downstream application:
+
+```rust
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct AppSession {
+    active_workspace_id: Option<i64>,
+}
+
+impl che_rest::auth::SessionData for AppSession {}
+
+InstalledApps::new()
+    .add(che_rest::auth::module_with_session::<AppSession>());
+```
+
+Handlers can extract and persist the typed data:
+
+```rust
+async fn select_workspace(
+    mut session: che_rest::auth::Session<AppSession>,
+) -> che_rest::AppResult<()> {
+    session.data.active_workspace_id = Some(42);
+    session.save().await
+}
+```
+
+Session data is JSON stored server-side. Use `#[serde(default)]` when adding fields so existing
+sessions remain readable. Sessions are protected by optimistic revision locking.
+
 Admin-only routers can use `che_rest::auth::admin_required_middleware`. It allows users with `is_admin` or `is_superuser`.
 
 Project-local `src/bin/manage.rs`:
