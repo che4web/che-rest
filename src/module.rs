@@ -4,7 +4,7 @@ use che_orm::{FieldType, Model, ModelSchema, SqliteModel, create_table_sql};
 use crate::{
     auth,
     error::AppResult,
-    filters::FilterSet,
+    filters::{FilterSet, FilterSetSpec},
     openapi,
     serializer::{ModelSerializer, Serializer},
     state::AppState,
@@ -133,7 +133,7 @@ impl ModuleContext {
         V: ViewSet,
     {
         let serializer = viewset.serializer().model_serializer();
-        let filterset = viewset.filterset();
+        let filterset = viewset.filterset().filterset();
 
         self.model::<V::Model>();
         self.api_endpoints

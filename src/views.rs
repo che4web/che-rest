@@ -10,11 +10,12 @@ use axum::{
     routing::get,
 };
 use che_orm::SqliteModel;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use crate::{
     error::{AppError, AppResult},
-    filters::FilterSet,
+    filters::{FilterSet, FilterSetSpec},
+    permissions::{AllowAny, Permission, ViewAction},
     serializer::{ModelSerializer, Serializer},
     state::AppState,
 };
@@ -28,10 +29,17 @@ pub struct ModelViewSet<M, V = DefaultViewSet<M>> {
 #[async_trait]
 pub trait ViewSet: Clone + Send + Sync + 'static {
     type Model: SqliteModel<Id = i64>;
-    type Serializer: Serializer<Model = Self::Model>;
+    type Serializer: Serializer<Model = Self::Model> + Default;
 
-    fn serializer(&self) -> Self::Serializer;
-    fn filterset(&self) -> FilterSet<Self::Model>;
+    fn serializer(&self) -> Self::Serializer {
+        Self::Serializer::default()
+    }
+    type FilterSet: FilterSetSpec<Model = Self::Model> + Default;
+    type Permission: Permission<Self::Model>;
+
+    fn filterset(&self) -> Self::FilterSet {
+        Self::FilterSet::default()
+    }
 
     fn extra_routes(&self) -> Router {
         Router::new()
@@ -41,9 +49,17 @@ pub trait ViewSet: Clone + Send + Sync + 'static {
         &self,
         _state: &AppState,
         _extensions: &Extensions,
-        payload: Value,
-    ) -> AppResult<Value> {
+        payload: Map<String, Value>,
+    ) -> AppResult<Map<String, Value>> {
         Ok(payload)
+    }
+
+    async fn system_create_values(
+        &self,
+        _state: &AppState,
+        _extensions: &Extensions,
+    ) -> AppResult<Map<String, Value>> {
+        Ok(Map::new())
     }
 }
 
@@ -76,6 +92,8 @@ where
 {
     type Model = M;
     type Serializer = ModelSerializer<M>;
+    type FilterSet = FilterSet<M>;
+    type Permission = AllowAny;
 
     fn serializer(&self) -> ModelSerializer<M> {
         self.serializer
@@ -124,10 +142,21 @@ where
     async fn list(
         Extension(state): Extension<AppState>,
         Extension(viewset): Extension<V>,
+        user: Option<Extension<crate::auth::CurrentUser>>,
         Query(params): Query<HashMap<String, String>>,
     ) -> AppResult<Response> {
+        let extensions = Extensions::new();
+        let permission = V::Permission::default();
+        permission
+            .has_permission(
+                &state,
+                &extensions,
+                user.as_ref().map(|user| &user.0),
+                ViewAction::List,
+            )
+            .await?;
         let serializer = viewset.serializer().model_serializer();
-        let filterset = viewset.filterset();
+        let filterset = viewset.filterset().filterset();
         let total = filterset
             .apply_for_count(M::objects(state.db()).query(), &params)?
             .count()
@@ -151,13 +180,23 @@ where
     async fn create(
         Extension(state): Extension<AppState>,
         Extension(viewset): Extension<V>,
+        user: Option<Extension<crate::auth::CurrentUser>>,
         request: axum::extract::Request<Body>,
     ) -> AppResult<Response> {
         let (parts, body) = request.into_parts();
+        let permission = V::Permission::default();
+        permission
+            .has_permission(
+                &state,
+                &parts.extensions,
+                user.as_ref().map(|user| &user.0),
+                ViewAction::Create,
+            )
+            .await?;
         let bytes = to_bytes(body, usize::MAX)
             .await
             .map_err(|error| AppError::BadRequest(error.to_string()))?;
-        let payload = serde_json::from_slice(bytes.as_ref())
+        let payload: Map<String, Value> = serde_json::from_slice(bytes.as_ref())
             .map_err(|error| AppError::BadRequest(error.to_string()))?;
         let payload = viewset
             .perform_create(&state, &parts.extensions, payload)
@@ -166,7 +205,13 @@ where
         let serializer = viewset.serializer().model_serializer();
         let mut create = M::objects(state.db()).create();
 
-        for (field, value) in serializer.create_values(payload)? {
+        for (field, value) in serializer.create_values(Value::Object(payload))? {
+            create = create.set(field, value);
+        }
+        let system_values = viewset
+            .system_create_values(&state, &parts.extensions)
+            .await?;
+        for (field, value) in serializer.system_create_values(Value::Object(system_values))? {
             create = create.set(field, value);
         }
 
@@ -178,9 +223,29 @@ where
     async fn retrieve(
         Extension(state): Extension<AppState>,
         Extension(viewset): Extension<V>,
+        user: Option<Extension<crate::auth::CurrentUser>>,
         Path(id): Path<i64>,
     ) -> AppResult<Response> {
         let model = M::objects(state.db()).get(id).await?;
+        let extensions = Extensions::new();
+        let permission = V::Permission::default();
+        permission
+            .has_permission(
+                &state,
+                &extensions,
+                user.as_ref().map(|user| &user.0),
+                ViewAction::Retrieve,
+            )
+            .await?;
+        permission
+            .has_object_permission(
+                &state,
+                &extensions,
+                user.as_ref().map(|user| &user.0),
+                ViewAction::Retrieve,
+                &model,
+            )
+            .await?;
         let serializer = viewset.serializer().model_serializer();
         Ok(json_response(
             serializer.to_json_async(state.db(), &model).await?,
@@ -190,9 +255,30 @@ where
     async fn update(
         Extension(state): Extension<AppState>,
         Extension(viewset): Extension<V>,
+        user: Option<Extension<crate::auth::CurrentUser>>,
         Path(id): Path<i64>,
         Json(payload): Json<Value>,
     ) -> AppResult<Response> {
+        let model = M::objects(state.db()).get(id).await?;
+        let extensions = Extensions::new();
+        let permission = V::Permission::default();
+        permission
+            .has_permission(
+                &state,
+                &extensions,
+                user.as_ref().map(|user| &user.0),
+                ViewAction::Update,
+            )
+            .await?;
+        permission
+            .has_object_permission(
+                &state,
+                &extensions,
+                user.as_ref().map(|user| &user.0),
+                ViewAction::Update,
+                &model,
+            )
+            .await?;
         let serializer = viewset.serializer().model_serializer();
         let mut update = M::objects(state.db()).update_fields(id);
 
@@ -208,9 +294,30 @@ where
 
     async fn destroy(
         Extension(state): Extension<AppState>,
+        Extension(_viewset): Extension<V>,
+        user: Option<Extension<crate::auth::CurrentUser>>,
         Path(id): Path<i64>,
     ) -> AppResult<Response> {
-        M::objects(state.db()).get(id).await?;
+        let model = M::objects(state.db()).get(id).await?;
+        let extensions = Extensions::new();
+        let permission = V::Permission::default();
+        permission
+            .has_permission(
+                &state,
+                &extensions,
+                user.as_ref().map(|user| &user.0),
+                ViewAction::Destroy,
+            )
+            .await?;
+        permission
+            .has_object_permission(
+                &state,
+                &extensions,
+                user.as_ref().map(|user| &user.0),
+                ViewAction::Destroy,
+                &model,
+            )
+            .await?;
         M::objects(state.db()).delete(id).await?;
         Ok(StatusCode::NO_CONTENT.into_response())
     }

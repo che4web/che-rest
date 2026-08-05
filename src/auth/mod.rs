@@ -51,7 +51,7 @@ pub async fn auth_middleware(
     next: Next,
 ) -> Response {
     let Some(token) = request_token(&request) else {
-        return unauthorized("authentication credentials were not provided");
+        return next.run(request).await;
     };
 
     let token_hash = token_hash(&token);

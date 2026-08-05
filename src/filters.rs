@@ -65,6 +65,25 @@ pub struct FilterSet<M> {
     _model: PhantomData<M>,
 }
 
+impl<M> Default for FilterSet<M> {
+    fn default() -> Self {
+        Self {
+            filters: &[],
+            _model: PhantomData,
+        }
+    }
+}
+
+pub trait FilterSetSpec: Clone + Send + Sync + 'static {
+    type Model: SqliteModel;
+
+    fn filters(&self) -> &'static [Filter];
+
+    fn filterset(&self) -> FilterSet<Self::Model> {
+        FilterSet::new(self.filters())
+    }
+}
+
 impl<M> Clone for FilterSet<M> {
     fn clone(&self) -> Self {
         *self
@@ -72,6 +91,17 @@ impl<M> Clone for FilterSet<M> {
 }
 
 impl<M> Copy for FilterSet<M> {}
+
+impl<M> FilterSetSpec for FilterSet<M>
+where
+    M: SqliteModel,
+{
+    type Model = M;
+
+    fn filters(&self) -> &'static [Filter] {
+        self.filters
+    }
+}
 
 impl<M> FilterSet<M>
 where
@@ -108,7 +138,7 @@ where
                     let filter = self
                         .filters
                         .iter()
-                        .find(|filter| filter.query_name() == name)
+                        .find(|filter| filter.matches_query_name(name))
                         .ok_or_else(|| FilterError::UnknownFilter(name.to_string()))?;
                     let field = model_field::<M>(filter.source)?;
                     validate_lookup(field, filter.lookup)?;
@@ -140,7 +170,7 @@ where
                     let filter = self
                         .filters
                         .iter()
-                        .find(|filter| filter.query_name() == name)
+                        .find(|filter| filter.matches_query_name(name))
                         .ok_or_else(|| FilterError::UnknownFilter(name.to_string()))?;
                     let field = model_field::<M>(filter.source)?;
                     validate_lookup(field, filter.lookup)?;
@@ -194,6 +224,17 @@ impl Filter {
             Lookup::Gte => format!("{}__gte", self.name),
             Lookup::Lt => format!("{}__lt", self.name),
             Lookup::Lte => format!("{}__lte", self.name),
+        }
+    }
+
+    pub fn matches_query_name(&self, name: &str) -> bool {
+        match self.lookup {
+            Lookup::Exact => name == self.name,
+            Lookup::Contains => name.strip_suffix("__contains") == Some(self.name),
+            Lookup::Gt => name.strip_suffix("__gt") == Some(self.name),
+            Lookup::Gte => name.strip_suffix("__gte") == Some(self.name),
+            Lookup::Lt => name.strip_suffix("__lt") == Some(self.name),
+            Lookup::Lte => name.strip_suffix("__lte") == Some(self.name),
         }
     }
 }

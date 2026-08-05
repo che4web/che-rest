@@ -5,61 +5,72 @@ use che_orm::{
 };
 use serde_json::{Map, Value};
 
-pub trait RelatedSerializer: std::fmt::Debug + Send + Sync {
-    fn model_name(&self) -> &'static str;
-
-    fn serialize<'a>(
-        &'a self,
-        db: &'a SqliteBackend,
-        id: i64,
-    ) -> Pin<Box<dyn Future<Output = che_orm::Result<Value>> + Send + 'a>>;
-}
-
 #[derive(Clone, Copy)]
-pub struct RelatedModel<M> {
-    serializer: fn() -> ModelSerializer<M>,
-    _model: PhantomData<M>,
+pub struct RelatedSerializer {
+    pub(crate) model_name: fn() -> &'static str,
+    pub(crate) serialize:
+        for<'a> fn(
+            &'a SqliteBackend,
+            i64,
+        ) -> Pin<Box<dyn Future<Output = che_orm::Result<Value>> + Send + 'a>>,
 }
 
-impl<M> std::fmt::Debug for RelatedModel<M> {
+impl std::fmt::Debug for RelatedSerializer {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("RelatedModel")
-            .field("model", &std::any::type_name::<M>())
+            .debug_struct("RelatedSerializer")
+            .field("model", &(self.model_name)())
             .finish_non_exhaustive()
     }
 }
 
-impl<M> RelatedModel<M> {
-    pub const fn new(serializer: fn() -> ModelSerializer<M>) -> Self {
+impl RelatedSerializer {
+    pub const fn of<S>() -> Self
+    where
+        S: Serializer + Default,
+        S::Model: SqliteModel<Id = i64>,
+    {
         Self {
-            serializer,
-            _model: PhantomData,
+            model_name: related_model_name::<S::Model>,
+            serialize: related_serialize::<S>,
         }
     }
-}
 
-impl<M> RelatedSerializer for RelatedModel<M>
-where
-    M: SqliteModel<Id = i64>,
-{
-    fn model_name(&self) -> &'static str {
-        std::any::type_name::<M>()
-            .rsplit("::")
-            .next()
-            .unwrap_or("Model")
+    pub fn model_name(&self) -> &'static str {
+        (self.model_name)()
     }
 
-    fn serialize<'a>(
-        &'a self,
+    pub fn serialize<'a>(
+        &self,
         db: &'a SqliteBackend,
         id: i64,
     ) -> Pin<Box<dyn Future<Output = che_orm::Result<Value>> + Send + 'a>> {
-        Box::pin(async move {
-            let model = M::objects(db).get(id).await?;
-            (self.serializer)().to_json_async(db, &model).await
-        })
+        (self.serialize)(db, id)
     }
+}
+
+fn related_model_name<M>() -> &'static str {
+    std::any::type_name::<M>()
+        .rsplit("::")
+        .next()
+        .unwrap_or("Model")
+}
+
+fn related_serialize<'a, S>(
+    db: &'a SqliteBackend,
+    id: i64,
+) -> Pin<Box<dyn Future<Output = che_orm::Result<Value>> + Send + 'a>>
+where
+    S: Serializer + Default,
+    S::Model: SqliteModel<Id = i64>,
+{
+    Box::pin(async move {
+        let model = S::Model::objects(db).get(id).await?;
+        S::default()
+            .model_serializer()
+            .to_json_async(db, &model)
+            .await
+    })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -71,7 +82,8 @@ pub struct Field {
     pub write_only: bool,
     pub nullable: bool,
     pub max_length: Option<u32>,
-    pub relation: Option<&'static dyn RelatedSerializer>,
+    pub relation: Option<RelatedSerializer>,
+    pub system: bool,
     default: Option<fn() -> Value>,
 }
 
@@ -86,15 +98,16 @@ impl Field {
             nullable: false,
             max_length: None,
             relation: None,
+            system: false,
             default: None,
         }
     }
 
-    pub const fn related(
-        name: &'static str,
-        source: &'static str,
-        relation: &'static dyn RelatedSerializer,
-    ) -> Self {
+    pub const fn related<S>(name: &'static str, source: &'static str) -> Self
+    where
+        S: Serializer + Default,
+        S::Model: SqliteModel<Id = i64>,
+    {
         Self {
             name,
             source,
@@ -103,7 +116,8 @@ impl Field {
             write_only: false,
             nullable: false,
             max_length: None,
-            relation: Some(relation),
+            relation: Some(RelatedSerializer::of::<S>()),
+            system: false,
             default: None,
         }
     }
@@ -126,6 +140,14 @@ impl Field {
 
     pub const fn write_only(mut self) -> Self {
         self.write_only = true;
+        self
+    }
+
+    pub const fn system(mut self) -> Self {
+        self.system = true;
+        self.read_only = true;
+        self.write_only = true;
+        self.required = false;
         self
     }
 
@@ -203,6 +225,12 @@ impl<M> Clone for ModelSerializer<M> {
 
 impl<M> Copy for ModelSerializer<M> {}
 
+impl<M: Model> Default for ModelSerializer<M> {
+    fn default() -> Self {
+        Self::new(&[])
+    }
+}
+
 pub trait Serializer: Clone + Send + Sync + 'static {
     type Model: Model;
 
@@ -267,6 +295,10 @@ impl<M: Model> ModelSerializer<M> {
 
         validated_values::<M>(value, &fields)
     }
+
+    pub fn system_create_values(&self, value: Value) -> Result<Vec<(&'static str, SqliteValue)>> {
+        validated_system_values::<M>(value, self.fields)
+    }
 }
 
 pub fn serialize_model<M: Model>(model: &M, fields: &[Field]) -> Value {
@@ -327,6 +359,13 @@ pub async fn serialize_model_async<M: Model>(
 }
 
 pub fn validate_object<M: Model>(value: Value, fields: &[Field]) -> Result<Map<String, Value>> {
+    validate_object_internal::<M>(value, fields)
+}
+
+fn validate_object_internal<M: Model>(
+    value: Value,
+    fields: &[Field],
+) -> Result<Map<String, Value>> {
     let object = value.as_object().ok_or(SerializerError::ExpectedObject)?;
 
     for key in object.keys() {
@@ -380,13 +419,51 @@ fn validated_values<M: Model>(
     value: Value,
     fields: &[Field],
 ) -> Result<Vec<(&'static str, SqliteValue)>> {
-    let data = validate_object::<M>(value, fields)?;
+    let data = validate_object_internal::<M>(value, fields)?;
     let mut values = Vec::new();
 
     for (name, value) in data {
         let field = find_model_field(M::fields(), &name)
             .ok_or_else(|| SerializerError::InvalidModelField(name.clone()))?;
         values.push((field.db_name, json_to_sqlite_value(field, value)?));
+    }
+
+    Ok(values)
+}
+
+fn validated_system_values<M: Model>(
+    value: Value,
+    fields: &[Field],
+) -> Result<Vec<(&'static str, SqliteValue)>> {
+    let object = value.as_object().ok_or(SerializerError::ExpectedObject)?;
+    let mut values = Vec::new();
+
+    for (name, value) in object {
+        let field = fields
+            .iter()
+            .find(|field| field.name == name)
+            .ok_or_else(|| SerializerError::UnknownField(name.clone()))?;
+        if !field.system {
+            return Err(SerializerError::ReadonlyField(name.clone()));
+        }
+
+        let model_field = find_model_field(M::fields(), field.source)
+            .ok_or_else(|| SerializerError::InvalidModelField(field.source.to_string()))?;
+        if value.is_null() {
+            if !field.nullable {
+                return Err(SerializerError::NullNotAllowed(name.clone()));
+            }
+        } else {
+            validate_type(name, model_field.ty, value)?;
+            if let Some(max_length) = field.max_length {
+                validate_max_length(name, max_length, value)?;
+            }
+        }
+
+        values.push((
+            model_field.db_name,
+            json_to_sqlite_value(model_field, value.clone())?,
+        ));
     }
 
     Ok(values)

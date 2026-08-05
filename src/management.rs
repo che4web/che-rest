@@ -2203,8 +2203,8 @@ struct GeneratedModel {
     snake_name: String,
     table_name: String,
     const_name: String,
-    serializer_fn: String,
-    filterset_fn: String,
+    serializer_name: String,
+    filterset_name: String,
     viewset_name: String,
 }
 
@@ -2266,8 +2266,8 @@ fn generated_models(app: &str, models: Vec<String>) -> ManageResult<Vec<Generate
             snake_name: snake_name.clone(),
             table_name: format!("{app}_{snake_name}"),
             const_name: snake_name.to_ascii_uppercase(),
-            serializer_fn: format!("{snake_name}_serializer"),
-            filterset_fn: format!("{snake_name}_filterset"),
+            serializer_name: format!("{model}Serializer"),
+            filterset_name: format!("{model}FilterSet"),
             viewset_name: format!("{model}ViewSet"),
         });
     }
@@ -2381,16 +2381,10 @@ fn mod_template(name: &str, models: &[GeneratedModel]) -> String {
     let mut registrations = String::new();
     for model in models {
         registrations.push_str(&format!(
-            r#"        ctx.viewset::<models::{rust_name}>(
-            "/{snake_name}",
-            serializers::{serializer_fn}(),
-            filters::{filterset_fn}(),
-        );
+            r#"        ctx.viewset_with("/{snake_name}", views::{viewset_name});
 "#,
-            rust_name = model.rust_name,
             snake_name = model.snake_name,
-            serializer_fn = model.serializer_fn,
-            filterset_fn = model.filterset_fn,
+            viewset_name = model.viewset_name,
         ));
     }
 
@@ -2448,7 +2442,7 @@ pub struct {rust_name} {{
 }
 
 fn serializers_template(models: &[GeneratedModel]) -> String {
-    let mut out = String::from("use che_rest::{Field, ModelSerializer};\n\nuse super::models::{");
+    let mut out = String::from("use che_rest::{Field, Serializer};\n\nuse super::models::{");
     out.push_str(
         &models
             .iter()
@@ -2467,13 +2461,20 @@ fn serializers_template(models: &[GeneratedModel]) -> String {
     Field::new("updated_at").read_only(),
 ];
 
-pub fn {serializer_fn}() -> ModelSerializer<{rust_name}> {{
-    ModelSerializer::new({const_name}_FIELDS)
+#[derive(Clone, Copy, Default)]
+pub struct {serializer_name};
+
+impl Serializer for {serializer_name} {{
+    type Model = {rust_name};
+
+    fn fields(&self) -> &'static [Field] {{
+        {const_name}_FIELDS
+    }}
 }}
 
 "#,
             const_name = model.const_name,
-            serializer_fn = model.serializer_fn,
+            serializer_name = model.serializer_name,
             rust_name = model.rust_name,
         ));
     }
@@ -2481,7 +2482,7 @@ pub fn {serializer_fn}() -> ModelSerializer<{rust_name}> {{
 }
 
 fn filters_template(models: &[GeneratedModel]) -> String {
-    let mut out = String::from("use che_rest::{Filter, FilterSet};\n\nuse super::models::{");
+    let mut out = String::from("use che_rest::{Filter, FilterSetSpec};\n\nuse super::models::{");
     out.push_str(
         &models
             .iter()
@@ -2502,13 +2503,20 @@ fn filters_template(models: &[GeneratedModel]) -> String {
     Filter::lte("updated_at"),
 ];
 
-pub fn {filterset_fn}() -> FilterSet<{rust_name}> {{
-    FilterSet::new({const_name}_FILTERS)
+#[derive(Clone, Copy, Default)]
+pub struct {filterset_name};
+
+impl FilterSetSpec for {filterset_name} {{
+    type Model = {rust_name};
+
+    fn filters(&self) -> &'static [Filter] {{
+        {const_name}_FILTERS
+    }}
 }}
 
 "#,
             const_name = model.const_name,
-            filterset_fn = model.filterset_fn,
+            filterset_name = model.filterset_name,
             rust_name = model.rust_name,
         ));
     }
@@ -2516,13 +2524,12 @@ pub fn {filterset_fn}() -> FilterSet<{rust_name}> {{
 }
 
 fn views_template(models: &[GeneratedModel]) -> String {
-    let mut out = String::from(
-        "use axum::Router;\nuse che_rest::ModelViewSet;\n\nuse super::{\n    filters::{",
-    );
+    let mut out =
+        String::from("use che_rest::{AllowAny, ViewSet};\n\nuse super::{\n    filters::{");
     out.push_str(
         &models
             .iter()
-            .map(|model| model.filterset_fn.as_str())
+            .map(|model| model.filterset_name.as_str())
             .collect::<Vec<_>>()
             .join(", "),
     );
@@ -2538,7 +2545,7 @@ fn views_template(models: &[GeneratedModel]) -> String {
     out.push_str(
         &models
             .iter()
-            .map(|model| model.serializer_fn.as_str())
+            .map(|model| model.serializer_name.as_str())
             .collect::<Vec<_>>()
             .join(", "),
     );
@@ -2546,27 +2553,13 @@ fn views_template(models: &[GeneratedModel]) -> String {
 
     for model in models {
         out.push_str(&format!(
-            "type {viewset_name} = ModelViewSet<{rust_name}>;\n",
+            "#[derive(Clone, Copy, Default)]\npub struct {viewset_name};\n\n#[che_rest::async_trait]\nimpl ViewSet for {viewset_name} {{\n    type Model = {rust_name};\n    type Serializer = {serializer_name};\n    type FilterSet = {filterset_name};\n    type Permission = AllowAny;\n}}\n\n",
             viewset_name = model.viewset_name,
             rust_name = model.rust_name,
+            serializer_name = model.serializer_name,
+            filterset_name = model.filterset_name,
         ));
     }
-    out.push_str("\npub fn routes() -> Router {\n    Router::new()");
-    for model in models {
-        out.push_str(&format!(
-            r#"
-        .merge({viewset_name}::router(
-            "/{snake_name}",
-            {serializer_fn}(),
-            {filterset_fn}(),
-        ))"#,
-            viewset_name = model.viewset_name,
-            snake_name = model.snake_name,
-            serializer_fn = model.serializer_fn,
-            filterset_fn = model.filterset_fn,
-        ));
-    }
-    out.push_str("\n}\n");
     out
 }
 
