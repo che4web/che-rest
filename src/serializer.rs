@@ -488,15 +488,13 @@ fn json_to_sqlite_value(field: &FieldInfo, value: Value) -> Result<SqliteValue> 
                 field: field.rust_name.to_string(),
                 expected: "integer",
             }),
-        FieldType::Text | FieldType::Choice => {
-            value
-                .as_str()
-                .map(SqliteValue::from)
-                .ok_or_else(|| SerializerError::InvalidType {
-                    field: field.rust_name.to_string(),
-                    expected: "string",
-                })
-        }
+        FieldType::Text | FieldType::Choice | FieldType::FilePath => value
+            .as_str()
+            .map(SqliteValue::from)
+            .ok_or_else(|| SerializerError::InvalidType {
+                field: field.rust_name.to_string(),
+                expected: "string",
+            }),
         FieldType::Boolean => {
             value
                 .as_bool()
@@ -541,7 +539,7 @@ fn validate_type(field: &str, ty: FieldType, value: &Value) -> Result<()> {
             }
             "integer"
         }
-        FieldType::Text | FieldType::Choice => {
+        FieldType::Text | FieldType::Choice | FieldType::FilePath => {
             if value.as_str().is_some() {
                 return Ok(());
             }

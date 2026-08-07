@@ -690,7 +690,7 @@ fn optional_marker(field: &ApiField) -> &'static str {
 fn ts_type(ty: FieldType, nullable: bool) -> String {
     let base = match ty {
         FieldType::Integer | FieldType::Real => "number",
-        FieldType::Text | FieldType::DateTime | FieldType::Choice => "string",
+        FieldType::Text | FieldType::DateTime | FieldType::Choice | FieldType::FilePath => "string",
         FieldType::Boolean => "boolean",
         FieldType::Json => "unknown",
     };
@@ -2171,7 +2171,7 @@ fn admin_field_type(ty: FieldType) -> &'static str {
         FieldType::Real => "real",
         FieldType::DateTime => "datetime",
         FieldType::Json => "json",
-        FieldType::Choice => "text",
+        FieldType::Choice | FieldType::FilePath => "text",
     }
 }
 

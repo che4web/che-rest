@@ -281,7 +281,7 @@ fn parse_value(field: &FieldInfo, value: &str) -> Result<SqliteValue, FilterErro
             .parse::<i64>()
             .map(SqliteValue::from)
             .map_err(|_| invalid_value(field, "integer")),
-        FieldType::Text => Ok(SqliteValue::from(value)),
+        FieldType::Text | FieldType::FilePath => Ok(SqliteValue::from(value)),
         FieldType::Choice => {
             if field
                 .choices
@@ -311,7 +311,7 @@ fn parse_value(field: &FieldInfo, value: &str) -> Result<SqliteValue, FilterErro
 fn validate_lookup(field: &FieldInfo, lookup: Lookup) -> Result<(), FilterError> {
     match lookup {
         Lookup::Exact => Ok(()),
-        Lookup::Contains if field.ty == FieldType::Text => Ok(()),
+        Lookup::Contains if matches!(field.ty, FieldType::Text | FieldType::FilePath) => Ok(()),
         Lookup::Gt | Lookup::Gte | Lookup::Lt | Lookup::Lte
             if matches!(
                 field.ty,

@@ -280,7 +280,7 @@ fn response_field_schema(field: &ApiField) -> Value {
 fn field_schema(ty: FieldType, nullable: bool, choices: Option<&[String]>) -> Value {
     let mut schema = match ty {
         FieldType::Integer => json!({ "type": "integer", "format": "int64" }),
-        FieldType::Text | FieldType::Choice => json!({ "type": "string" }),
+        FieldType::Text | FieldType::Choice | FieldType::FilePath => json!({ "type": "string" }),
         FieldType::Boolean => json!({ "type": "boolean" }),
         FieldType::Real => json!({ "type": "number", "format": "double" }),
         FieldType::DateTime => json!({ "type": "string", "format": "date-time" }),
