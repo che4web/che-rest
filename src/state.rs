@@ -2,12 +2,13 @@ use std::path::Path;
 
 use che_orm::SqliteBackend;
 
-use crate::{config::AppConfig, error::AppResult};
+use crate::{channels::Channels, config::AppConfig, error::AppResult};
 
 #[derive(Debug, Clone)]
 pub struct AppState {
     pub config: AppConfig,
     db: SqliteBackend,
+    channels: Channels,
 }
 
 impl AppState {
@@ -15,10 +16,18 @@ impl AppState {
         let config = AppConfig::from_file(path)?;
         let db = SqliteBackend::connect(&config.database.url).await?;
 
-        Ok(Self { config, db })
+        Ok(Self {
+            config,
+            db,
+            channels: Channels::new(),
+        })
     }
 
     pub fn db(&self) -> &SqliteBackend {
         &self.db
+    }
+
+    pub fn channels(&self) -> &Channels {
+        &self.channels
     }
 }

@@ -1,8 +1,11 @@
+use std::sync::Arc;
+
 use axum::{Extension, Json, Router, middleware, response::Html, routing::get};
 use che_orm::{FieldType, Model, ModelSchema, SqliteModel, create_table_sql};
 
 use crate::{
     auth,
+    channels::ChannelConsumer,
     error::AppResult,
     filters::{FilterSet, FilterSetSpec},
     openapi,
@@ -51,13 +54,14 @@ impl InstalledApps {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct ModuleContext {
     routers: Vec<Router>,
     sql: Vec<String>,
     schemas: Vec<ModelSchema>,
     api_endpoints: Vec<ApiEndpoint>,
     auth_enabled: bool,
+    channel_consumer: Option<Arc<dyn ChannelConsumer>>,
 }
 
 #[derive(Debug, Clone)]
@@ -146,8 +150,19 @@ impl ModuleContext {
         self.auth_enabled = true;
     }
 
+    pub fn channel_consumer<C>(&mut self, consumer: C)
+    where
+        C: ChannelConsumer,
+    {
+        self.channel_consumer = Some(Arc::new(consumer));
+    }
+
     pub fn auth_enabled(&self) -> bool {
         self.auth_enabled
+    }
+
+    pub(crate) fn registered_channel_consumer(&self) -> Option<Arc<dyn ChannelConsumer>> {
+        self.channel_consumer.clone()
     }
 
     pub fn model_schemas(&self) -> &[ModelSchema] {
@@ -288,6 +303,7 @@ impl Server {
         }
 
         let auth_enabled = ctx.auth_enabled();
+        let channel_consumer = ctx.registered_channel_consumer();
         let api_endpoints = ctx.api_endpoints().to_vec();
 
         for sql in ctx.sql {
@@ -344,6 +360,8 @@ impl Server {
             router = router.merge(auth::views::routes());
         }
 
-        Ok(router.layer(Extension(self.state)))
+        Ok(router
+            .layer(Extension(self.state))
+            .layer(Extension(channel_consumer)))
     }
 }

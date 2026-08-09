@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod channels;
 pub mod config;
 pub mod error;
 pub mod filters;
@@ -12,6 +13,7 @@ pub mod state;
 pub mod views;
 
 pub use async_trait::async_trait;
+pub use channels::{ChannelConsumer, ChannelEvent, ChannelModule, Channels};
 pub use config::{AppConfig, DatabaseConfig};
 pub use error::{AppError, AppResult};
 pub use filters::{Filter, FilterError, FilterSet, FilterSetSpec, Lookup};

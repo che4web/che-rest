@@ -243,6 +243,123 @@ Authentication is optional at the middleware level. Protect a typed viewset by s
 
 Generated TypeScript clients expose `setAuthToken(token)` in `api_client.ts`.
 
+## WebSocket Channels
+
+Install the channel module together with auth. The WebSocket endpoint is available at `/api/ws/`:
+
+```rust
+pub fn installed_apps() -> InstalledApps {
+    InstalledApps::new()
+        .add(che_rest::auth::module())
+        .add(che_rest::channels::module())
+        .add(users::module())
+}
+```
+
+Channels are available from `AppState`. Keep a clone when starting the server if background tasks
+also publish events:
+
+```rust
+let channels = state.channels().clone();
+let app = Server::new(state)
+    .install(apps::installed_apps())
+    .build()
+    .await?;
+
+channels.publish("orders:42", serde_json::json!({ "status": "paid" }));
+channels.publish_user(42, serde_json::json!({
+    "kind": "notification",
+    "text": "You have a new message"
+}));
+```
+
+An application can register one consumer for events published by clients. The server always assigns
+the current user's private channel; the client cannot choose another user's channel:
+
+```rust
+struct ChatConsumer;
+
+#[che_rest::async_trait]
+impl che_rest::ChannelConsumer for ChatConsumer {
+    async fn consume(
+        &self,
+        state: &che_rest::AppState,
+        event: che_rest::ChannelEvent,
+    ) -> che_rest::AppResult<()> {
+        state.channels().publish_user(
+            event.user.id,
+            serde_json::json!({ "kind": "accepted", "payload": event.payload }),
+        );
+        Ok(())
+    }
+}
+
+pub struct ChatModule;
+
+impl che_rest::AppModule for ChatModule {
+    fn name(&self) -> &'static str { "chat" }
+
+    fn init(&self, ctx: &mut che_rest::ModuleContext) {
+        ctx.channel_consumer(ChatConsumer);
+    }
+}
+```
+
+The generated client publishes to the current user's channel through the registered consumer:
+
+```typescript
+await channels.connect();
+channels.publish({ kind: "send_message", text: "Hello" });
+```
+
+If no consumer is registered, client publication receives a `consumer_not_configured` error.
+
+Connections must be authenticated. Non-browser clients can provide `Authorization: Token <token>`
+during the WebSocket upgrade. Browser `WebSocket` connections use the existing same-origin session
+cookie, because the browser API cannot attach an `Authorization` header.
+
+The TypeScript generator creates `channels.ts` with a cookie-authenticated `ChannelClient`:
+
+```typescript
+import { ChannelClient } from "./generated/channels";
+
+const channels = new ChannelClient({
+  onMessage: (event) => console.log(event.channel, event.payload),
+  onError: (event) => console.error(event.code, event.detail),
+});
+
+await channels.connect();
+channels.subscribe("orders:42");
+```
+
+The client derives `/api/ws/` from `VITE_API_BASE_URL`, converting `http` to `ws` and `https` to
+`wss`. Browser cookies are sent automatically for same-origin connections.
+
+Subscribe and unsubscribe using text JSON frames:
+
+```javascript
+const socket = new WebSocket("ws://127.0.0.1:3000/api/ws/");
+
+socket.addEventListener("open", () => {
+  socket.send(JSON.stringify({ action: "subscribe", channel: "orders:42" }));
+});
+
+socket.addEventListener("message", ({ data }) => {
+  console.log(JSON.parse(data));
+  // { type: "message", channel: "orders:42", payload: { status: "paid" } }
+});
+```
+
+Each connection is automatically subscribed to its private `user:{id}` channel. Client publication
+is delivered only to the single registered consumer with the authenticated `CurrentUser`; the
+consumer may respond through `publish_user`. Clients cannot subscribe directly to `user:` channels.
+Other channel names may contain ASCII letters, numbers, `:`, `-`, `_`, and `.`. The server confirms
+subscription changes with `subscribed` and `unsubscribed` messages.
+
+This is in-memory pub/sub for one server process: messages are delivered only to currently connected
+clients, are not persisted, and do not cross process boundaries. A slow receiver receives a `lagged`
+error when messages are dropped; it does not receive a replay.
+
 ### Cookie Sessions
 
 Token authentication and cookie sessions can be enabled together. Sessions use an `HttpOnly`
@@ -365,10 +482,13 @@ cargo run --bin manage -- generate-ts --out src/generated
 This writes:
 
 ```text
-src/generated/
-  api_client.ts
-  models.ts
-  api.ts
+  src/generated/
+    api_client.ts
+    channels.ts
+    models.ts
+    api.ts
+    useModelList.ts
+    useModelItem.ts
 ```
 
 Generate an OpenAPI 3.0 JSON schema from installed viewsets, serializers, and filters:
@@ -430,11 +550,12 @@ frontend/admin/
       pages/
         UserList.vue
         UserForm.vue
-      generated/
-        adminSchema.ts
-        adminRoutes.ts
+    generated/
+      adminSchema.ts
+      adminRoutes.ts
     generated/
       api_client.ts
+      channels.ts
       models.ts
       api.ts
       useModelList.ts
