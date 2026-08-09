@@ -18,7 +18,10 @@ use tokio::{
     task::JoinHandle,
 };
 
-use crate::{AppError, AppModule, AppResult, ModuleContext, auth::CurrentUser, state::AppState};
+use crate::{
+    AppError, AppModule, AppResult, ModuleContext, auth::CurrentUser, commands::Commands,
+    state::AppState,
+};
 
 const CHANNEL_CAPACITY: usize = 64;
 const OUTBOUND_CAPACITY: usize = 64;
@@ -92,17 +95,18 @@ impl AppModule for ChannelModule {
 async fn websocket(
     user: Option<Extension<CurrentUser>>,
     Extension(state): Extension<AppState>,
+    Extension(commands): Extension<Commands>,
     upgrade: WebSocketUpgrade,
 ) -> AppResult<Response> {
     let user = user.ok_or_else(|| {
         AppError::Unauthorized("authentication credentials were not provided".to_string())
     })?;
     Ok(upgrade
-        .on_upgrade(move |socket| handle_socket(socket, user.0, state))
+        .on_upgrade(move |socket| handle_socket(socket, user.0, state, commands))
         .into_response())
 }
 
-async fn handle_socket(socket: WebSocket, user: CurrentUser, state: AppState) {
+async fn handle_socket(socket: WebSocket, user: CurrentUser, state: AppState, commands: Commands) {
     let channels = state.channels().clone();
     let (mut sender, mut receiver) = socket.split();
     let (outbound, mut outbound_receiver) = mpsc::channel(OUTBOUND_CAPACITY);
@@ -180,9 +184,8 @@ async fn handle_socket(socket: WebSocket, user: CurrentUser, state: AppState) {
                     .await;
                     continue;
                 };
-                if let Err(error) = state
-                    .events()
-                    .dispatch_command(
+                if let Err(error) = commands
+                    .dispatch(
                         &state,
                         event,
                         user.clone(),

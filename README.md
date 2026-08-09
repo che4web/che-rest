@@ -245,35 +245,6 @@ Generated TypeScript clients expose `setAuthToken(token)` in `api_client.ts`.
 
 ## WebSocket Channels
 
-### Model Signals
-
-Modules can forward successful ORM saves to the application event bus:
-
-```rust
-fn init(&self, ctx: &mut che_rest::ModuleContext) {
-    ctx.model::<Message>();
-    ctx.post_save::<Message>("chat.message.created");
-    ctx.event_handler("chat.message.created", NotifyMessage);
-}
-```
-
-The generated `post_save` event payload has this shape:
-
-```json
-{
-  "model": "Message",
-  "created": true,
-  "object": {
-    "id": 1,
-    "text": "Hello"
-  }
-}
-```
-
-`post_save` is emitted after successful ORM create, update, and save operations. Handlers run through
-the internal event bus and their errors are logged without changing the already-completed database
-operation. Raw SQL and changes made by another process do not emit signals.
-
 Install the channel module together with auth. The WebSocket endpoint is available at `/api/ws/`:
 
 ```rust
@@ -285,77 +256,62 @@ pub fn installed_apps() -> InstalledApps {
 }
 ```
 
-Channels are available from `AppState`. Keep a clone when starting the server if background tasks
-also publish events:
+WebSocket channels are public transport channels. Modules can create separate internal application
+channels through `AppState::app_channels()`, which are never exposed to WebSocket clients:
 
 ```rust
-let channels = state.channels().clone();
+let channels = state.app_channels().clone();
 let app = Server::new(state)
     .install(apps::installed_apps())
     .build()
     .await?;
 
-channels.publish("orders:42", serde_json::json!({ "status": "paid" }));
-channels.publish_user(42, serde_json::json!({
-    "kind": "notification",
-    "text": "You have a new message"
-}));
+channels.publish("chat.message.created", serde_json::json!({ "id": 42 }));
 ```
 
-An application registers command handlers and internal event handlers. The server always associates a
-client command with the authenticated user; the client cannot choose another user's channel:
+Modules subscribe to internal channels in `subscribe`, before any module `start` hooks publish
+initial events. Both hooks run after the database schema is ready:
 
 ```rust
-struct SendMessage;
+pub struct Notifications;
 
-#[che_rest::async_trait]
-impl che_rest::CommandHandler for SendMessage {
-    async fn handle(
-        &self,
-        state: &che_rest::AppState,
-        command: che_rest::Command,
-    ) -> che_rest::AppResult<()> {
-        state.events().emit(che_rest::AppEvent {
-            name: "chat.message.created".to_string(),
-            user: Some(command.user),
-            payload: command.payload,
+impl che_rest::AppModule for Notifications {
+    fn name(&self) -> &'static str { "notifications" }
+
+    fn init(&self, _ctx: &mut che_rest::ModuleContext) {}
+
+    fn subscribe(&self, state: &che_rest::AppState) {
+        let mut events = state.app_channels().subscribe("chat.message.created");
+        tokio::spawn(async move {
+            loop {
+                match events.recv().await {
+                    Ok(event) => {
+                        // Send notifications, update counters, or write audit records.
+                        println!("notification event: {event}");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                        eprintln!("resync notification channel, dropped {count} events");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
         });
-        Ok(())
     }
-}
 
-struct NotifyMessage;
-
-#[che_rest::async_trait]
-impl che_rest::EventHandler for NotifyMessage {
-    async fn handle(
-        &self,
-        state: &che_rest::AppState,
-        event: che_rest::AppEvent,
-    ) -> che_rest::AppResult<()> {
-        if let Some(user) = event.user {
-            state.channels().publish_user(
-                user.id,
-                serde_json::json!({ "kind": event.name, "payload": event.payload }),
-            );
-        }
-        Ok(())
-    }
-}
-
-pub struct ChatModule;
-
-impl che_rest::AppModule for ChatModule {
-    fn name(&self) -> &'static str { "chat" }
-
-    fn init(&self, ctx: &mut che_rest::ModuleContext) {
-        ctx.command_handler("chat.message.send", SendMessage);
-        ctx.event_handler("chat.message.created", NotifyMessage);
+    fn start(&self, state: &che_rest::AppState) {
+        state.app_channels().publish(
+            "chat.message.created",
+            serde_json::json!({ "kind": "startup" }),
+        );
     }
 }
 ```
 
-The generated client sends a command to the registered command handler:
+Application channels use bounded broadcast queues. A slow subscriber receives `Lagged` and should
+resynchronize as needed. They are only available inside the server process.
+
+WebSocket clients still send commands to registered command handlers. The server always associates a
+client command with the authenticated user; the client cannot choose another user's channel:
 
 ```typescript
 await channels.connect();
@@ -363,9 +319,8 @@ channels.publish("chat.message.send", { text: "Hello" });
 ```
 
 Each command has one handler. Internal events can have multiple handlers; all of them run in
-parallel through independent broadcast subscriptions, and one failure does not cancel the others.
-If no command handler is registered, the client receives a `command_error` response. Application code
-can also subscribe directly with `state.events().subscribe("chat.message.created")`.
+independent application-channel subscriptions. If no command handler is registered, the client
+receives a `command_error` response.
 
 Connections must be authenticated. Non-browser clients can provide `Authorization: Token <token>`
 during the WebSocket upgrade. Browser `WebSocket` connections use the existing same-origin session

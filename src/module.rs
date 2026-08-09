@@ -1,24 +1,26 @@
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 
 use axum::{Extension, Json, Router, middleware, response::Html, routing::get};
-use che_orm::{FieldType, Model, ModelEvent, ModelSchema, SqliteModel, create_table_sql};
-use futures_util::FutureExt;
-use std::panic::AssertUnwindSafe;
+use che_orm::{FieldType, Model, ModelSchema, SqliteModel, create_table_sql};
 
 use crate::{
     auth,
+    commands::{CommandHandler, Commands},
     error::AppResult,
-    events::{CommandHandler, EventHandler},
     filters::{FilterSet, FilterSetSpec},
     openapi,
     serializer::{ModelSerializer, Serializer},
-    state::{AppState, AppStateInner},
+    state::AppState,
     views::{ModelViewSet, ViewSet},
 };
 
 pub trait AppModule {
     fn name(&self) -> &'static str;
     fn init(&self, ctx: &mut ModuleContext);
+
+    fn subscribe(&self, _state: &AppState) {}
+
+    fn start(&self, _state: &AppState) {}
 }
 
 #[derive(Default)]
@@ -64,70 +66,6 @@ pub struct ModuleContext {
     api_endpoints: Vec<ApiEndpoint>,
     auth_enabled: bool,
     command_handlers: Vec<(String, Arc<dyn CommandHandler>)>,
-    event_handlers: Vec<(String, Arc<dyn EventHandler>)>,
-    post_save_registrations: Vec<Box<dyn PostSaveRegistration>>,
-}
-
-trait PostSaveRegistration: Send + Sync {
-    fn install(&self, state: &AppState);
-}
-
-struct ModelPostSaveRegistration<M: Model> {
-    event_name: String,
-    _model: std::marker::PhantomData<M>,
-}
-
-impl<M: Model> PostSaveRegistration for ModelPostSaveRegistration<M> {
-    fn install(&self, state: &AppState) {
-        let mut receiver = state.db().signals().subscribe::<M>();
-        let bridge = PostSaveBridge {
-            state: state.downgrade(),
-            event_name: self.event_name.clone(),
-            model: rust_type_name::<M>(),
-        };
-
-        tokio::spawn(async move {
-            loop {
-                match receiver.recv().await {
-                    Ok(ModelEvent::PostSave(event)) => bridge.handle(event).await,
-                    Ok(ModelEvent::PostUpdate(_)) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                        tracing::warn!(
-                            model = %bridge.model,
-                            event = %bridge.event_name,
-                            count,
-                            "post_save bridge lagged"
-                        );
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
-            }
-        });
-    }
-}
-
-struct PostSaveBridge {
-    state: Weak<AppStateInner>,
-    event_name: String,
-    model: String,
-}
-
-impl PostSaveBridge {
-    async fn handle(&self, event: che_orm::PostSaveEvent) {
-        let Some(inner) = self.state.upgrade() else {
-            return;
-        };
-        let state = AppState::from_inner(inner);
-        state.events().emit(crate::AppEvent {
-            name: self.event_name.clone(),
-            user: None,
-            payload: serde_json::json!({
-                "model": self.model.clone(),
-                "created": event.created,
-                "object": event.object,
-            }),
-        });
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -225,64 +163,6 @@ impl ModuleContext {
 
     pub fn auth_enabled(&self) -> bool {
         self.auth_enabled
-    }
-
-    pub fn event_handler<H>(&mut self, name: impl Into<String>, handler: H)
-    where
-        H: EventHandler,
-    {
-        self.event_handlers.push((name.into(), Arc::new(handler)));
-    }
-
-    fn install_event_handlers(&self, state: &AppState) {
-        for (name, handler) in &self.event_handlers {
-            let mut receiver = state.events().subscribe(name.clone());
-            let handler = handler.clone();
-            let event_name = name.clone();
-            let state = state.downgrade();
-            tokio::spawn(async move {
-                loop {
-                    match receiver.recv().await {
-                        Ok(event) => {
-                            let Some(inner) = state.upgrade() else {
-                                break;
-                            };
-                            let state = AppState::from_inner(inner);
-                            match AssertUnwindSafe(handler.handle(&state, event))
-                                .catch_unwind()
-                                .await
-                            {
-                                Ok(Ok(())) => {}
-                                Ok(Err(error)) => tracing::error!(
-                                    event = %event_name,
-                                    error = %error,
-                                    "event handler failed"
-                                ),
-                                Err(_) => tracing::error!(
-                                    event = %event_name,
-                                    "event handler panicked"
-                                ),
-                            }
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                            tracing::warn!(event = %event_name, count, "event handler lagged");
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                    }
-                }
-            });
-        }
-    }
-
-    pub fn post_save<M>(&mut self, event_name: impl Into<String>)
-    where
-        M: Model,
-    {
-        self.post_save_registrations
-            .push(Box::new(ModelPostSaveRegistration::<M> {
-                event_name: event_name.into(),
-                _model: std::marker::PhantomData,
-            }));
     }
 
     fn command_handlers(
@@ -468,16 +348,18 @@ impl Server {
         let api_endpoints = ctx.api_endpoints().to_vec();
 
         let state = self.state;
-        state.events().configure_commands(ctx.command_handlers()?);
+        let commands = Commands::from_handlers(ctx.command_handlers()?);
 
         for sql in &ctx.sql {
             state.db().apply_sql(&sql).await?;
         }
 
-        for registration in &ctx.post_save_registrations {
-            registration.install(&state);
+        for module in &self.modules {
+            module.subscribe(&state);
         }
-        ctx.install_event_handlers(&state);
+        for module in &self.modules {
+            module.start(&state);
+        }
 
         let openapi_spec = openapi::openapi_json(
             &api_endpoints,
@@ -529,6 +411,6 @@ impl Server {
             router = router.merge(auth::views::routes());
         }
 
-        Ok(router.layer(Extension(state)))
+        Ok(router.layer(Extension(state)).layer(Extension(commands)))
     }
 }

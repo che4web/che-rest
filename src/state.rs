@@ -1,22 +1,15 @@
-use std::{
-    ops::Deref,
-    path::Path,
-    sync::{Arc, Weak},
-};
+use std::path::Path;
 
 use che_orm::SqliteBackend;
 
-use crate::{channels::Channels, config::AppConfig, error::AppResult, events::EventBus};
+use crate::{app_channels::AppChannels, channels::Channels, config::AppConfig, error::AppResult};
 
+#[derive(Debug, Clone)]
 pub struct AppState {
-    inner: Arc<AppStateInner>,
-}
-
-pub struct AppStateInner {
     pub config: AppConfig,
     db: SqliteBackend,
     channels: Channels,
-    events: EventBus,
+    app_channels: AppChannels,
 }
 
 impl AppState {
@@ -24,12 +17,12 @@ impl AppState {
         let config = AppConfig::from_file(path)?;
         let db = SqliteBackend::connect(&config.database.url).await?;
 
-        Ok(Self::from_inner(Arc::new(AppStateInner {
+        Ok(Self {
             config,
             db,
             channels: Channels::new(),
-            events: EventBus::default(),
-        })))
+            app_channels: AppChannels::new(),
+        })
     }
 
     pub fn db(&self) -> &SqliteBackend {
@@ -40,31 +33,7 @@ impl AppState {
         &self.channels
     }
 
-    pub fn events(&self) -> &EventBus {
-        &self.events
-    }
-
-    pub(crate) fn downgrade(&self) -> Weak<AppStateInner> {
-        Arc::downgrade(&self.inner)
-    }
-
-    pub(crate) fn from_inner(inner: Arc<AppStateInner>) -> Self {
-        Self { inner }
-    }
-}
-
-impl Clone for AppState {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-        }
-    }
-}
-
-impl Deref for AppState {
-    type Target = AppStateInner;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
+    pub fn app_channels(&self) -> &AppChannels {
+        &self.app_channels
     }
 }

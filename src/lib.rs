@@ -1,8 +1,9 @@
+pub mod app_channels;
 pub mod auth;
 pub mod channels;
+pub mod commands;
 pub mod config;
 pub mod error;
-pub mod events;
 pub mod filters;
 pub mod management;
 pub mod module;
@@ -13,11 +14,12 @@ pub mod serializer;
 pub mod state;
 pub mod views;
 
+pub use app_channels::{AppChannelReceiver, AppChannels};
 pub use async_trait::async_trait;
 pub use channels::{ChannelModule, Channels};
+pub use commands::{Command, CommandHandler, Commands};
 pub use config::{AppConfig, DatabaseConfig};
 pub use error::{AppError, AppResult};
-pub use events::{AppEvent, Command, CommandHandler, EventBus, EventHandler};
 pub use filters::{Filter, FilterError, FilterSet, FilterSetSpec, Lookup};
 pub use management::Management;
 pub use module::{
