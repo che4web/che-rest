@@ -64,23 +64,7 @@ at `/api/`, and OpenAPI JSON is at `/api/openapi.json`.
 
 ## HTTP CRUD
 
-After logging in and keeping the returned cookies in `cookies.txt`, create a task through the
-generated REST endpoint. Tasks require an authenticated user, and the server assigns the current
-session user as the author. The `author_id` field cannot be supplied by the client. Every task
-creation path, including REST, admin, and the WebSocket command below, emits the internal
-`tasks.created` event.
-
-```bash
-curl -X POST http://127.0.0.1:3001/api/tasks/ \
-  -b cookies.txt \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"Read the documentation"}'
-```
-
-## WebSocket Command
-
-The tasks module registers the `tasks.create` command. Browser WebSockets use the authenticated
-same-origin session cookie. Log in first and keep the returned cookies:
+Log in first and keep the returned cookies in `cookies.txt`:
 
 ```bash
 curl -i -c cookies.txt -X POST \
@@ -88,6 +72,27 @@ curl -i -c cookies.txt -X POST \
   -H 'Content-Type: application/json' \
   -d '{"username":"admin","password":"secret"}'
 ```
+
+Create a task through the generated REST endpoint. Tasks require an authenticated user, and the
+server assigns the current session user as the author. The `author_id` field cannot be supplied by
+the client. Session writes also require the CSRF header:
+
+```bash
+CSRF_TOKEN=$(awk '$6 == "csrf_token" { print $7 }' cookies.txt)
+curl -X POST http://127.0.0.1:3001/api/tasks/ \
+  -b cookies.txt \
+  -H "X-CSRF-Token: $CSRF_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Read the documentation"}'
+```
+
+Every task creation path, including REST, admin, and the WebSocket command below, emits the
+internal `tasks.created` event.
+
+## WebSocket Command
+
+The tasks module registers the `tasks.create` command. Browser WebSockets use the authenticated
+same-origin session cookie from the login above.
 
 Then send this command from a browser or WebSocket client:
 
@@ -102,6 +107,12 @@ Then send this command from a browser or WebSocket client:
 The command creates a task. The tasks module bridges the ORM `PostSave` signal to the internal
 `tasks.created` application channel, and the notifications module subscribes to that channel in
 `AppModule::subscribe`; it is never visible as a WebSocket channel.
+
+Run the end-to-end smoke test:
+
+```bash
+cargo test --manifest-path examples/cli_fullstack/Cargo.toml --test smoke
+```
 
 ## Generated Clients
 

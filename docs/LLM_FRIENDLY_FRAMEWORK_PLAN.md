@@ -57,7 +57,7 @@ JSON должен быть стабильным, без человекоорие
 
 Команды должны быть безопасны для повторного запуска и явно сообщать, какие файлы изменились.
 
-## Приоритет 5: канонический пример
+## Приоритет 5: канонический пример [x]
 
 Развивать `examples/cli_fullstack` как основной vertical slice:
 
@@ -79,6 +79,12 @@ JSON должен быть стабильным, без человекоорие
 4. Создать task через WebSocket command.
 5. Проверить `author_id`.
 6. Проверить публикацию `tasks.created`.
+
+Smoke test запускается командой:
+
+```bash
+cargo test --manifest-path examples/cli_fullstack/Cargo.toml --test smoke
+```
 
 ## Приоритет 6: error cookbook
 
