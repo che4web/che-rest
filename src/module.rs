@@ -65,6 +65,7 @@ pub struct ModuleContext {
     api_endpoints: Vec<ApiEndpoint>,
     auth_enabled: bool,
     command_handlers: Vec<(String, Arc<dyn CommandHandler>)>,
+    command_names: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -156,7 +157,9 @@ impl ModuleContext {
     where
         H: CommandHandler,
     {
-        self.command_handlers.push((name.into(), Arc::new(handler)));
+        let name = name.into();
+        self.command_names.push(name.clone());
+        self.command_handlers.push((name, Arc::new(handler)));
     }
 
     pub fn auth_enabled(&self) -> bool {
@@ -184,6 +187,10 @@ impl ModuleContext {
 
     pub fn api_endpoints(&self) -> &[ApiEndpoint] {
         &self.api_endpoints
+    }
+
+    pub fn command_names(&self) -> &[String] {
+        &self.command_names
     }
 }
 

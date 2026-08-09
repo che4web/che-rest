@@ -40,6 +40,16 @@ enum Command {
         #[arg(long, default_value = "auto")]
         name: String,
     },
+    Inspect {
+        #[arg(long, default_value = "json")]
+        format: String,
+
+        #[arg(long, default_value = "src/apps")]
+        apps_dir: PathBuf,
+
+        #[arg(long, default_value = "app.toml")]
+        config: PathBuf,
+    },
     Migrate {
         app: Option<String>,
 
@@ -119,6 +129,11 @@ impl Management {
                 apps_dir,
                 name,
             } => self.makemigrations(app.as_deref(), apps_dir, &name)?,
+            Command::Inspect {
+                format,
+                apps_dir,
+                config,
+            } => self.inspect(&format, apps_dir, config)?,
             Command::Migrate {
                 app,
                 apps_dir,
@@ -219,6 +234,64 @@ impl Management {
 
         println!("Created {}", migration_path.display());
 
+        Ok(())
+    }
+
+    fn inspect(&self, format: &str, apps_dir: PathBuf, config_path: PathBuf) -> ManageResult<()> {
+        if format != "json" {
+            return Err(format!("unsupported inspect format: {format}; expected json").into());
+        }
+
+        let apps = self
+            .apps
+            .iter()
+            .map(|module| {
+                let mut context = ModuleContext::new();
+                module.init(&mut context);
+                let migrations_dir = app_migrations_dir(&apps_dir, module.name());
+                let migrations = migration_files(&migrations_dir)?
+                    .into_iter()
+                    .filter_map(|path| {
+                        path.file_name()
+                            .and_then(|name| name.to_str())
+                            .map(str::to_string)
+                    })
+                    .collect::<Vec<_>>();
+
+                Ok(serde_json::json!({
+                    "name": module.name(),
+                    "models": app_schema(module).models,
+                    "endpoints": context.api_endpoints().iter().map(api_endpoint_json).collect::<Vec<_>>(),
+                    "commands": context.command_names(),
+                    "migrations": {
+                        "directory": migrations_dir,
+                        "schema_snapshot": migrations_dir.join("schema.json").exists(),
+                        "files": migrations,
+                    },
+                }))
+            })
+            .collect::<ManageResult<Vec<_>>>()?;
+
+        let config = AppConfig::from_file(config_path)?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "format": "che-rest.inspect.v1",
+                "apps": apps,
+                "auth": {
+                    "session": {
+                        "cookie_name": config.auth.session.cookie_name,
+                        "csrf_cookie_name": config.auth.session.csrf_cookie_name,
+                        "ttl_seconds": config.auth.session.ttl_seconds,
+                        "secure": config.auth.session.secure,
+                        "same_site": config.auth.session.same_site,
+                    },
+                },
+                "database": {
+                    "configured": true,
+                },
+            }))?
+        );
         Ok(())
     }
 
@@ -606,6 +679,32 @@ fn app_schema(module: &dyn crate::AppModule) -> Schema {
     let mut ctx = ModuleContext::new();
     module.init(&mut ctx);
     Schema::from_models(ctx.model_schemas().to_vec())
+}
+
+fn api_endpoint_json(endpoint: &ApiEndpoint) -> serde_json::Value {
+    serde_json::json!({
+        "model": endpoint.model_name,
+        "path": endpoint.path,
+        "resource": endpoint.resource,
+        "fields": endpoint.fields.iter().map(|field| serde_json::json!({
+            "name": field.name,
+            "source": field.source,
+            "type": field.ty,
+            "related_model": field.related_model,
+            "read_only": field.read_only,
+            "write_only": field.write_only,
+            "required": field.required,
+            "nullable": field.nullable,
+            "has_default": field.has_default,
+            "choices": field.choices,
+        })).collect::<Vec<_>>(),
+        "filters": endpoint.filters.iter().map(|filter| serde_json::json!({
+            "name": filter.name,
+            "source": filter.source,
+            "type": filter.ty,
+            "nullable": filter.nullable,
+        })).collect::<Vec<_>>(),
+    })
 }
 
 fn models_ts(endpoints: &[ApiEndpoint]) -> String {

@@ -28,6 +28,10 @@ pub fn startproject(options: StartProjectOptions) -> ProjectResult<()> {
         &cargo_toml_template(&options.name, &options.che_rest_path, &options.che_orm_path),
     )?;
     write_file(&project_dir.join("app.toml"), app_toml_template())?;
+    write_file(
+        &project_dir.join("AGENTS.md"),
+        &agents_md_template(options.with_auth),
+    )?;
     write_file(&project_dir.join("src/lib.rs"), lib_rs_template())?;
     write_file(
         &project_dir.join("src/main.rs"),
@@ -45,8 +49,10 @@ pub fn startproject(options: StartProjectOptions) -> ProjectResult<()> {
     println!("Created project {}", project_dir.display());
     println!("Next steps:");
     println!("  cd {}", project_dir.display());
-    println!("  cargo run");
     println!("  cargo run --bin manage -- startapp users");
+    println!("  cargo run --bin manage -- makemigrations");
+    println!("  cargo run --bin manage -- migrate");
+    println!("  cargo run");
 
     Ok(())
 }
@@ -125,6 +131,77 @@ fn app_toml_template() -> &'static str {
     r#"[database]
 url = "sqlite://db.sqlite?mode=rwc"
 "#
+}
+
+fn agents_md_template(with_auth: bool) -> String {
+    let auth_note = if with_auth {
+        "- `che_rest::auth::module()` is installed; session login is available at `/api-session-auth/login/`.\n"
+    } else {
+        "- Authentication is not installed; add `che_rest::auth::module()` before using protected routes.\n"
+    };
+
+    format!(
+        r#"# Project Guide
+
+This is a `che-rest` application. Follow the workflow below instead of creating database tables in
+application startup.
+
+## Canonical Workflow
+
+```bash
+cargo run --bin manage -- startapp users
+cargo run --bin manage -- makemigrations
+cargo run --bin manage -- migrate
+cargo run
+```
+
+`makemigrations` without an app name processes every installed app. Use
+`cargo run --bin manage -- makemigrations users` for one app. `migrate` is the only command that
+creates or changes database tables; `Server::build()` does not alter the schema.
+
+## App Structure
+
+- `src/apps/mod.rs`: installed app registry used by both the server and management commands.
+- `src/apps/<app>/models.rs`: `che-orm` models and database fields.
+- `src/apps/<app>/serializers.rs`: API input/output fields and read-only/system fields.
+- `src/apps/<app>/filters.rs`: list query filters.
+- `src/apps/<app>/views.rs`: typed CRUD viewsets and permissions.
+- `src/apps/<app>/migrations/`: generated SQL migrations and schema snapshot.
+- `src/bin/manage.rs`: management command entrypoint.
+
+Register CRUD with `ctx.viewset_with("/users", views::UserViewSet)`. This registers the model
+schema, API metadata, and router together. Do not use only `ctx.route(...)` for a model API.
+
+## Conventions
+
+- Assign server-owned fields such as `author_id` in `ViewSet::system_create_values()`.
+- Mark server-owned serializer fields with `Field::system()` so clients cannot supply them.
+- Use `IsAuthenticated` for resources that require the current user.
+- WebSocket commands are registered with `ctx.command_handler(...)` and receive `Command.user`.
+- `AppState::app_channels()` is for internal application events and is never a public WebSocket channel.
+- ORM model signals are separate from application channels; bridge them explicitly in `AppModule::subscribe()`.
+- Generated admin uses session cookies and the readable `csrf_token` cookie.
+{auth_note}
+## Verification
+
+After changing a model, run:
+
+```bash
+cargo run --bin manage -- makemigrations
+cargo run --bin manage -- migrate
+cargo check
+```
+
+When adding or changing an endpoint, also run `cargo run --bin manage -- generate-ts` and inspect the
+generated OpenAPI at `/api/openapi.json` while the server is running.
+
+For machine-readable metadata, run:
+
+```bash
+cargo run --bin manage -- inspect --format json
+```
+"#
+    )
 }
 
 fn lib_rs_template() -> &'static str {

@@ -58,6 +58,15 @@ pub fn installed_apps() -> InstalledApps {
 }
 ```
 
+For machine-readable project metadata, inspect the installed apps from the project directory:
+
+```bash
+cargo run --bin manage -- inspect --format json
+```
+
+The stable `che-rest.inspect.v1` document includes models, API endpoints, filters, registered
+commands, migration files, and session configuration.
+
 Server startup:
 
 ```rust
