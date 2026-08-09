@@ -1,16 +1,18 @@
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use axum::{Extension, Json, Router, middleware, response::Html, routing::get};
-use che_orm::{FieldType, Model, ModelSchema, SqliteModel, create_table_sql};
+use che_orm::{FieldType, Model, ModelEvent, ModelSchema, SqliteModel, create_table_sql};
+use futures_util::FutureExt;
+use std::panic::AssertUnwindSafe;
 
 use crate::{
     auth,
-    channels::ChannelConsumer,
     error::AppResult,
+    events::{CommandHandler, EventHandler},
     filters::{FilterSet, FilterSetSpec},
     openapi,
     serializer::{ModelSerializer, Serializer},
-    state::AppState,
+    state::{AppState, AppStateInner},
     views::{ModelViewSet, ViewSet},
 };
 
@@ -61,7 +63,71 @@ pub struct ModuleContext {
     schemas: Vec<ModelSchema>,
     api_endpoints: Vec<ApiEndpoint>,
     auth_enabled: bool,
-    channel_consumer: Option<Arc<dyn ChannelConsumer>>,
+    command_handlers: Vec<(String, Arc<dyn CommandHandler>)>,
+    event_handlers: Vec<(String, Arc<dyn EventHandler>)>,
+    post_save_registrations: Vec<Box<dyn PostSaveRegistration>>,
+}
+
+trait PostSaveRegistration: Send + Sync {
+    fn install(&self, state: &AppState);
+}
+
+struct ModelPostSaveRegistration<M: Model> {
+    event_name: String,
+    _model: std::marker::PhantomData<M>,
+}
+
+impl<M: Model> PostSaveRegistration for ModelPostSaveRegistration<M> {
+    fn install(&self, state: &AppState) {
+        let mut receiver = state.db().signals().subscribe::<M>();
+        let bridge = PostSaveBridge {
+            state: state.downgrade(),
+            event_name: self.event_name.clone(),
+            model: rust_type_name::<M>(),
+        };
+
+        tokio::spawn(async move {
+            loop {
+                match receiver.recv().await {
+                    Ok(ModelEvent::PostSave(event)) => bridge.handle(event).await,
+                    Ok(ModelEvent::PostUpdate(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                        tracing::warn!(
+                            model = %bridge.model,
+                            event = %bridge.event_name,
+                            count,
+                            "post_save bridge lagged"
+                        );
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
+}
+
+struct PostSaveBridge {
+    state: Weak<AppStateInner>,
+    event_name: String,
+    model: String,
+}
+
+impl PostSaveBridge {
+    async fn handle(&self, event: che_orm::PostSaveEvent) {
+        let Some(inner) = self.state.upgrade() else {
+            return;
+        };
+        let state = AppState::from_inner(inner);
+        state.events().emit(crate::AppEvent {
+            name: self.event_name.clone(),
+            user: None,
+            payload: serde_json::json!({
+                "model": self.model.clone(),
+                "created": event.created,
+                "object": event.object,
+            }),
+        });
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -150,19 +216,88 @@ impl ModuleContext {
         self.auth_enabled = true;
     }
 
-    pub fn channel_consumer<C>(&mut self, consumer: C)
+    pub fn command_handler<H>(&mut self, name: impl Into<String>, handler: H)
     where
-        C: ChannelConsumer,
+        H: CommandHandler,
     {
-        self.channel_consumer = Some(Arc::new(consumer));
+        self.command_handlers.push((name.into(), Arc::new(handler)));
     }
 
     pub fn auth_enabled(&self) -> bool {
         self.auth_enabled
     }
 
-    pub(crate) fn registered_channel_consumer(&self) -> Option<Arc<dyn ChannelConsumer>> {
-        self.channel_consumer.clone()
+    pub fn event_handler<H>(&mut self, name: impl Into<String>, handler: H)
+    where
+        H: EventHandler,
+    {
+        self.event_handlers.push((name.into(), Arc::new(handler)));
+    }
+
+    fn install_event_handlers(&self, state: &AppState) {
+        for (name, handler) in &self.event_handlers {
+            let mut receiver = state.events().subscribe(name.clone());
+            let handler = handler.clone();
+            let event_name = name.clone();
+            let state = state.downgrade();
+            tokio::spawn(async move {
+                loop {
+                    match receiver.recv().await {
+                        Ok(event) => {
+                            let Some(inner) = state.upgrade() else {
+                                break;
+                            };
+                            let state = AppState::from_inner(inner);
+                            match AssertUnwindSafe(handler.handle(&state, event))
+                                .catch_unwind()
+                                .await
+                            {
+                                Ok(Ok(())) => {}
+                                Ok(Err(error)) => tracing::error!(
+                                    event = %event_name,
+                                    error = %error,
+                                    "event handler failed"
+                                ),
+                                Err(_) => tracing::error!(
+                                    event = %event_name,
+                                    "event handler panicked"
+                                ),
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                            tracing::warn!(event = %event_name, count, "event handler lagged");
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            });
+        }
+    }
+
+    pub fn post_save<M>(&mut self, event_name: impl Into<String>)
+    where
+        M: Model,
+    {
+        self.post_save_registrations
+            .push(Box::new(ModelPostSaveRegistration::<M> {
+                event_name: event_name.into(),
+                _model: std::marker::PhantomData,
+            }));
+    }
+
+    fn command_handlers(
+        &self,
+    ) -> AppResult<std::collections::HashMap<String, Arc<dyn CommandHandler>>> {
+        let mut commands = std::collections::HashMap::new();
+        for (name, handler) in &self.command_handlers {
+            if commands.insert(name.clone(), handler.clone()).is_some() {
+                return Err(crate::AppError::BadRequest(format!(
+                    "duplicate command handler: {name}"
+                )));
+            }
+        }
+
+        Ok(commands)
     }
 
     pub fn model_schemas(&self) -> &[ModelSchema] {
@@ -230,6 +365,33 @@ where
         resource: base_path.trim_matches('/').to_string(),
         fields,
         filters,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestCommand;
+
+    #[async_trait::async_trait]
+    impl CommandHandler for TestCommand {
+        async fn handle(&self, _state: &AppState, _command: crate::Command) -> AppResult<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn duplicate_command_handlers_are_rejected() {
+        let mut context = ModuleContext::new();
+        context.command_handler("test.command", TestCommand);
+        context.command_handler("test.command", TestCommand);
+
+        let error = match context.command_handlers() {
+            Ok(_) => panic!("duplicate command handlers were accepted"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("duplicate command handler"));
     }
 }
 
@@ -303,12 +465,19 @@ impl Server {
         }
 
         let auth_enabled = ctx.auth_enabled();
-        let channel_consumer = ctx.registered_channel_consumer();
         let api_endpoints = ctx.api_endpoints().to_vec();
 
-        for sql in ctx.sql {
-            self.state.db().apply_sql(&sql).await?;
+        let state = self.state;
+        state.events().configure_commands(ctx.command_handlers()?);
+
+        for sql in &ctx.sql {
+            state.db().apply_sql(&sql).await?;
         }
+
+        for registration in &ctx.post_save_registrations {
+            registration.install(&state);
+        }
+        ctx.install_event_handlers(&state);
 
         let openapi_spec = openapi::openapi_json(
             &api_endpoints,
@@ -360,8 +529,6 @@ impl Server {
             router = router.merge(auth::views::routes());
         }
 
-        Ok(router
-            .layer(Extension(self.state))
-            .layer(Extension(channel_consumer)))
+        Ok(router.layer(Extension(state)))
     }
 }

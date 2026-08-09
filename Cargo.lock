@@ -250,6 +250,7 @@ dependencies = [
  "sha2",
  "sqlx",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -280,6 +281,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "toml",
+ "tracing",
 ]
 
 [[package]]

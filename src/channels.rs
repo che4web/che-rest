@@ -1,7 +1,5 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use axum::{
     Extension, Router,
@@ -31,18 +29,6 @@ const USER_CHANNEL_PREFIX: &str = "user:";
 #[derive(Debug, Clone, Default)]
 pub struct Channels {
     inner: Arc<Mutex<HashMap<String, broadcast::Sender<Value>>>>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ChannelEvent {
-    pub user: CurrentUser,
-    pub channel: String,
-    pub payload: Value,
-}
-
-#[async_trait::async_trait]
-pub trait ChannelConsumer: Send + Sync + 'static {
-    async fn consume(&self, state: &AppState, event: ChannelEvent) -> AppResult<()>;
 }
 
 impl Channels {
@@ -106,23 +92,17 @@ impl AppModule for ChannelModule {
 async fn websocket(
     user: Option<Extension<CurrentUser>>,
     Extension(state): Extension<AppState>,
-    Extension(consumer): Extension<Option<Arc<dyn ChannelConsumer>>>,
     upgrade: WebSocketUpgrade,
 ) -> AppResult<Response> {
     let user = user.ok_or_else(|| {
         AppError::Unauthorized("authentication credentials were not provided".to_string())
     })?;
     Ok(upgrade
-        .on_upgrade(move |socket| handle_socket(socket, user.0, state, consumer))
+        .on_upgrade(move |socket| handle_socket(socket, user.0, state))
         .into_response())
 }
 
-async fn handle_socket(
-    socket: WebSocket,
-    user: CurrentUser,
-    state: AppState,
-    consumer: Option<Arc<dyn ChannelConsumer>>,
-) {
+async fn handle_socket(socket: WebSocket, user: CurrentUser, state: AppState) {
     let channels = state.channels().clone();
     let (mut sender, mut receiver) = socket.split();
     let (outbound, mut outbound_receiver) = mpsc::channel(OUTBOUND_CAPACITY);
@@ -160,7 +140,7 @@ async fn handle_socket(
             Err(_) => {
                 let _ = send_json(
                     &outbound,
-                    json!({ "type": "error", "code": "invalid_command", "detail": "expected JSON with action and channel" }),
+                    json!({ "type": "error", "code": "invalid_command", "detail": "expected JSON with action, channel, event, and payload" }),
                 )
                 .await;
                 continue;
@@ -192,25 +172,32 @@ async fn handle_socket(
 
         match command.action.as_str() {
             "publish" => {
-                let Some(consumer) = consumer.as_ref() else {
+                let Some(event) = command.event.as_deref() else {
                     let _ = send_json(
                         &outbound,
-                        json!({ "type": "error", "code": "consumer_not_configured", "detail": "no channel consumer is configured" }),
+                        json!({ "type": "error", "code": "missing_event", "detail": "publish requires an event name" }),
                     )
                     .await;
                     continue;
                 };
-                let event = ChannelEvent {
-                    user: user.clone(),
-                    channel: user_channel(user.id),
-                    payload: command.payload.unwrap_or(Value::Null),
-                };
-                if let Err(error) = consumer.consume(&state, event).await {
+                if let Err(error) = state
+                    .events()
+                    .dispatch_command(
+                        &state,
+                        event,
+                        user.clone(),
+                        command.payload.unwrap_or(Value::Null),
+                    )
+                    .await
+                {
                     let _ = send_json(
                         &outbound,
-                        json!({ "type": "error", "code": "consumer_error", "detail": error.to_string() }),
+                        json!({ "type": "error", "code": "command_error", "detail": error.to_string() }),
                     )
                     .await;
+                } else {
+                    let _ =
+                        send_json(&outbound, json!({ "type": "published", "event": event })).await;
                 }
             }
             "subscribe"
@@ -275,7 +262,7 @@ async fn handle_socket(
             _ => {
                 let _ = send_json(
                     &outbound,
-                    json!({ "type": "error", "code": "unknown_action", "detail": "action must be subscribe or unsubscribe" }),
+                    json!({ "type": "error", "code": "unknown_action", "detail": "action must be subscribe, unsubscribe, or publish" }),
                 )
                 .await;
             }
@@ -356,6 +343,7 @@ fn user_channel(user_id: i64) -> String {
 struct ClientCommand {
     action: String,
     channel: Option<String>,
+    event: Option<String>,
     payload: Option<Value>,
 }
 

@@ -837,10 +837,16 @@ export interface ChannelSubscriptionEvent {
   channel: string;
 }
 
+export interface ChannelPublishedEvent {
+  type: "published";
+  event: string;
+}
+
 export type ChannelEvent<T = unknown> =
   | ChannelMessage<T>
   | ChannelError
-  | ChannelSubscriptionEvent;
+  | ChannelSubscriptionEvent
+  | ChannelPublishedEvent;
 
 export interface ChannelClientOptions {
   url?: string;
@@ -900,8 +906,8 @@ export class ChannelClient {
     this.send({ action: "unsubscribe", channel });
   }
 
-  publish(payload: unknown) {
-    this.send({ action: "publish", payload });
+  publish(event: string, payload: unknown) {
+    this.send({ action: "publish", event, payload });
   }
 
   onEvent(listener: (event: ChannelEvent) => void) {
@@ -927,6 +933,7 @@ export class ChannelClient {
   private send(payload: {
     action: "subscribe" | "unsubscribe" | "publish";
     channel?: string;
+    event?: string;
     payload?: unknown;
   }) {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {

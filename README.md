@@ -245,6 +245,35 @@ Generated TypeScript clients expose `setAuthToken(token)` in `api_client.ts`.
 
 ## WebSocket Channels
 
+### Model Signals
+
+Modules can forward successful ORM saves to the application event bus:
+
+```rust
+fn init(&self, ctx: &mut che_rest::ModuleContext) {
+    ctx.model::<Message>();
+    ctx.post_save::<Message>("chat.message.created");
+    ctx.event_handler("chat.message.created", NotifyMessage);
+}
+```
+
+The generated `post_save` event payload has this shape:
+
+```json
+{
+  "model": "Message",
+  "created": true,
+  "object": {
+    "id": 1,
+    "text": "Hello"
+  }
+}
+```
+
+`post_save` is emitted after successful ORM create, update, and save operations. Handlers run through
+the internal event bus and their errors are logged without changing the already-completed database
+operation. Raw SQL and changes made by another process do not emit signals.
+
 Install the channel module together with auth. The WebSocket endpoint is available at `/api/ws/`:
 
 ```rust
@@ -273,23 +302,43 @@ channels.publish_user(42, serde_json::json!({
 }));
 ```
 
-An application can register one consumer for events published by clients. The server always assigns
-the current user's private channel; the client cannot choose another user's channel:
+An application registers command handlers and internal event handlers. The server always associates a
+client command with the authenticated user; the client cannot choose another user's channel:
 
 ```rust
-struct ChatConsumer;
+struct SendMessage;
 
 #[che_rest::async_trait]
-impl che_rest::ChannelConsumer for ChatConsumer {
-    async fn consume(
+impl che_rest::CommandHandler for SendMessage {
+    async fn handle(
         &self,
         state: &che_rest::AppState,
-        event: che_rest::ChannelEvent,
+        command: che_rest::Command,
     ) -> che_rest::AppResult<()> {
-        state.channels().publish_user(
-            event.user.id,
-            serde_json::json!({ "kind": "accepted", "payload": event.payload }),
-        );
+        state.events().emit(che_rest::AppEvent {
+            name: "chat.message.created".to_string(),
+            user: Some(command.user),
+            payload: command.payload,
+        });
+        Ok(())
+    }
+}
+
+struct NotifyMessage;
+
+#[che_rest::async_trait]
+impl che_rest::EventHandler for NotifyMessage {
+    async fn handle(
+        &self,
+        state: &che_rest::AppState,
+        event: che_rest::AppEvent,
+    ) -> che_rest::AppResult<()> {
+        if let Some(user) = event.user {
+            state.channels().publish_user(
+                user.id,
+                serde_json::json!({ "kind": event.name, "payload": event.payload }),
+            );
+        }
         Ok(())
     }
 }
@@ -300,19 +349,23 @@ impl che_rest::AppModule for ChatModule {
     fn name(&self) -> &'static str { "chat" }
 
     fn init(&self, ctx: &mut che_rest::ModuleContext) {
-        ctx.channel_consumer(ChatConsumer);
+        ctx.command_handler("chat.message.send", SendMessage);
+        ctx.event_handler("chat.message.created", NotifyMessage);
     }
 }
 ```
 
-The generated client publishes to the current user's channel through the registered consumer:
+The generated client sends a command to the registered command handler:
 
 ```typescript
 await channels.connect();
-channels.publish({ kind: "send_message", text: "Hello" });
+channels.publish("chat.message.send", { text: "Hello" });
 ```
 
-If no consumer is registered, client publication receives a `consumer_not_configured` error.
+Each command has one handler. Internal events can have multiple handlers; all of them run in
+parallel through independent broadcast subscriptions, and one failure does not cancel the others.
+If no command handler is registered, the client receives a `command_error` response. Application code
+can also subscribe directly with `state.events().subscribe("chat.message.created")`.
 
 Connections must be authenticated. Non-browser clients can provide `Authorization: Token <token>`
 during the WebSocket upgrade. Browser `WebSocket` connections use the existing same-origin session
@@ -351,10 +404,10 @@ socket.addEventListener("message", ({ data }) => {
 ```
 
 Each connection is automatically subscribed to its private `user:{id}` channel. Client publication
-is delivered only to the single registered consumer with the authenticated `CurrentUser`; the
-consumer may respond through `publish_user`. Clients cannot subscribe directly to `user:` channels.
-Other channel names may contain ASCII letters, numbers, `:`, `-`, `_`, and `.`. The server confirms
-subscription changes with `subscribed` and `unsubscribed` messages.
+is routed to the command handler with the authenticated `CurrentUser`; event handlers may respond
+through `publish_user`. Clients cannot subscribe directly to `user:` channels. Other channel names
+may contain ASCII letters, numbers, `:`, `-`, `_`, and `.`. The server confirms subscription changes
+with `subscribed` and `unsubscribed` messages.
 
 This is in-memory pub/sub for one server process: messages are delivered only to currently connected
 clients, are not persisted, and do not cross process boundaries. A slow receiver receives a `lagged`
