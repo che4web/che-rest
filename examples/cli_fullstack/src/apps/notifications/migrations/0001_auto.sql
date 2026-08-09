@@ -1,0 +1,5 @@
+CREATE TABLE IF NOT EXISTS notifications_notification (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

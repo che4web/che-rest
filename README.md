@@ -67,6 +67,17 @@ cargo run --bin manage -- inspect --format json
 The stable `che-rest.inspect.v1` document includes models, API endpoints, filters, registered
 commands, migration files, and session configuration.
 
+Management commands that generate or apply changes support machine-readable output:
+
+```bash
+cargo run --bin manage -- makemigrations --format json
+cargo run --bin manage -- migrate --format json
+cargo run --bin manage -- generate-ts --format json
+cargo run --bin manage -- generate-admin --format json
+```
+
+The default `text` format remains intended for interactive use.
+
 Server startup:
 
 ```rust

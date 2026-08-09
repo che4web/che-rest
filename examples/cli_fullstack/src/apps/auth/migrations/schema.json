@@ -1,0 +1,280 @@
+{
+  "models": [
+    {
+      "table": "auth_sessions",
+      "fields": [
+        {
+          "name": "id",
+          "ty": "integer",
+          "primary_key": true,
+          "nullable": false,
+          "auto": true,
+          "unique": false,
+          "max_length": null,
+          "default": null,
+          "auto_now_add": false,
+          "auto_now": false,
+          "foreign_key": null,
+          "choices": null
+        },
+        {
+          "name": "user_id",
+          "ty": "integer",
+          "primary_key": false,
+          "nullable": false,
+          "auto": false,
+          "unique": false,
+          "max_length": null,
+          "default": null,
+          "auto_now_add": false,
+          "auto_now": false,
+          "foreign_key": {
+            "table": "auth_users",
+            "on_delete": "no_action"
+          },
+          "choices": null
+        },
+        {
+          "name": "key_hash",
+          "ty": "text",
+          "primary_key": false,
+          "nullable": false,
+          "auto": false,
+          "unique": true,
+          "max_length": 64,
+          "default": null,
+          "auto_now_add": false,
+          "auto_now": false,
+          "foreign_key": null,
+          "choices": null
+        },
+        {
+          "name": "csrf_hash",
+          "ty": "text",
+          "primary_key": false,
+          "nullable": false,
+          "auto": false,
+          "unique": false,
+          "max_length": null,
+          "default": null,
+          "auto_now_add": false,
+          "auto_now": false,
+          "foreign_key": null,
+          "choices": null
+        },
+        {
+          "name": "data",
+          "ty": "text",
+          "primary_key": false,
+          "nullable": false,
+          "auto": false,
+          "unique": false,
+          "max_length": null,
+          "default": null,
+          "auto_now_add": false,
+          "auto_now": false,
+          "foreign_key": null,
+          "choices": null
+        },
+        {
+          "name": "revision",
+          "ty": "integer",
+          "primary_key": false,
+          "nullable": false,
+          "auto": false,
+          "unique": false,
+          "max_length": null,
+          "default": null,
+          "auto_now_add": false,
+          "auto_now": false,
+          "foreign_key": null,
+          "choices": null
+        },
+        {
+          "name": "expires_at",
+          "ty": "date_time",
+          "primary_key": false,
+          "nullable": false,
+          "auto": false,
+          "unique": false,
+          "max_length": null,
+          "default": null,
+          "auto_now_add": false,
+          "auto_now": false,
+          "foreign_key": null,
+          "choices": null
+        },
+        {
+          "name": "created_at",
+          "ty": "date_time",
+          "primary_key": false,
+          "nullable": false,
+          "auto": false,
+          "unique": false,
+          "max_length": null,
+          "default": null,
+          "auto_now_add": true,
+          "auto_now": false,
+          "foreign_key": null,
+          "choices": null
+        }
+      ],
+      "indexes": []
+    },
+    {
+      "table": "auth_tokens",
+      "fields": [
+        {
+          "name": "id",
+          "ty": "integer",
+          "primary_key": true,
+          "nullable": false,
+          "auto": true,
+          "unique": false,
+          "max_length": null,
+          "default": null,
+          "auto_now_add": false,
+          "auto_now": false,
+          "foreign_key": null,
+          "choices": null
+        },
+        {
+          "name": "user_id",
+          "ty": "integer",
+          "primary_key": false,
+          "nullable": false,
+          "auto": false,
+          "unique": false,
+          "max_length": null,
+          "default": null,
+          "auto_now_add": false,
+          "auto_now": false,
+          "foreign_key": {
+            "table": "auth_users",
+            "on_delete": "no_action"
+          },
+          "choices": null
+        },
+        {
+          "name": "key_hash",
+          "ty": "text",
+          "primary_key": false,
+          "nullable": false,
+          "auto": false,
+          "unique": true,
+          "max_length": 64,
+          "default": null,
+          "auto_now_add": false,
+          "auto_now": false,
+          "foreign_key": null,
+          "choices": null
+        }
+      ],
+      "indexes": []
+    },
+    {
+      "table": "auth_users",
+      "fields": [
+        {
+          "name": "id",
+          "ty": "integer",
+          "primary_key": true,
+          "nullable": false,
+          "auto": true,
+          "unique": false,
+          "max_length": null,
+          "default": null,
+          "auto_now_add": false,
+          "auto_now": false,
+          "foreign_key": null,
+          "choices": null
+        },
+        {
+          "name": "username",
+          "ty": "text",
+          "primary_key": false,
+          "nullable": false,
+          "auto": false,
+          "unique": true,
+          "max_length": 150,
+          "default": null,
+          "auto_now_add": false,
+          "auto_now": false,
+          "foreign_key": null,
+          "choices": null
+        },
+        {
+          "name": "password_hash",
+          "ty": "text",
+          "primary_key": false,
+          "nullable": false,
+          "auto": false,
+          "unique": false,
+          "max_length": null,
+          "default": null,
+          "auto_now_add": false,
+          "auto_now": false,
+          "foreign_key": null,
+          "choices": null
+        },
+        {
+          "name": "is_active",
+          "ty": "boolean",
+          "primary_key": false,
+          "nullable": false,
+          "auto": false,
+          "unique": false,
+          "max_length": null,
+          "default": "true",
+          "auto_now_add": false,
+          "auto_now": false,
+          "foreign_key": null,
+          "choices": null
+        },
+        {
+          "name": "is_staff",
+          "ty": "boolean",
+          "primary_key": false,
+          "nullable": false,
+          "auto": false,
+          "unique": false,
+          "max_length": null,
+          "default": "false",
+          "auto_now_add": false,
+          "auto_now": false,
+          "foreign_key": null,
+          "choices": null
+        },
+        {
+          "name": "is_admin",
+          "ty": "boolean",
+          "primary_key": false,
+          "nullable": false,
+          "auto": false,
+          "unique": false,
+          "max_length": null,
+          "default": "false",
+          "auto_now_add": false,
+          "auto_now": false,
+          "foreign_key": null,
+          "choices": null
+        },
+        {
+          "name": "is_superuser",
+          "ty": "boolean",
+          "primary_key": false,
+          "nullable": false,
+          "auto": false,
+          "unique": false,
+          "max_length": null,
+          "default": "false",
+          "auto_now_add": false,
+          "auto_now": false,
+          "foreign_key": null,
+          "choices": null
+        }
+      ],
+      "indexes": []
+    }
+  ]
+}

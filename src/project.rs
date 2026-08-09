@@ -200,6 +200,13 @@ For machine-readable metadata, run:
 ```bash
 cargo run --bin manage -- inspect --format json
 ```
+
+The migration and code generation commands also support `--format json` for agent workflows.
+
+```bash
+cargo run --bin manage -- makemigrations --format json
+cargo run --bin manage -- migrate --format json
+```
 "#
     )
 }
