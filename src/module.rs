@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::{Extension, Json, Router, middleware, response::Html, routing::get};
-use che_orm::{FieldType, Model, ModelSchema, SqliteModel, create_table_sql};
+use che_orm::{FieldType, Model, ModelSchema, SqliteModel};
 
 use crate::{
     auth,
@@ -61,7 +61,6 @@ impl InstalledApps {
 #[derive(Default)]
 pub struct ModuleContext {
     routers: Vec<Router>,
-    sql: Vec<String>,
     schemas: Vec<ModelSchema>,
     api_endpoints: Vec<ApiEndpoint>,
     auth_enabled: bool,
@@ -108,7 +107,6 @@ impl ModuleContext {
     where
         M: Model,
     {
-        self.sql.push(create_table_sql::<M>());
         self.schemas.push(ModelSchema::from_model::<M>());
     }
 
@@ -349,10 +347,6 @@ impl Server {
 
         let state = self.state;
         let commands = Commands::from_handlers(ctx.command_handlers()?);
-
-        for sql in &ctx.sql {
-            state.db().apply_sql(&sql).await?;
-        }
 
         for module in &self.modules {
             module.subscribe(&state);

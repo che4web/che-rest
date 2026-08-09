@@ -37,7 +37,7 @@ impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             cookie_name: "che_rest_session".to_string(),
-            csrf_cookie_name: "che_rest_csrf".to_string(),
+            csrf_cookie_name: "csrf_token".to_string(),
             ttl_seconds: 604_800,
             secure: false,
             same_site: "Lax".to_string(),

@@ -116,7 +116,7 @@ default-run = "{name}"
 axum = "0.8"
 che-orm = {{ path = "{che_orm_path}" }}
 che-rest = {{ path = "{che_rest_path}" }}
-tokio = {{ version = "1", features = ["macros", "net", "rt-multi-thread"] }}
+tokio = {{ version = "1", features = ["macros", "net", "rt-multi-thread", "sync"] }}
 "#
     )
 }

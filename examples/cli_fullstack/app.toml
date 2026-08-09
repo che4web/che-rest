@@ -1,0 +1,9 @@
+[database]
+url = "sqlite://db.sqlite?mode=rwc"
+
+[auth.session]
+cookie_name = "cli_fullstack_session"
+csrf_cookie_name = "csrf_token"
+ttl_seconds = 604800
+secure = false
+same_site = "Lax"

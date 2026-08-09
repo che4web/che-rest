@@ -32,7 +32,7 @@ enum Command {
         models: Vec<String>,
     },
     Makemigrations {
-        app: String,
+        app: Option<String>,
 
         #[arg(long, default_value = "src/apps")]
         apps_dir: PathBuf,
@@ -118,7 +118,7 @@ impl Management {
                 app,
                 apps_dir,
                 name,
-            } => self.makemigrations(&app, apps_dir, &name)?,
+            } => self.makemigrations(app.as_deref(), apps_dir, &name)?,
             Command::Migrate {
                 app,
                 apps_dir,
@@ -175,14 +175,26 @@ impl Management {
         Ok(())
     }
 
-    fn makemigrations(&self, app: &str, apps_dir: PathBuf, name: &str) -> ManageResult<()> {
+    fn makemigrations(&self, app: Option<&str>, apps_dir: PathBuf, name: &str) -> ManageResult<()> {
+        match app {
+            Some(app) => self.makemigrations_app(app, &apps_dir, name),
+            None => {
+                for app in self.apps.names() {
+                    self.makemigrations_app(app, &apps_dir, name)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn makemigrations_app(&self, app: &str, apps_dir: &Path, name: &str) -> ManageResult<()> {
         validate_app_name(app)?;
         let module = self
             .apps
             .find(app)
             .ok_or_else(|| format!("app is not installed: {app}"))?;
 
-        let migrations_dir = app_migrations_dir(&apps_dir, app);
+        let migrations_dir = app_migrations_dir(apps_dir, app);
         fs::create_dir_all(&migrations_dir)?;
 
         let snapshot_path = migrations_dir.join("schema.json");
@@ -287,7 +299,10 @@ impl Management {
             &out.join("src/admin/adminSchema.ts"),
             &admin_schema_compat_ts(),
         )?;
-        write_generated_file(&out.join("src/generated/api_client.ts"), api_client_ts())?;
+        write_generated_file(
+            &out.join("src/generated/api_client.ts"),
+            &admin_api_client_ts(),
+        )?;
         write_generated_file(&out.join("src/generated/channels.ts"), channels_ts())?;
         write_generated_file(
             &out.join("src/generated/models.ts"),
@@ -757,7 +772,7 @@ export interface ModelApi<
 export const apiClient = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL ?? "/api",
   withCredentials: true,
-  xsrfCookieName: "che_rest_csrf",
+  xsrfCookieName: "csrf_token",
   xsrfHeaderName: "X-CSRF-Token",
   headers: {
     "Content-Type": "application/json",
@@ -814,6 +829,28 @@ export function createModelApi<
   };
 }
 "#
+}
+
+fn admin_api_client_ts() -> String {
+    api_client_ts().replace(
+        r#"
+let authToken: string | null = null;
+
+export function setAuthToken(token: string | null) {
+  authToken = token;
+}
+
+apiClient.interceptors.request.use((config) => {
+  if (authToken) {
+    config.headers.Authorization = `Token ${authToken}`;
+  } else {
+    delete config.headers.Authorization;
+  }
+  return config;
+});
+"#,
+        "",
+    )
 }
 
 fn channels_ts() -> &'static str {

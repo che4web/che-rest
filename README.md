@@ -40,6 +40,10 @@ Include the built-in auth module in the generated app registry:
 cargo run --bin che-rest -- startproject my_project --with-auth
 ```
 
+A complete runnable example with CRUD, authentication, WebSocket commands, internal channels,
+TypeScript generation, and Vue admin generation is available in
+[`examples/cli_fullstack`](examples/cli_fullstack/README.md).
+
 ## Management
 
 Applications define one installed app list and use it for both the API server and management commands:
@@ -61,6 +65,14 @@ let app = Server::new(state)
     .install(apps::installed_apps())
     .build()
     .await?;
+```
+
+Server startup does not create model tables. Generate and apply migrations before starting the
+server:
+
+```bash
+cargo run --bin manage -- makemigrations
+cargo run --bin manage -- migrate
 ```
 
 Installed app routes are served under `/api` by default. A viewset registered as `"/users"` is exposed as `/api/users`.
@@ -376,7 +388,7 @@ cookie and a readable CSRF cookie. For same-origin applications, add optional co
 ```toml
 [auth.session]
 cookie_name = "che_rest_session"
-csrf_cookie_name = "che_rest_csrf"
+csrf_cookie_name = "csrf_token"
 ttl_seconds = 604800
 secure = false # set true when serving over HTTPS
 same_site = "Lax"
@@ -390,7 +402,7 @@ curl -i -c cookies.txt -X POST http://127.0.0.1:3000/api-session-auth/login/ \
   -d '{"username":"admin","password":"secret"}'
 ```
 
-Unsafe requests made with a session must include the value from the `che_rest_csrf` cookie in
+Unsafe requests made with a session must include the value from the `csrf_token` cookie in
 the `X-CSRF-Token` header. Token-authenticated requests do not require CSRF validation.
 
 Session data can be typed by a downstream application:
@@ -475,9 +487,10 @@ Then add the app to `apps::installed_apps()`:
 InstalledApps::new().add(taskapp::module())
 ```
 
-Create app-scoped migrations from the installed app metadata:
+Create migrations for all installed apps, or scope generation to one app:
 
 ```bash
+cargo run --bin manage -- makemigrations
 cargo run --bin manage -- makemigrations users
 ```
 
@@ -579,14 +592,16 @@ Use `--force` to overwrite static project files from templates:
 cargo run --bin manage -- generate-admin --out frontend/admin --force
 ```
 
-The generated admin login uses `/api-token-auth/` and stores the returned token in `localStorage`.
-It requires `che_rest::auth::module()` to be installed. The generated Vite dev server proxies
-`/api` and `/api-token-auth/` to `http://127.0.0.1:3000` by default.
-Configure API URLs with Vite env variables for deployments or a different backend URL:
+The generated admin uses session-cookie authentication through `/api-session-auth/login/` and
+requires `che_rest::auth::module()` to be installed. The generated Vite dev server proxies `/api`
+and `/api-session-auth/` to `http://127.0.0.1:3000` by default. Configure the backend target and
+relative API URLs with Vite env variables:
 
 ```env
-VITE_API_BASE_URL=http://127.0.0.1:3000/api
-VITE_AUTH_URL=http://127.0.0.1:3000/api-token-auth/
+VITE_API_TARGET=http://127.0.0.1:3000
+VITE_API_BASE_URL=/api
+VITE_AUTH_URL=/api-session-auth/login/
+VITE_LOGOUT_URL=/api-session-auth/logout/
 ```
 
 Override static admin templates by mirroring output paths in a templates directory:
@@ -617,6 +632,14 @@ Defaults:
 
 ```text
 --name auto
+```
+
+`makemigrations` without an app argument processes all installed apps. Pass an app name to limit
+generation to one app:
+
+```bash
+cargo run --bin manage -- makemigrations
+cargo run --bin manage -- makemigrations users
 ```
 
 Generated migrations are stored under:
