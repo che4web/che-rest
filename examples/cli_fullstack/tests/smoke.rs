@@ -61,6 +61,12 @@ async fn fullstack_session_rest_and_websocket_smoke() {
         .cookie_store(true)
         .build()
         .unwrap();
+    let tasks = client
+        .get(format!("{base_url}/api/tasks/"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(tasks.status(), reqwest::StatusCode::UNAUTHORIZED);
     let login = client
         .post(format!("{base_url}/api-session-auth/login/"))
         .json(&json!({"username": "admin", "password": "secret"}))
@@ -74,12 +80,15 @@ async fn fullstack_session_rest_and_websocket_smoke() {
     let user = user_state
         .db()
         .create::<che_rest::auth::models::User>()
-        .set("username", "admin")
-        .set("password_hash", password_hash)
-        .set("is_active", true)
-        .set("is_staff", true)
-        .set("is_admin", true)
-        .set("is_superuser", true)
+        .set(che_rest::auth::models::UserFields::USERNAME, "admin")
+        .set(
+            che_rest::auth::models::UserFields::PASSWORD_HASH,
+            password_hash,
+        )
+        .set(che_rest::auth::models::UserFields::IS_ACTIVE, true)
+        .set(che_rest::auth::models::UserFields::IS_STAFF, true)
+        .set(che_rest::auth::models::UserFields::IS_ADMIN, true)
+        .set(che_rest::auth::models::UserFields::IS_SUPERUSER, true)
         .execute()
         .await
         .unwrap();
@@ -120,9 +129,22 @@ async fn fullstack_session_rest_and_websocket_smoke() {
     assert_eq!(rest_event["name"], "REST task");
     assert_eq!(rest_event["author_id"], user.id);
 
+    let updated_task = client
+        .patch(format!("{base_url}/api/tasks/1/"))
+        .header("X-CSRF-Token", csrf)
+        .json(&json!({"name": "Updated REST task"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(updated_task.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        updated_task.json::<serde_json::Value>().await.unwrap()["name"],
+        "Updated REST task"
+    );
+
     let tasks = client
         .get(format!(
-            "{base_url}/api/tasks/?name__contains=REST&ordering=-name"
+            "{base_url}/api/tasks/?name__contains=Updated&ordering=-created_at"
         ))
         .send()
         .await
@@ -130,7 +152,7 @@ async fn fullstack_session_rest_and_websocket_smoke() {
     assert_eq!(tasks.status(), reqwest::StatusCode::OK);
     let tasks = tasks.json::<serde_json::Value>().await.unwrap();
     assert_eq!(tasks["count"], 1);
-    assert_eq!(tasks["results"][0]["name"], "REST task");
+    assert_eq!(tasks["results"][0]["name"], "Updated REST task");
 
     let mut request = format!("ws://{address}/api/ws/")
         .into_client_request()
