@@ -668,6 +668,10 @@ Generated migrations are stored under:
 src/apps/users/migrations/
 ```
 
+Migration versions are local to each app, so every app can begin at `0001`.
+`migrate` applies them with the installed app name as a stable namespace; do
+not rename an installed app after its migrations have been deployed.
+
 Apply migrations for one app. The database URL is read from `[database].url` in `app.toml`:
 
 ```bash

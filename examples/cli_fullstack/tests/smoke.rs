@@ -4,7 +4,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use che_orm::Model;
 use cli_fullstack::apps;
 use futures_util::{SinkExt, StreamExt};
 use reqwest::header::{COOKIE, SET_COOKIE};
@@ -40,7 +39,7 @@ async fn fullstack_session_rest_and_websocket_smoke() {
             .db()
             .apply_migrations_dir_with_namespace(
                 app,
-                root.join("src/apps").join(app).join("migrations"),
+                &root.join("src/apps").join(app).join("migrations"),
             )
             .await
             .unwrap();
@@ -72,8 +71,9 @@ async fn fullstack_session_rest_and_websocket_smoke() {
 
     let password_hash = che_rest::auth::models::hash_password("secret").unwrap();
     let user_state = state_for_user(&config_path).await;
-    let user = che_rest::auth::models::User::objects(user_state.db())
-        .create()
+    let user = user_state
+        .db()
+        .create::<che_rest::auth::models::User>()
         .set("username", "admin")
         .set("password_hash", password_hash)
         .set("is_active", true)
@@ -119,6 +119,18 @@ async fn fullstack_session_rest_and_websocket_smoke() {
     let rest_event = events.recv().await.unwrap();
     assert_eq!(rest_event["name"], "REST task");
     assert_eq!(rest_event["author_id"], user.id);
+
+    let tasks = client
+        .get(format!(
+            "{base_url}/api/tasks/?name__contains=REST&ordering=-name"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(tasks.status(), reqwest::StatusCode::OK);
+    let tasks = tasks.json::<serde_json::Value>().await.unwrap();
+    assert_eq!(tasks["count"], 1);
+    assert_eq!(tasks["results"][0]["name"], "REST task");
 
     let mut request = format!("ws://{address}/api/ws/")
         .into_client_request()

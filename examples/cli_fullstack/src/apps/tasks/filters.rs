@@ -5,6 +5,7 @@ use super::models::{Task, TaskFields};
 static TASK_FILTERS: &[Filter<Task>] = &[
     Filter::exact(TaskFields::NAME),
     Filter::contains(TaskFields::NAME),
+    Filter::exact(TaskFields::CREATED_AT),
 ];
 
 #[derive(Clone, Copy, Default)]

@@ -3,7 +3,7 @@ pub mod models;
 pub mod serializers;
 pub mod views;
 
-use che_orm::{Model, ModelEvent};
+use che_orm::ModelEvent;
 use che_rest::{AppModule, AppResult, AppState, Command, CommandHandler, ModuleContext};
 
 pub fn module() -> TasksModule {
@@ -24,8 +24,9 @@ impl CommandHandler for CreateTask {
             .filter(|name| !name.trim().is_empty())
             .ok_or_else(|| che_rest::AppError::BadRequest("name is required".to_string()))?;
 
-        models::Task::objects(state.db())
-            .create()
+        state
+            .db()
+            .create::<models::Task>()
             .set("author_id", command.user.id)
             .set("name", name)
             .execute()

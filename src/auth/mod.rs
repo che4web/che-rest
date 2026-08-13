@@ -9,10 +9,7 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use che_orm::{
-    Model,
-    chrono::{Duration, Utc},
-};
+use che_orm::chrono::{Duration, Utc};
 use rand::RngCore;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -20,7 +17,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{AppError, AppModule, AppResult, ModuleContext, state::AppState};
 
-use self::models::{AuthSession, AuthToken, User};
+use self::models::{AuthSession, AuthSessionFields, AuthToken, AuthTokenFields, User};
 
 #[derive(Debug, Clone)]
 pub struct CurrentUser {
@@ -153,18 +150,16 @@ pub async fn auth_middleware(
 }
 
 async fn load_token_user(state: &AppState, token: &str) -> Option<User> {
-    let tokens = AuthToken::objects(state.db())
-        .query()
-        .eq("key_hash", token_hash(token))
+    let tokens = state
+        .db()
+        .query::<AuthToken>()
+        .filter(AuthTokenFields::KEY_HASH.eq(token_hash(token)))
         .limit(1)
         .all()
         .await
         .ok()?;
     let auth_token = tokens.into_iter().next()?;
-    let user = User::objects(state.db())
-        .get(auth_token.user_id)
-        .await
-        .ok()?;
+    let user = state.db().get::<User>(auth_token.user_id).await.ok()?;
     user.is_active.then_some(user)
 }
 
@@ -179,9 +174,10 @@ fn current_user(user: &User) -> CurrentUser {
 }
 
 pub(crate) async fn load_session(state: &AppState, key: &str) -> Option<(CurrentSession, User)> {
-    let sessions = AuthSession::objects(state.db())
-        .query()
-        .eq("key_hash", token_hash(key))
+    let sessions = state
+        .db()
+        .query::<AuthSession>()
+        .filter(AuthSessionFields::KEY_HASH.eq(token_hash(key)))
         .limit(1)
         .all()
         .await
@@ -191,7 +187,7 @@ pub(crate) async fn load_session(state: &AppState, key: &str) -> Option<(Current
         return None;
     }
     let data = serde_json::from_str(&session.data).ok()?;
-    let user = User::objects(state.db()).get(session.user_id).await.ok()?;
+    let user = state.db().get::<User>(session.user_id).await.ok()?;
     if !user.is_active {
         return None;
     }

@@ -1,8 +1,6 @@
 use std::{future::Future, marker::PhantomData, pin::Pin};
 
-use che_orm::{
-    FieldInfo, FieldType, Model, NaiveDateTime, SqliteBackend, SqliteModel, SqliteValue,
-};
+use che_orm::{Database, FieldInfo, FieldType, Model, NaiveDateTime, SqliteModel, SqliteValue};
 use serde_json::{Map, Value};
 
 #[derive(Clone, Copy)]
@@ -10,7 +8,7 @@ pub struct RelatedSerializer {
     pub(crate) model_name: fn() -> &'static str,
     pub(crate) serialize:
         for<'a> fn(
-            &'a SqliteBackend,
+            &'a Database,
             i64,
         ) -> Pin<Box<dyn Future<Output = che_orm::Result<Value>> + Send + 'a>>,
 }
@@ -42,7 +40,7 @@ impl RelatedSerializer {
 
     pub fn serialize<'a>(
         &self,
-        db: &'a SqliteBackend,
+        db: &'a Database,
         id: i64,
     ) -> Pin<Box<dyn Future<Output = che_orm::Result<Value>> + Send + 'a>> {
         (self.serialize)(db, id)
@@ -57,7 +55,7 @@ fn related_model_name<M>() -> &'static str {
 }
 
 fn related_serialize<'a, S>(
-    db: &'a SqliteBackend,
+    db: &'a Database,
     id: i64,
 ) -> Pin<Box<dyn Future<Output = che_orm::Result<Value>> + Send + 'a>>
 where
@@ -65,7 +63,7 @@ where
     S::Model: SqliteModel<Id = i64>,
 {
     Box::pin(async move {
-        let model = S::Model::objects(db).get(id).await?;
+        let model = db.get::<S::Model>(id).await?;
         S::default()
             .model_serializer()
             .to_json_async(db, &model)
@@ -271,7 +269,7 @@ impl<M: Model> ModelSerializer<M> {
         serialize_model(model, self.fields)
     }
 
-    pub async fn to_json_async(&self, db: &SqliteBackend, model: &M) -> che_orm::Result<Value> {
+    pub async fn to_json_async(&self, db: &Database, model: &M) -> che_orm::Result<Value> {
         serialize_model_async(db, model, self.fields).await
     }
 
@@ -327,7 +325,7 @@ pub fn serialize_model<M: Model>(model: &M, fields: &[Field]) -> Value {
 }
 
 pub async fn serialize_model_async<M: Model>(
-    db: &SqliteBackend,
+    db: &Database,
     model: &M,
     fields: &[Field],
 ) -> che_orm::Result<Value> {

@@ -4,7 +4,6 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use che_orm::Model;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -16,7 +15,7 @@ use crate::{
 
 use super::{
     generate_token,
-    models::{AuthToken, User, verify_password},
+    models::{AuthToken, User, UserFields, verify_password},
     token_hash,
 };
 
@@ -38,9 +37,10 @@ async fn session_login(
     Extension(state): Extension<AppState>,
     Json(payload): Json<LoginRequest>,
 ) -> AppResult<Response> {
-    let users = User::objects(state.db())
-        .query()
-        .eq("username", payload.username)
+    let users = state
+        .db()
+        .query::<User>()
+        .filter(UserFields::USERNAME.eq(payload.username))
         .limit(1)
         .all()
         .await?;
@@ -163,9 +163,10 @@ async fn login(
     Extension(state): Extension<AppState>,
     Json(payload): Json<LoginRequest>,
 ) -> AppResult<impl IntoResponse> {
-    let users = User::objects(state.db())
-        .query()
-        .eq("username", payload.username)
+    let users = state
+        .db()
+        .query::<User>()
+        .filter(UserFields::USERNAME.eq(payload.username))
         .limit(1)
         .all()
         .await?;
@@ -182,8 +183,9 @@ async fn login(
     }
 
     let token = generate_token();
-    AuthToken::objects(state.db())
-        .create()
+    state
+        .db()
+        .create::<AuthToken>()
         .set("user_id", user.id)
         .set("key_hash", token_hash(&token))
         .execute()

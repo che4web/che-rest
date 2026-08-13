@@ -149,6 +149,21 @@ The generated admin uses session-cookie authentication for HTTP API requests and
 `csrf_token`. Same-origin browser WebSockets use the same session cookie. For this example, set
 `VITE_API_TARGET=http://127.0.0.1:3001` before starting the generated admin.
 
+## Vue Task Desk
+
+`frontend/client` is a small hand-written Vue task board. It uses the generated REST client under
+`src/generated`, session-cookie authentication, and the CSRF cookie when creating tasks:
+
+```bash
+cargo run --bin manage -- generate-ts --out frontend/client/src/generated
+cd frontend/client
+npm install
+npm run dev
+```
+
+Run the Rust server separately with `cargo run`. The Vite dev server proxies API and session-auth
+requests to `http://127.0.0.1:3001` by default; copy `.env.example` to `.env` to override it.
+
 ## Internal Channels
 
 Modules use `AppState::app_channels()` for server-only events:

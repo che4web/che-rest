@@ -63,12 +63,12 @@ pub trait ViewSet: Clone + Send + Sync + 'static {
     }
 }
 
-pub struct DefaultViewSet<M: 'static> {
+pub struct DefaultViewSet<M: SqliteModel> {
     serializer: ModelSerializer<M>,
     filterset: FilterSet<M>,
 }
 
-impl<M> Clone for DefaultViewSet<M> {
+impl<M: SqliteModel> Clone for DefaultViewSet<M> {
     fn clone(&self) -> Self {
         Self {
             serializer: self.serializer,
@@ -77,7 +77,7 @@ impl<M> Clone for DefaultViewSet<M> {
     }
 }
 
-impl<M> DefaultViewSet<M> {
+impl<M: SqliteModel> DefaultViewSet<M> {
     pub const fn new(serializer: ModelSerializer<M>, filterset: FilterSet<M>) -> Self {
         Self {
             serializer,
@@ -158,10 +158,10 @@ where
         let serializer = viewset.serializer().model_serializer();
         let filterset = viewset.filterset().filterset();
         let total = filterset
-            .apply_for_count(M::objects(state.db()).query(), &params)?
+            .apply_for_count(state.db().query::<M>(), &params)?
             .count()
             .await?;
-        let mut query = filterset.apply(M::objects(state.db()).query(), &params)?;
+        let mut query = filterset.apply(state.db().query::<M>(), &params)?;
         if !params.contains_key("limit") {
             query = query.limit(DEFAULT_PAGE_LIMIT);
         }
@@ -203,7 +203,7 @@ where
             .await?;
 
         let serializer = viewset.serializer().model_serializer();
-        let mut create = M::objects(state.db()).create();
+        let mut create = state.db().create::<M>();
 
         for (field, value) in serializer.create_values(Value::Object(payload))? {
             create = create.set(field, value);
@@ -226,7 +226,7 @@ where
         user: Option<Extension<crate::auth::CurrentUser>>,
         Path(id): Path<i64>,
     ) -> AppResult<Response> {
-        let model = M::objects(state.db()).get(id).await?;
+        let model = state.db().get::<M>(id).await?;
         let extensions = Extensions::new();
         let permission = V::Permission::default();
         permission
@@ -259,7 +259,7 @@ where
         Path(id): Path<i64>,
         Json(payload): Json<Value>,
     ) -> AppResult<Response> {
-        let model = M::objects(state.db()).get(id).await?;
+        let model = state.db().get::<M>(id).await?;
         let extensions = Extensions::new();
         let permission = V::Permission::default();
         permission
@@ -280,7 +280,7 @@ where
             )
             .await?;
         let serializer = viewset.serializer().model_serializer();
-        let mut update = M::objects(state.db()).update_fields(id);
+        let mut update = state.db().update_fields::<M>(id);
 
         for (field, value) in serializer.update_values(payload)? {
             update = update.set(field, value);
@@ -298,7 +298,7 @@ where
         user: Option<Extension<crate::auth::CurrentUser>>,
         Path(id): Path<i64>,
     ) -> AppResult<Response> {
-        let model = M::objects(state.db()).get(id).await?;
+        let model = state.db().get::<M>(id).await?;
         let extensions = Extensions::new();
         let permission = V::Permission::default();
         permission
@@ -318,7 +318,7 @@ where
                 &model,
             )
             .await?;
-        M::objects(state.db()).delete(id).await?;
+        state.db().delete::<M>(id).await?;
         Ok(StatusCode::NO_CONTENT.into_response())
     }
 }
