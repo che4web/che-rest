@@ -27,8 +27,8 @@ impl CommandHandler for CreateTask {
         state
             .db()
             .create::<models::Task>()
-            .set("author_id", command.user.id)
-            .set("name", name)
+            .set(models::TaskFields::AUTHOR_ID, command.user.id)
+            .set(models::TaskFields::NAME, name)
             .execute()
             .await?;
         Ok(())

@@ -5,6 +5,7 @@ use super::models::Task;
 #[derive(Clone, Copy, Default)]
 pub struct AuthorSerializer;
 
+#[che_rest::async_trait]
 impl Serializer for AuthorSerializer {
     type Model = che_rest::auth::models::User;
 
@@ -29,6 +30,7 @@ static TASK_FIELDS: &[Field] = &[
 #[derive(Clone, Copy, Default)]
 pub struct TaskSerializer;
 
+#[che_rest::async_trait]
 impl Serializer for TaskSerializer {
     type Model = Task;
 

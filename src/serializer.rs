@@ -1,6 +1,10 @@
 use std::{future::Future, marker::PhantomData, pin::Pin};
 
-use che_orm::{Database, FieldInfo, FieldType, Model, NaiveDateTime, SqliteModel, SqliteValue};
+use async_trait::async_trait;
+use che_orm::{
+    Choice, Database, DatabaseCreateBuilder, DatabaseUpdateBuilder, FieldInfo, FieldType, FilePath,
+    Model, ModelField, NaiveDateTime, SqliteModel,
+};
 use serde_json::{Map, Value};
 
 #[derive(Clone, Copy)]
@@ -212,6 +216,242 @@ pub enum SerializerError {
 
 pub type Result<T> = std::result::Result<T, SerializerError>;
 
+pub struct ValidatedData<M> {
+    values: Map<String, Value>,
+    _model: PhantomData<fn() -> M>,
+}
+
+impl<M> ValidatedData<M> {
+    fn new(values: Map<String, Value>) -> Self {
+        Self {
+            values,
+            _model: PhantomData,
+        }
+    }
+
+    pub fn merge(mut self, values: Self) -> Self {
+        self.values.extend(values.values);
+        self
+    }
+
+    pub fn required<T>(&self, field: ModelField<M, T>) -> Result<T>
+    where
+        T: ValidatedValue,
+    {
+        let value = self
+            .values
+            .get(field.db_name())
+            .ok_or_else(|| SerializerError::MissingField(field.db_name().to_string()))?;
+        T::from_validated(field.db_name(), value)
+    }
+
+    pub fn optional<T>(&self, field: ModelField<M, T>) -> Result<Option<T>>
+    where
+        T: ValidatedValue,
+    {
+        self.values
+            .get(field.db_name())
+            .map(|value| T::from_validated(field.db_name(), value))
+            .transpose()
+    }
+
+    fn apply_create<'db>(
+        self,
+        mut create: DatabaseCreateBuilder<'db, M>,
+    ) -> crate::AppResult<DatabaseCreateBuilder<'db, M>>
+    where
+        M: SqliteModel,
+    {
+        for (field, value) in self.values {
+            create = create.set_value(&field, json_to_database_value::<M>(&field, value)?)?;
+        }
+        Ok(create)
+    }
+
+    fn apply_update<'db>(
+        self,
+        mut update: DatabaseUpdateBuilder<'db, M>,
+    ) -> crate::AppResult<DatabaseUpdateBuilder<'db, M>>
+    where
+        M: SqliteModel,
+    {
+        for (field, value) in self.values {
+            update = update.set_value(&field, json_to_database_value::<M>(&field, value)?)?;
+        }
+        Ok(update)
+    }
+}
+
+fn json_to_database_value<M: Model>(field: &str, value: Value) -> Result<che_orm::DatabaseValue> {
+    let info = find_model_field(M::fields(), field)
+        .ok_or_else(|| SerializerError::InvalidModelField(field.to_string()))?;
+    if value.is_null() {
+        return Ok(che_orm::DatabaseValue::Null);
+    }
+    match info.ty {
+        FieldType::Integer => value
+            .as_i64()
+            .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
+            .map(Into::into),
+        FieldType::Text | FieldType::Choice => value.as_str().map(Into::into),
+        FieldType::FilePath => value
+            .as_str()
+            .and_then(|value| FilePath::new(value).ok())
+            .map(Into::into),
+        FieldType::Boolean => value.as_bool().map(Into::into),
+        FieldType::Real => value.as_f64().map(Into::into),
+        FieldType::DateTime => value.as_str().and_then(parse_datetime).map(Into::into),
+        FieldType::Json => Some(value.into()),
+    }
+    .ok_or_else(|| SerializerError::InvalidType {
+        field: field.to_string(),
+        expected: field_type_name(info.ty),
+    })
+}
+
+fn field_type_name(ty: FieldType) -> &'static str {
+    match ty {
+        FieldType::Integer => "integer",
+        FieldType::Text | FieldType::Choice | FieldType::FilePath => "string",
+        FieldType::Boolean => "boolean",
+        FieldType::Real => "number",
+        FieldType::DateTime => "datetime string",
+        FieldType::Json => "json",
+    }
+}
+
+pub trait ValidatedValue: Sized {
+    fn from_validated(field: &str, value: &Value) -> Result<Self>;
+}
+
+macro_rules! validated_number {
+    ($($ty:ty => $expected:literal),+ $(,)?) => {$(
+        impl ValidatedValue for $ty {
+            fn from_validated(field: &str, value: &Value) -> Result<Self> {
+                value.as_i64().and_then(|value| value.try_into().ok()).ok_or_else(|| {
+                    SerializerError::InvalidType { field: field.to_string(), expected: $expected }
+                })
+            }
+        }
+    )+};
+}
+
+validated_number!(i64 => "integer", i32 => "integer", u32 => "integer");
+
+impl ValidatedValue for String {
+    fn from_validated(field: &str, value: &Value) -> Result<Self> {
+        value
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| SerializerError::InvalidType {
+                field: field.to_string(),
+                expected: "string",
+            })
+    }
+}
+
+impl ValidatedValue for bool {
+    fn from_validated(field: &str, value: &Value) -> Result<Self> {
+        value.as_bool().ok_or_else(|| SerializerError::InvalidType {
+            field: field.to_string(),
+            expected: "boolean",
+        })
+    }
+}
+
+impl ValidatedValue for f64 {
+    fn from_validated(field: &str, value: &Value) -> Result<Self> {
+        value.as_f64().ok_or_else(|| SerializerError::InvalidType {
+            field: field.to_string(),
+            expected: "number",
+        })
+    }
+}
+
+impl ValidatedValue for f32 {
+    fn from_validated(field: &str, value: &Value) -> Result<Self> {
+        value
+            .as_f64()
+            .map(|value| value as f32)
+            .ok_or_else(|| SerializerError::InvalidType {
+                field: field.to_string(),
+                expected: "number",
+            })
+    }
+}
+
+impl ValidatedValue for NaiveDateTime {
+    fn from_validated(field: &str, value: &Value) -> Result<Self> {
+        value
+            .as_str()
+            .and_then(parse_datetime)
+            .ok_or_else(|| SerializerError::InvalidType {
+                field: field.to_string(),
+                expected: "datetime string",
+            })
+    }
+}
+
+impl ValidatedValue for Value {
+    fn from_validated(_field: &str, value: &Value) -> Result<Self> {
+        Ok(value.clone())
+    }
+}
+
+impl ValidatedValue for FilePath {
+    fn from_validated(field: &str, value: &Value) -> Result<Self> {
+        let value = String::from_validated(field, value)?;
+        FilePath::new(value).map_err(|_| SerializerError::InvalidType {
+            field: field.to_string(),
+            expected: "file path",
+        })
+    }
+}
+
+impl<M> ValidatedData<M> {
+    pub fn choice<T: Choice>(&self, field: ModelField<M, T>) -> Result<T> {
+        let value = self
+            .values
+            .get(field.db_name())
+            .ok_or_else(|| SerializerError::MissingField(field.db_name().to_string()))?
+            .as_str()
+            .ok_or_else(|| SerializerError::InvalidType {
+                field: field.db_name().to_string(),
+                expected: "string",
+            })?;
+        T::from_str(value).map_err(|_| SerializerError::InvalidChoice {
+            field: field.db_name().to_string(),
+            value: value.to_string(),
+        })
+    }
+
+    pub fn optional_choice<T: Choice>(&self, field: ModelField<M, T>) -> Result<Option<T>> {
+        let Some(value) = self.values.get(field.db_name()) else {
+            return Ok(None);
+        };
+        let value = value.as_str().ok_or_else(|| SerializerError::InvalidType {
+            field: field.db_name().to_string(),
+            expected: "string",
+        })?;
+        T::from_str(value)
+            .map(Some)
+            .map_err(|_| SerializerError::InvalidChoice {
+                field: field.db_name().to_string(),
+                value: value.to_string(),
+            })
+    }
+}
+
+impl<T: ValidatedValue> ValidatedValue for Option<T> {
+    fn from_validated(field: &str, value: &Value) -> Result<Self> {
+        if value.is_null() {
+            Ok(None)
+        } else {
+            T::from_validated(field, value).map(Some)
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ModelSerializer<M> {
     fields: &'static [Field],
@@ -232,19 +472,46 @@ impl<M: Model> Default for ModelSerializer<M> {
     }
 }
 
+#[async_trait]
 pub trait Serializer: Clone + Send + Sync + 'static {
-    type Model: Model;
+    type Model: SqliteModel<Id = i64>;
 
     fn fields(&self) -> &'static [Field];
 
     fn model_serializer(&self) -> ModelSerializer<Self::Model> {
         ModelSerializer::new(self.fields())
     }
+
+    async fn create(
+        &self,
+        db: &Database,
+        validated: ValidatedData<Self::Model>,
+    ) -> crate::AppResult<Self::Model> {
+        validated
+            .apply_create(db.create::<Self::Model>())?
+            .execute()
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn update(
+        &self,
+        db: &Database,
+        instance: Self::Model,
+        validated: ValidatedData<Self::Model>,
+    ) -> crate::AppResult<Self::Model> {
+        validated
+            .apply_update(db.update::<Self::Model>(instance.id()))?
+            .execute()
+            .await
+            .map_err(Into::into)
+    }
 }
 
+#[async_trait]
 impl<M> Serializer for ModelSerializer<M>
 where
-    M: Model,
+    M: SqliteModel<Id = i64>,
 {
     type Model = M;
 
@@ -277,11 +544,11 @@ impl<M: Model> ModelSerializer<M> {
         validate_object::<M>(value, self.fields)
     }
 
-    pub fn create_values(&self, value: Value) -> Result<Vec<(&'static str, SqliteValue)>> {
-        validated_values::<M>(value, self.fields)
+    pub fn create_data(&self, value: Value) -> Result<ValidatedData<M>> {
+        validated_data::<M>(value, self.fields)
     }
 
-    pub fn update_values(&self, value: Value) -> Result<Vec<(&'static str, SqliteValue)>> {
+    pub fn update_data(&self, value: Value) -> Result<ValidatedData<M>> {
         let fields = self
             .fields
             .iter()
@@ -294,11 +561,11 @@ impl<M: Model> ModelSerializer<M> {
             })
             .collect::<Vec<_>>();
 
-        validated_values::<M>(value, &fields)
+        validated_data::<M>(value, &fields)
     }
 
-    pub fn system_create_values(&self, value: Value) -> Result<Vec<(&'static str, SqliteValue)>> {
-        validated_system_values::<M>(value, self.fields)
+    pub fn system_create_data(&self, value: Value) -> Result<ValidatedData<M>> {
+        validated_system_data::<M>(value, self.fields)
     }
 }
 
@@ -417,28 +684,24 @@ fn validate_object_internal<M: Model>(
     Ok(validated)
 }
 
-fn validated_values<M: Model>(
-    value: Value,
-    fields: &[Field],
-) -> Result<Vec<(&'static str, SqliteValue)>> {
+fn validated_data<M: Model>(value: Value, fields: &[Field]) -> Result<ValidatedData<M>> {
     let data = validate_object_internal::<M>(value, fields)?;
-    let mut values = Vec::new();
+    let mut values = Map::new();
 
-    for (name, value) in data {
-        let field = find_model_field(M::fields(), &name)
-            .ok_or_else(|| SerializerError::InvalidModelField(name.clone()))?;
-        values.push((field.db_name, json_to_sqlite_value(field, value)?));
+    for field in fields {
+        if let Some(value) = data.get(field.name) {
+            let model_field = find_model_field(M::fields(), field.source)
+                .ok_or_else(|| SerializerError::InvalidModelField(field.source.to_string()))?;
+            values.insert(model_field.db_name.to_string(), value.clone());
+        }
     }
 
-    Ok(values)
+    Ok(ValidatedData::new(values))
 }
 
-fn validated_system_values<M: Model>(
-    value: Value,
-    fields: &[Field],
-) -> Result<Vec<(&'static str, SqliteValue)>> {
+fn validated_system_data<M: Model>(value: Value, fields: &[Field]) -> Result<ValidatedData<M>> {
     let object = value.as_object().ok_or(SerializerError::ExpectedObject)?;
-    let mut values = Vec::new();
+    let mut values = Map::new();
 
     for (name, value) in object {
         let field = fields
@@ -463,64 +726,10 @@ fn validated_system_values<M: Model>(
             }
         }
 
-        values.push((
-            model_field.db_name,
-            json_to_sqlite_value(model_field, value.clone())?,
-        ));
+        values.insert(model_field.db_name.to_string(), value.clone());
     }
 
-    Ok(values)
-}
-
-fn json_to_sqlite_value(field: &FieldInfo, value: Value) -> Result<SqliteValue> {
-    if value.is_null() {
-        return Ok(SqliteValue::Null);
-    }
-
-    match field.ty {
-        FieldType::Integer => value
-            .as_i64()
-            .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
-            .map(SqliteValue::from)
-            .ok_or_else(|| SerializerError::InvalidType {
-                field: field.rust_name.to_string(),
-                expected: "integer",
-            }),
-        FieldType::Text | FieldType::Choice | FieldType::FilePath => value
-            .as_str()
-            .map(SqliteValue::from)
-            .ok_or_else(|| SerializerError::InvalidType {
-                field: field.rust_name.to_string(),
-                expected: "string",
-            }),
-        FieldType::Boolean => {
-            value
-                .as_bool()
-                .map(SqliteValue::from)
-                .ok_or_else(|| SerializerError::InvalidType {
-                    field: field.rust_name.to_string(),
-                    expected: "boolean",
-                })
-        }
-        FieldType::Real => {
-            value
-                .as_f64()
-                .map(SqliteValue::from)
-                .ok_or_else(|| SerializerError::InvalidType {
-                    field: field.rust_name.to_string(),
-                    expected: "number",
-                })
-        }
-        FieldType::DateTime => value
-            .as_str()
-            .and_then(parse_datetime)
-            .map(SqliteValue::from)
-            .ok_or_else(|| SerializerError::InvalidType {
-                field: field.rust_name.to_string(),
-                expected: "datetime string",
-            }),
-        FieldType::Json => Ok(SqliteValue::from(value)),
-    }
+    Ok(ValidatedData::new(values))
 }
 
 fn find_model_field<'a>(fields: &'a [FieldInfo], name: &str) -> Option<&'a FieldInfo> {
@@ -611,4 +820,25 @@ fn validate_max_length(field: &str, max_length: u32, value: &Value) -> Result<()
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod serializer_tests {
+    use super::*;
+    use crate::auth::models::{User, UserFields};
+
+    static ALIAS_FIELDS: &[Field] = &[
+        Field::new("id").read_only(),
+        Field::new("handle").source("username"),
+    ];
+
+    #[test]
+    fn validated_data_uses_serializer_source_for_aliases() {
+        let serializer = ModelSerializer::<User>::new(ALIAS_FIELDS);
+        let data = serializer
+            .create_data(serde_json::json!({ "handle": "alice" }))
+            .unwrap();
+
+        assert_eq!(data.required(UserFields::USERNAME).unwrap(), "alice");
+    }
 }

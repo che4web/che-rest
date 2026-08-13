@@ -786,12 +786,12 @@ async fn createsuperuser(
     let password_hash = auth::models::hash_password(password)
         .map_err(|error| format!("failed to hash password: {error}"))?;
     db.create::<auth::models::User>()
-        .set("username", username)
-        .set("password_hash", password_hash)
-        .set("is_active", true)
-        .set("is_staff", true)
-        .set("is_admin", true)
-        .set("is_superuser", true)
+        .set(auth::models::UserFields::USERNAME, username)
+        .set(auth::models::UserFields::PASSWORD_HASH, password_hash)
+        .set(auth::models::UserFields::IS_ACTIVE, true)
+        .set(auth::models::UserFields::IS_STAFF, true)
+        .set(auth::models::UserFields::IS_ADMIN, true)
+        .set(auth::models::UserFields::IS_SUPERUSER, true)
         .execute()
         .await?;
 
@@ -2972,7 +2972,7 @@ fn serializers_template(models: &[GeneratedModel]) -> String {
     out.push_str(
         &models
             .iter()
-            .map(|model| model.rust_name.as_str())
+            .map(|model| model.rust_name.clone())
             .collect::<Vec<_>>()
             .join(", "),
     );
@@ -2990,6 +2990,7 @@ fn serializers_template(models: &[GeneratedModel]) -> String {
 #[derive(Clone, Copy, Default)]
 pub struct {serializer_name};
 
+#[che_rest::async_trait]
 impl Serializer for {serializer_name} {{
     type Model = {rust_name};
 

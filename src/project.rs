@@ -163,7 +163,7 @@ creates or changes database tables; `Server::build()` does not alter the schema.
 
 - `src/apps/mod.rs`: installed app registry used by both the server and management commands.
 - `src/apps/<app>/models.rs`: `che-orm` models and database fields.
-- `src/apps/<app>/serializers.rs`: API input/output fields and read-only/system fields.
+- `src/apps/<app>/serializers.rs`: API input/output fields plus typed `create` and `update` persistence.
 - `src/apps/<app>/filters.rs`: list query filters.
 - `src/apps/<app>/views.rs`: typed CRUD viewsets and permissions.
 - `src/apps/<app>/migrations/`: generated SQL migrations and schema snapshot.
@@ -176,6 +176,7 @@ schema, API metadata, and router together. Do not use only `ctx.route(...)` for 
 
 - Assign server-owned fields such as `author_id` in `ViewSet::system_create_values()`.
 - Mark server-owned serializer fields with `Field::system()` so clients cannot supply them.
+- Serializer `create` and `update` receive `ValidatedData`; extract values with `ModelFields` and write with typed ORM `.set` calls.
 - Use `IsAuthenticated` for resources that require the current user.
 - WebSocket commands are registered with `ctx.command_handler(...)` and receive `Command.user`.
 - `AppState::app_channels()` is for internal application events and is never a public WebSocket channel.

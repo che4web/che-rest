@@ -118,6 +118,7 @@ use che_rest::{AllowAny, Field, Filter, FilterSetSpec, Serializer, ViewSet};
 #[derive(Clone, Copy, Default)]
 pub struct TaskSerializer;
 
+#[che_rest::async_trait]
 impl Serializer for TaskSerializer {
     type Model = Task;
 
@@ -176,9 +177,8 @@ when the public query name should differ from the database field name. Query bui
 typed fields directly:
 
 ```rust
-Task::objects(db)
-    .query()
-    .eq(TaskFields::COMPLETED, false)
+db.query::<Task>()
+    .filter(TaskFields::COMPLETED.eq(false))
     .all()
     .await?;
 ```
@@ -217,6 +217,16 @@ impl ViewSet for TaskViewSet {
     }
 }
 ```
+
+## Breaking API Changes
+
+ORM writes use generated field descriptors: replace `.set("title", value)` with
+`.set(TaskFields::TITLE, value)`. Replace `db.update_fields::<Task>(id)` and
+`db.update::<Task>(id, data)` with `db.update::<Task>(id).set(TaskFields::TITLE, value)`.
+
+`Serializer` now has async default `create` and `update` methods, so implementations require
+`#[che_rest::async_trait]`. The defaults persist validated data through the checked runtime write
+boundary; override either method when custom persistence should use typed ORM `.set` calls.
 
 Disable the runtime Swagger UI if needed:
 

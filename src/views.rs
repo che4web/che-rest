@@ -202,21 +202,16 @@ where
             .perform_create(&state, &parts.extensions, payload)
             .await?;
 
-        let serializer = viewset.serializer().model_serializer();
-        let mut create = state.db().create::<M>();
-
-        for (field, value) in serializer.create_values(Value::Object(payload))? {
-            create = create.set(field, value);
-        }
+        let serializer = viewset.serializer();
+        let model_serializer = serializer.model_serializer();
+        let validated = model_serializer.create_data(Value::Object(payload))?;
         let system_values = viewset
             .system_create_values(&state, &parts.extensions)
             .await?;
-        for (field, value) in serializer.system_create_values(Value::Object(system_values))? {
-            create = create.set(field, value);
-        }
-
-        let model = create.execute().await?;
-        let payload = serializer.to_json_async(state.db(), &model).await?;
+        let validated =
+            validated.merge(model_serializer.system_create_data(Value::Object(system_values))?);
+        let model = serializer.create(state.db(), validated).await?;
+        let payload = model_serializer.to_json_async(state.db(), &model).await?;
         Ok((StatusCode::CREATED, Json(payload)).into_response())
     }
 
@@ -279,16 +274,13 @@ where
                 &model,
             )
             .await?;
-        let serializer = viewset.serializer().model_serializer();
-        let mut update = state.db().update_fields::<M>(id);
-
-        for (field, value) in serializer.update_values(payload)? {
-            update = update.set(field, value);
-        }
-
-        let model = update.execute().await?;
+        let serializer = viewset.serializer();
+        let model_serializer = serializer.model_serializer();
+        let model = serializer
+            .update(state.db(), model, model_serializer.update_data(payload)?)
+            .await?;
         Ok(json_response(
-            serializer.to_json_async(state.db(), &model).await?,
+            model_serializer.to_json_async(state.db(), &model).await?,
         ))
     }
 

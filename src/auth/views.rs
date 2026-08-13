@@ -15,7 +15,7 @@ use crate::{
 
 use super::{
     generate_token,
-    models::{AuthToken, User, UserFields, verify_password},
+    models::{AuthToken, AuthTokenFields, User, UserFields, verify_password},
     token_hash,
 };
 
@@ -186,8 +186,8 @@ async fn login(
     state
         .db()
         .create::<AuthToken>()
-        .set("user_id", user.id)
-        .set("key_hash", token_hash(&token))
+        .set(AuthTokenFields::USER_ID, user.id)
+        .set(AuthTokenFields::KEY_HASH, token_hash(&token))
         .execute()
         .await?;
 

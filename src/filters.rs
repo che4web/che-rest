@@ -482,14 +482,14 @@ mod tests {
         let db = Database::connect("sqlite::memory:").await.unwrap();
         db.create_table::<User>().await.unwrap();
         db.create::<User>()
-            .set("username", "alice")
-            .set("password_hash", "hash")
+            .set(UserFields::USERNAME, "alice")
+            .set(UserFields::PASSWORD_HASH, "hash")
             .execute()
             .await
             .unwrap();
         db.create::<User>()
-            .set("username", "alex")
-            .set("password_hash", "hash")
+            .set(UserFields::USERNAME, "alex")
+            .set(UserFields::PASSWORD_HASH, "hash")
             .execute()
             .await
             .unwrap();
