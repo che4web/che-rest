@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 axum = "0.8"
 argon2 = "0.5"
+clap = { version = "4", features = ["derive"] }
 che-orm2 = { path = "../../che-orm2" }
 che-orm2-rest = { path = "../../che-orm2/che-orm2-rest" }
 hex = "0.4"

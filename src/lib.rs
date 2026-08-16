@@ -3,7 +3,9 @@ pub mod auth;
 pub mod channels;
 pub mod config;
 pub mod error;
+pub mod management;
 pub mod module;
+pub mod project;
 pub mod state;
 
 pub use app_channels::AppChannels;
@@ -18,5 +20,7 @@ pub use che_orm2_rest::{
 };
 pub use config::{AppConfig, DatabaseConfig, ServerConfig};
 pub use error::{AppError, AppResult};
+pub use management::Management;
 pub use module::{AppModule, InstalledApps, ModuleContext, Server};
+pub use project::{StartProjectOptions, startproject};
 pub use state::AppState;

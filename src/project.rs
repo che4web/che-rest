@@ -49,8 +49,8 @@ pub fn startproject(options: StartProjectOptions) -> ProjectResult<()> {
     println!("Created project {}", project_dir.display());
     println!("Next steps:");
     println!("  cd {}", project_dir.display());
-    println!("  cargo run --bin manage -- startapp users");
-    println!("  cargo run --bin manage -- makemigrations");
+    println!("  cargo run --bin manage -- schema");
+    println!("  cargo run --bin manage -- makemigrations initial");
     println!("  cargo run --bin manage -- migrate");
     println!("  cargo run");
 
@@ -120,7 +120,7 @@ default-run = "{name}"
 
 [dependencies]
 axum = "0.8"
-che-orm = {{ path = "{che_orm_path}" }}
+che-orm2 = {{ path = "{che_orm_path}" }}
 che-rest = {{ path = "{che_rest_path}" }}
 tokio = {{ version = "1", features = ["macros", "net", "rt-multi-thread", "sync"] }}
 "#
@@ -155,21 +155,21 @@ application startup.
 ## Canonical Workflow
 
 ```bash
-cargo run --bin manage -- startapp users
-cargo run --bin manage -- makemigrations
+cargo run --bin manage -- schema
+cargo run --bin manage -- makemigrations initial
 cargo run --bin manage -- migrate
 cargo run
 ```
 
-`makemigrations` without an app name processes every installed app. Use
-`cargo run --bin manage -- makemigrations users` for one app. `migrate` is the only command that
-creates or changes database tables; `Server::build()` does not alter the schema.
+`makemigrations` compares all schemas from installed modules with the Atlas migration directory.
+`migrate` is the only command that creates or changes database tables; `Server::build()` does not
+alter the schema.
 
 ## App Structure
 
 - `src/apps/mod.rs`: installed app registry used by both the server and management commands.
-- `src/apps/<app>/models.rs`: `che-orm` models and database fields.
-- `src/apps/<app>/serializers.rs`: API input/output fields plus typed `create` and `update` persistence.
+- `src/apps/<app>/models.rs`: `che-orm2` models and database fields.
+- `src/apps/<app>/serializers.rs`: generated ORM2 input/output DTOs.
 - `src/apps/<app>/filters.rs`: list query filters.
 - `src/apps/<app>/views.rs`: typed CRUD viewsets and permissions.
 - `src/apps/<app>/migrations/`: generated SQL migrations and schema snapshot.
@@ -180,11 +180,10 @@ schema, API metadata, and router together. Do not use only `ctx.route(...)` for 
 
 ## Conventions
 
-- Assign server-owned fields such as `author_id` in `ViewSet::system_create_values()`.
-- Mark server-owned serializer fields with `Field::system()` so clients cannot supply them.
-- Serializer `create` and `update` receive `ValidatedData`; extract values with `ModelFields` and write with typed ORM `.set` calls.
+- Assign server-owned fields in `ViewSet::create_input()` or a custom serializer input flow.
+- Mark server-owned serializer fields read-only so clients cannot supply them.
 - Use `IsAuthenticated` for resources that require the current user.
-- WebSocket commands are registered with `ctx.command_handler(...)` and receive `Command.user`.
+- Application events use `AppState::app_channels()` and `AppModule::subscribe()`.
 - `AppState::app_channels()` is for internal application events and is never a public WebSocket channel.
 - ORM model signals are separate from application channels; bridge them explicitly in `AppModule::subscribe()`.
 - Generated admin uses session cookies and the readable `csrf_token` cookie.
