@@ -1,6 +1,27 @@
 # che-rest
 
-Base REST layer for `che-orm` applications.
+Breaking v2 REST layer for `che-orm2` applications.
+
+The legacy `che-orm` integration, authentication, management commands,
+dynamic serializers and filter framework are disabled in this phase. The
+current v2 surface is the typed ORM2 CRUD router:
+
+```rust
+use che_rest::{CrudViewSet, router_with_openapi};
+
+let app = router_with_openapi(
+    state.rest_state(),
+    CrudViewSet::<Task, TaskSerializer>::new("/tasks"),
+);
+```
+
+The migration plan is documented in [`docs/ORM2_MIGRATION_PLAN.md`](docs/ORM2_MIGRATION_PLAN.md).
+
+The minimal migrated example is available under `todo_api`:
+
+```bash
+cargo run --manifest-path todo_api/Cargo.toml
+```
 
 ## Start a Project
 

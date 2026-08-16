@@ -1,41 +1,40 @@
 use std::path::Path;
 
-use che_orm::Database;
+use che_orm2::Database;
 
-use crate::{app_channels::AppChannels, channels::Channels, config::AppConfig, error::AppResult};
+use crate::{AppConfig, AppResult};
+use crate::{app_channels::AppChannels, channels::Channels};
+use che_orm2_rest::RestState;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AppState {
     pub config: AppConfig,
-    db: Database,
+    database: Database,
     channels: Channels,
     app_channels: AppChannels,
 }
 
 impl AppState {
     pub async fn from_config_file(path: impl AsRef<Path>) -> AppResult<Self> {
-        let mut config = AppConfig::from_file(path)?;
-        if let Ok(max_connections) = std::env::var("CHE_REST_DATABASE_MAX_CONNECTIONS")
-            && let Ok(max_connections) = max_connections.parse()
-        {
-            config.database.max_connections = max_connections;
-        }
-        let db = Database::connect_with_max_connections(
-            &config.database.url,
-            config.database.max_connections,
-        )
-        .await?;
-
+        let config = AppConfig::from_file(path)?;
+        let database = Database::connect_with_pool_size(
+            sqlite_path(&config.database.url),
+            config.database.max_connections as usize,
+        )?;
         Ok(Self {
             config,
-            db,
+            database,
             channels: Channels::new(),
             app_channels: AppChannels::new(),
         })
     }
 
-    pub fn db(&self) -> &Database {
-        &self.db
+    pub fn database(&self) -> &Database {
+        &self.database
+    }
+
+    pub fn rest_state(&self) -> RestState {
+        RestState::new(self.database.clone())
     }
 
     pub fn channels(&self) -> &Channels {
@@ -45,4 +44,12 @@ impl AppState {
     pub fn app_channels(&self) -> &AppChannels {
         &self.app_channels
     }
+}
+
+fn sqlite_path(url: &str) -> String {
+    url.strip_prefix("sqlite://")
+        .and_then(|value| value.split('?').next())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(url)
+        .to_string()
 }

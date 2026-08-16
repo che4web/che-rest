@@ -1,9 +1,9 @@
 # AGENTS.md
 
 ## Repo Shape
-- This is a single Rust library crate, not a Cargo workspace; it depends on sibling path `../che-orm/crates/che-orm`, so builds require this repo to stay next to `che-orm`.
-- There is no local `manage` binary in this repo. README `cargo run --bin manage -- ...` examples are for downstream apps that create their own `src/bin/manage.rs` calling `che_rest::Management`.
-- Public API is re-exported from `src/lib.rs`; routing/module wiring lives in `src/module.rs`, CRUD viewset behavior in `src/views.rs`, and management/codegen/migrations in `src/management.rs`.
+- This is a single Rust library crate, not a Cargo workspace; Phase 1 depends on sibling paths `../../che-orm2` and `../../che-orm2/che-orm2-rest`.
+- Phase 1 intentionally builds only the ORM2 state/error and typed CRUD REST surface. Legacy auth, management, dynamic serializers, filters, modules and channels are not part of the public build.
+- Public API is re-exported from `src/lib.rs`; the migrated CRUD implementation lives in the `che-orm2-rest` dependency.
 
 ## Verification Commands
 - `cargo fmt --check` passes and is the fastest formatting check.
@@ -11,6 +11,9 @@
 - `cargo clippy --all-targets -- -D warnings` currently fails on existing lints in `src/management.rs` (`single_match`) and `src/module.rs` (`should_implement_trait`); do not present a change as clippy-clean unless those baseline lints are fixed.
 
 ## Framework Gotchas
+- `AppState::rest_state()` creates the ORM2 REST state used by `router` and `router_with_openapi`.
+- `CrudViewSet::<Model, Serializer>::new("/resource")` uses serializer types; no serializer instance is constructed.
+- The Phase 1 example uses `create_table` for local startup only. Production migration/management is intentionally deferred to a later phase.
 - `Server::new(state).install(apps).build().await` installs app routers under `/api` by default; override with `api_prefix(...)`.
 - `ModuleContext::viewset` and `viewset_with` both register the model schema, generated API metadata, and router; using only `route(...)` skips schema/codegen metadata.
 - Installing `che_rest::auth::module()` enables token auth middleware for all routes under the API prefix and separately adds `/api-token-auth/` outside the prefix.

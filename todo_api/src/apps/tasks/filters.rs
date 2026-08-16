@@ -1,14 +1,10 @@
 use che_rest::{Filter, FilterSetSpec};
 
-use super::models::{Task, TaskFields};
+use super::models::Task;
 
 static TASK_FILTERS: &[Filter<Task>] = &[
-    Filter::exact(TaskFields::NAME),
-    Filter::contains(TaskFields::NAME),
-    Filter::gte(TaskFields::CREATED_AT),
-    Filter::lte(TaskFields::CREATED_AT),
-    Filter::gte(TaskFields::UPDATED_AT),
-    Filter::lte(TaskFields::UPDATED_AT),
+    Filter::contains(Task::TITLE),
+    Filter::exact(Task::COMPLETED),
 ];
 
 #[derive(Clone, Copy, Default)]

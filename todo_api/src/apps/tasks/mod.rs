@@ -1,22 +1,26 @@
-pub mod filters;
-pub mod models;
-pub mod serializers;
-pub mod views;
+mod filters;
+mod models;
+mod serializers;
+mod views;
 
-use che_rest::{AppModule, ModuleContext};
+pub use models::Task;
 
-pub fn module() -> TasksModule {
-    TasksModule
+pub struct Tasks;
+
+pub fn module() -> Tasks {
+    Tasks
 }
 
-pub struct TasksModule;
-
-impl AppModule for TasksModule {
+impl che_rest::AppModule for Tasks {
     fn name(&self) -> &'static str {
         "tasks"
     }
 
-    fn init(&self, ctx: &mut ModuleContext) {
-        ctx.viewset_with("/task", views::TaskViewSet);
+    fn schema(&self) -> che_orm2::SchemaSet {
+        che_orm2::SchemaSet::new().model::<Task>()
+    }
+
+    fn init(&self, context: &mut che_rest::ModuleContext) {
+        context.viewset_with("/tasks", views::TaskViewSet);
     }
 }
