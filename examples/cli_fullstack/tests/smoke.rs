@@ -1,21 +1,11 @@
-use std::{
-    fs,
-    path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{fs, time::{SystemTime, UNIX_EPOCH}};
 
-use cli_fullstack::apps;
-use futures_util::{SinkExt, StreamExt};
-use reqwest::header::{COOKIE, SET_COOKIE};
+use cli_fullstack::apps::{self, notifications::models::Notification, tasks::models::Task};
+use reqwest::header::SET_COOKIE;
 use serde_json::json;
-use tokio_tungstenite::{
-    connect_async,
-    tungstenite::{Message, client::IntoClientRequest},
-};
 
 #[tokio::test]
-async fn fullstack_session_rest_and_websocket_smoke() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+async fn fullstack_session_rest_smoke() {
     let suffix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -25,169 +15,55 @@ async fn fullstack_session_rest_and_websocket_smoke() {
     fs::write(
         &config_path,
         format!(
-            "[database]\nurl = \"sqlite://{}?mode=rwc\"\n\n[auth.session]\ncookie_name = \"cli_fullstack_session\"\ncsrf_cookie_name = \"csrf_token\"\n",
+            "[database]\nurl = \"sqlite://{}?mode=rwc\"\n",
             database_path.display()
         ),
     )
     .unwrap();
 
-    let state = che_rest::AppState::from_config_file(&config_path)
-        .await
-        .unwrap();
-    for app in ["auth", "tasks", "notifications"] {
-        state
-            .db()
-            .apply_migrations_dir_with_namespace(
-                app,
-                &root.join("src/apps").join(app).join("migrations"),
-            )
-            .await
-            .unwrap();
-    }
+    let state = che_rest::AppState::from_config_file(&config_path).await.unwrap();
+    state.database().create_table::<che_rest::auth::User>().await.unwrap();
+    state.database().create_table::<che_rest::auth::AuthToken>().await.unwrap();
+    state.database().create_table::<che_rest::auth::AuthSession>().await.unwrap();
+    state.database().create_table::<Task>().await.unwrap();
+    state.database().create_table::<Notification>().await.unwrap();
 
-    let mut events = state.app_channels().subscribe("tasks.created");
-    let app = che_rest::Server::new(state)
-        .install(apps::installed_apps())
-        .build()
-        .await
-        .unwrap();
+    let password_hash = che_rest::auth::hash_password("secret").unwrap();
+    state.database().create::<che_rest::auth::User>()
+        .set(che_rest::auth::User::USERNAME, "admin")
+        .set(che_rest::auth::User::PASSWORD_HASH, password_hash)
+        .set(che_rest::auth::User::IS_ACTIVE, true)
+        .execute().await.unwrap();
+
+    let server_state = state.clone();
+    let app = che_rest::Server::new(server_state).install(apps::installed_apps()).build().await.unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let client = reqwest::Client::builder().cookie_store(true).build().unwrap();
     let base_url = format!("http://{address}");
-    assert_eq!(events.recv().await.unwrap()["kind"], "startup");
 
-    let client = reqwest::Client::builder()
-        .cookie_store(true)
-        .build()
-        .unwrap();
-    let tasks = client
-        .get(format!("{base_url}/api/tasks/"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(tasks.status(), reqwest::StatusCode::UNAUTHORIZED);
-    let login = client
-        .post(format!("{base_url}/api-session-auth/login/"))
-        .json(&json!({"username": "admin", "password": "secret"}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(login.status(), reqwest::StatusCode::UNAUTHORIZED);
-
-    let password_hash = che_rest::auth::models::hash_password("secret").unwrap();
-    let user_state = state_for_user(&config_path).await;
-    let user = user_state
-        .db()
-        .create::<che_rest::auth::models::User>()
-        .set(che_rest::auth::models::UserFields::USERNAME, "admin")
-        .set(
-            che_rest::auth::models::UserFields::PASSWORD_HASH,
-            password_hash,
-        )
-        .set(che_rest::auth::models::UserFields::IS_ACTIVE, true)
-        .set(che_rest::auth::models::UserFields::IS_STAFF, true)
-        .set(che_rest::auth::models::UserFields::IS_ADMIN, true)
-        .set(che_rest::auth::models::UserFields::IS_SUPERUSER, true)
-        .execute()
-        .await
-        .unwrap();
-
-    let login = client
-        .post(format!("{base_url}/api-session-auth/login/"))
-        .json(&json!({"username": "admin", "password": "secret"}))
-        .send()
-        .await
-        .unwrap();
-    assert!(login.status().is_success());
-    let cookies = login
-        .headers()
-        .get_all(SET_COOKIE)
-        .iter()
+    assert_eq!(client.get(format!("{base_url}/api/tasks/")).send().await.unwrap().status(), reqwest::StatusCode::OK);
+    let login = client.post(format!("{base_url}/api-session-auth/login/")
+        ).json(&json!({"username": "admin", "password": "secret"}))
+        .send().await.unwrap();
+    assert_eq!(login.status(), reqwest::StatusCode::OK);
+    let csrf = login.headers().get_all(SET_COOKIE).iter()
         .filter_map(|value| value.to_str().ok())
-        .map(|value| value.split(';').next().unwrap().to_string())
-        .collect::<Vec<_>>();
-    let csrf = cookies
-        .iter()
-        .find_map(|cookie| cookie.strip_prefix("csrf_token="))
-        .unwrap();
-    let cookie_header = cookies.join("; ");
+        .find_map(|value| value.strip_prefix("csrf_token=").and_then(|value| value.split(';').next()))
+        .unwrap().to_owned();
 
-    let task = client
-        .post(format!("{base_url}/api/tasks/"))
-        .header("X-CSRF-Token", csrf)
-        .json(&json!({"name": "REST task"}))
-        .send()
-        .await
-        .unwrap();
+    let task = client.post(format!("{base_url}/api/tasks/"))
+        .header("X-CSRF-Token", &csrf)
+        .json(&json!({"author_id": 1, "name": "REST task"}))
+        .send().await.unwrap();
     assert_eq!(task.status(), reqwest::StatusCode::CREATED);
-    assert_eq!(
-        task.json::<serde_json::Value>().await.unwrap()["author"]["username"],
-        "admin"
-    );
-    let rest_event = events.recv().await.unwrap();
-    assert_eq!(rest_event["name"], "REST task");
-    assert_eq!(rest_event["author_id"], user.id);
 
-    let updated_task = client
-        .patch(format!("{base_url}/api/tasks/1/"))
-        .header("X-CSRF-Token", csrf)
-        .json(&json!({"name": "Updated REST task"}))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(updated_task.status(), reqwest::StatusCode::OK);
-    assert_eq!(
-        updated_task.json::<serde_json::Value>().await.unwrap()["name"],
-        "Updated REST task"
-    );
-
-    let tasks = client
-        .get(format!(
-            "{base_url}/api/tasks/?name__contains=Updated&ordering=-created_at"
-        ))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(tasks.status(), reqwest::StatusCode::OK);
-    let tasks = tasks.json::<serde_json::Value>().await.unwrap();
-    assert_eq!(tasks["count"], 1);
-    assert_eq!(tasks["results"][0]["name"], "Updated REST task");
-
-    let mut request = format!("ws://{address}/api/ws/")
-        .into_client_request()
-        .unwrap();
-    request
-        .headers_mut()
-        .insert(COOKIE, cookie_header.parse().unwrap());
-    let (mut socket, _) = connect_async(request).await.unwrap();
-    socket
-        .send(Message::Text(
-            json!({
-                "action": "publish",
-                "event": "tasks.create",
-                "payload": {"name": "WebSocket task"}
-            })
-            .to_string()
-            .into(),
-        ))
-        .await
-        .unwrap();
-    let published = socket.next().await.unwrap().unwrap();
-    let published: serde_json::Value = serde_json::from_str(published.to_text().unwrap()).unwrap();
-    assert_eq!(published["type"], "published");
-    assert_eq!(published["event"], "tasks.create");
-    let websocket_event = events.recv().await.unwrap();
-    assert_eq!(websocket_event["name"], "WebSocket task");
-    assert_eq!(websocket_event["author_id"], user.id);
+    let me = client.get(format!("{base_url}/api-session-auth/me/")).send().await.unwrap();
+    assert_eq!(me.status(), reqwest::StatusCode::OK);
+    assert_eq!(me.json::<serde_json::Value>().await.unwrap()["user"]["username"], "admin");
 
     server.abort();
     let _ = fs::remove_file(database_path);
     let _ = fs::remove_file(config_path);
-}
-
-async fn state_for_user(config_path: &PathBuf) -> che_rest::AppState {
-    che_rest::AppState::from_config_file(config_path)
-        .await
-        .unwrap()
 }

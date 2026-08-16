@@ -1,20 +1,16 @@
-use che_orm::{Model, NaiveDateTime};
 use che_rest::auth::models::User as AuthUser;
+use time::OffsetDateTime;
 
-#[derive(Debug, Clone, Model)]
-#[model(table = "tasks_task")]
+#[derive(Debug, che_orm2::Model)]
+#[orm(table = "tasks_task", index("author_id"))]
 pub struct Task {
-    #[field(primary_key)]
+    #[orm(primary_key)]
     pub id: i64,
-
-    #[field(foreign_key = AuthUser)]
+    #[orm(foreign_key = AuthUser, on_delete = "cascade")]
     pub author_id: i64,
-
     pub name: String,
-
-    #[field(auto_now_add)]
-    pub created_at: NaiveDateTime,
-
-    #[field(auto_now)]
-    pub updated_at: NaiveDateTime,
+    #[orm(auto_now_add)]
+    pub created_at: OffsetDateTime,
+    #[orm(auto_now)]
+    pub updated_at: OffsetDateTime,
 }

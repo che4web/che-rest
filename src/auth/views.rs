@@ -1,23 +1,18 @@
 use axum::{
     Extension, Json, Router,
-    http::{HeaderMap, HeaderValue, StatusCode, header},
+    http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use serde::Deserialize;
 use serde_json::json;
-
-use crate::{
-    AppError, AppResult,
-    auth::{cookie_header, generate_secret, load_session, session_expiry},
-    state::AppState,
-};
+use time::{Duration, OffsetDateTime};
 
 use super::{
-    generate_token,
-    models::{AuthToken, AuthTokenFields, User, UserFields, verify_password},
-    token_hash,
+    AuthSession, AuthToken, CurrentSession, CurrentUser, User, cookie_header, generate_token,
+    token_hash, verify_password,
 };
+use crate::{AppResult, AppState, RestError};
 
 #[derive(Debug, Deserialize)]
 struct LoginRequest {
@@ -33,33 +28,43 @@ pub fn routes() -> Router {
         .route("/api-session-auth/me/", get(session_me))
 }
 
+async fn login(
+    Extension(state): Extension<AppState>,
+    Json(payload): Json<LoginRequest>,
+) -> AppResult<impl IntoResponse> {
+    let user = find_user(&state, payload).await?;
+    let token = generate_token();
+    state
+        .database()
+        .create::<AuthToken>()
+        .set(AuthToken::USER_ID, user.id)
+        .set(AuthToken::KEY_HASH, token_hash(&token))
+        .execute()
+        .await?;
+    Ok(Json(json!({ "token": token })))
+}
+
 async fn session_login(
     Extension(state): Extension<AppState>,
     Json(payload): Json<LoginRequest>,
 ) -> AppResult<Response> {
-    let users = state
-        .db()
-        .query::<User>()
-        .filter(UserFields::USERNAME.eq(payload.username))
-        .limit(1)
-        .all()
+    let user = find_user(&state, payload).await?;
+    let session_key = generate_token();
+    let csrf_token = generate_token();
+    let expires_at =
+        OffsetDateTime::now_utc() + Duration::seconds(state.config.auth.session.ttl_seconds);
+    state
+        .database()
+        .create::<AuthSession>()
+        .set(AuthSession::USER_ID, user.id)
+        .set(AuthSession::KEY_HASH, token_hash(&session_key))
+        .set(AuthSession::CSRF_HASH, token_hash(&csrf_token))
+        .set(AuthSession::DATA, "{}")
+        .set(AuthSession::REVISION, 0_i64)
+        .set(AuthSession::EXPIRES_AT, expires_at)
+        .execute()
         .await?;
-    let Some(user) = users.into_iter().next() else {
-        return Err(AppError::Unauthorized(
-            "unable to log in with provided credentials".to_string(),
-        ));
-    };
-    if !user.is_active || !verify_password(&payload.password, &user.password_hash) {
-        return Err(AppError::Unauthorized(
-            "unable to log in with provided credentials".to_string(),
-        ));
-    }
 
-    let session_key = generate_secret();
-    let csrf_token = generate_secret();
-    sqlx::query("INSERT INTO auth_sessions (user_id, key_hash, csrf_hash, data, revision, expires_at) VALUES (?1, ?2, ?3, '{}', 0, ?4)")
-        .bind(user.id).bind(super::token_hash(&session_key)).bind(super::token_hash(&csrf_token)).bind(session_expiry(&state))
-        .execute(state.db().pool()).await.map_err(|error| AppError::Orm(error.into()))?;
     let mut response = Json(json!({ "user": user_payload(&user) })).into_response();
     set_cookie(
         &mut response,
@@ -86,23 +91,10 @@ async fn session_login(
 
 async fn session_logout(
     Extension(state): Extension<AppState>,
-    headers: HeaderMap,
+    session: Option<Extension<CurrentSession>>,
 ) -> AppResult<Response> {
-    if let Some(key) = header_cookie(&headers, &state.config.auth.session.cookie_name) {
-        if let Some((session, _)) = load_session(&state, &key).await {
-            let csrf_valid = headers
-                .get("X-CSRF-Token")
-                .and_then(|value| value.to_str().ok())
-                .is_some_and(|value| token_hash(value) == session.csrf_hash);
-            if !csrf_valid {
-                return Err(AppError::Forbidden("CSRF validation failed".to_string()));
-            }
-            sqlx::query("DELETE FROM auth_sessions WHERE id = ?1")
-                .bind(session.id)
-                .execute(state.db().pool())
-                .await
-                .map_err(|error| AppError::Orm(error.into()))?;
-        }
+    if let Some(Extension(session)) = session {
+        state.database().delete::<AuthSession>(session.id).await?;
     }
     let mut response = StatusCode::NO_CONTENT.into_response();
     set_cookie(
@@ -123,73 +115,48 @@ async fn session_logout(
 }
 
 async fn session_me(
-    Extension(state): Extension<AppState>,
-    headers: HeaderMap,
-) -> AppResult<Response> {
-    let key = header_cookie(&headers, &state.config.auth.session.cookie_name).ok_or_else(|| {
-        AppError::Unauthorized("an authenticated session is required".to_string())
-    })?;
-    let Some((session, user)) = load_session(&state, &key).await else {
-        return Err(AppError::Unauthorized(
-            "an authenticated session is required".to_string(),
-        ));
-    };
-    Ok(Json(json!({ "user": user_payload(&user), "data": session.data })).into_response())
+    user: Option<Extension<CurrentUser>>,
+    session: Option<Extension<CurrentSession>>,
+) -> AppResult<impl IntoResponse> {
+    let user = user.ok_or(RestError::Unauthorized)?;
+    Ok(Json(json!({
+        "user": user.0,
+        "session": session.map(|session| json!({
+            "id": session.0.id,
+            "user_id": session.0.user_id,
+            "revision": session.0.revision,
+        }))
+    })))
+}
+
+async fn find_user(state: &AppState, payload: LoginRequest) -> AppResult<User> {
+    let user = state
+        .database()
+        .query::<User>()
+        .filter(User::USERNAME.eq(payload.username))
+        .first()
+        .await?
+        .ok_or(RestError::Unauthorized)?;
+    if !user.is_active || !verify_password(&payload.password, &user.password_hash) {
+        return Err(RestError::Unauthorized.into());
+    }
+    Ok(user)
 }
 
 fn user_payload(user: &User) -> serde_json::Value {
-    json!({ "id": user.id, "username": user.username, "is_staff": user.is_staff, "is_admin": user.is_admin, "is_superuser": user.is_superuser })
-}
-
-fn header_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
-    headers
-        .get(header::COOKIE)?
-        .to_str()
-        .ok()?
-        .split(';')
-        .map(str::trim)
-        .find_map(|item| item.strip_prefix(&format!("{name}=")).map(str::to_string))
+    json!({
+        "id": user.id,
+        "username": user.username,
+        "is_staff": user.is_staff,
+        "is_admin": user.is_admin,
+        "is_superuser": user.is_superuser,
+    })
 }
 
 fn set_cookie(response: &mut Response, value: String) -> AppResult<()> {
     response.headers_mut().append(
         header::SET_COOKIE,
-        HeaderValue::from_str(&value).map_err(|error| AppError::BadRequest(error.to_string()))?,
+        HeaderValue::from_str(&value).map_err(|error| RestError::BadRequest(error.to_string()))?,
     );
     Ok(())
-}
-
-async fn login(
-    Extension(state): Extension<AppState>,
-    Json(payload): Json<LoginRequest>,
-) -> AppResult<impl IntoResponse> {
-    let users = state
-        .db()
-        .query::<User>()
-        .filter(UserFields::USERNAME.eq(payload.username))
-        .limit(1)
-        .all()
-        .await?;
-    let Some(user) = users.into_iter().next() else {
-        return Err(crate::AppError::Unauthorized(
-            "unable to log in with provided credentials".to_string(),
-        ));
-    };
-
-    if !user.is_active || !verify_password(&payload.password, &user.password_hash) {
-        return Err(crate::AppError::Unauthorized(
-            "unable to log in with provided credentials".to_string(),
-        ));
-    }
-
-    let token = generate_token();
-    state
-        .db()
-        .create::<AuthToken>()
-        .set(AuthTokenFields::USER_ID, user.id)
-        .set(AuthTokenFields::KEY_HASH, token_hash(&token))
-        .execute()
-        .await?;
-
-    Ok(Json(json!({ "token": token })))
 }

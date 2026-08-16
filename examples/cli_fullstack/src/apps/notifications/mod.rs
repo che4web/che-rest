@@ -13,8 +13,11 @@ impl AppModule for NotificationsModule {
         "notifications"
     }
 
-    fn init(&self, ctx: &mut ModuleContext) {
-        ctx.model::<models::Notification>();
+    fn schema(&self) -> che_orm2::SchemaSet {
+        che_orm2::SchemaSet::new().model::<models::Notification>()
+    }
+
+    fn init(&self, _context: &mut ModuleContext) {
     }
 
     fn subscribe(&self, state: &AppState) {

@@ -5,10 +5,15 @@ edition = "2024"
 
 [dependencies]
 axum = "0.8"
+argon2 = "0.5"
 che-orm2 = { path = "../../che-orm2" }
 che-orm2-rest = { path = "../../che-orm2/che-orm2-rest" }
+hex = "0.4"
+rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
+sha2 = "0.10"
+time = "0.3"
 toml = "0.8"

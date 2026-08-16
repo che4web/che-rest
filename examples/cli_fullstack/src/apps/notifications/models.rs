@@ -1,13 +1,11 @@
-use che_orm::{Model, NaiveDateTime};
+use time::OffsetDateTime;
 
-#[derive(Debug, Clone, Model)]
-#[model(table = "notifications_notification")]
+#[derive(Debug, che_orm2::Model)]
+#[orm(table = "notifications_notification")]
 pub struct Notification {
-    #[field(primary_key)]
+    #[orm(primary_key)]
     pub id: i64,
-
     pub message: String,
-
-    #[field(auto_now_add)]
-    pub created_at: NaiveDateTime,
+    #[orm(auto_now_add)]
+    pub created_at: OffsetDateTime,
 }

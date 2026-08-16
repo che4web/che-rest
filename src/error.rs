@@ -13,3 +13,21 @@ pub enum AppError {
 }
 
 pub type AppResult<T> = Result<T, AppError>;
+
+impl axum::response::IntoResponse for AppError {
+    fn into_response(self) -> axum::response::Response {
+        match self {
+            Self::Rest(error) => error.into_response(),
+            Self::BadRequest(detail) => (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({ "detail": detail })),
+            )
+                .into_response(),
+            error => (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({ "detail": error.to_string() })),
+            )
+                .into_response(),
+        }
+    }
+}

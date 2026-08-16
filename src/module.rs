@@ -15,6 +15,9 @@ pub trait AppModule: Send + Sync + 'static {
     fn init(&self, context: &mut ModuleContext);
     fn subscribe(&self, _state: &AppState) {}
     fn start(&self, _state: &AppState) {}
+    fn middleware(&self, router: Router, _state: &AppState) -> Router {
+        router
+    }
 }
 
 #[derive(Default)]
@@ -49,6 +52,7 @@ impl InstalledApps {
 pub struct ModuleContext {
     rest_state: Option<RestState>,
     routers: Vec<Router>,
+    root_routers: Vec<Router>,
     schemas: Vec<SchemaSet>,
     openapi_paths: Map<String, Value>,
     openapi_components: Map<String, Value>,
@@ -64,6 +68,10 @@ impl ModuleContext {
 
     pub fn route(&mut self, router: Router) {
         self.routers.push(router);
+    }
+
+    pub fn route_at_root(&mut self, router: Router) {
+        self.root_routers.push(router);
     }
 
     pub fn model<M: Model>(&mut self) {
@@ -197,6 +205,10 @@ impl Server {
         for route in context.routers {
             api = api.merge(route);
         }
+        let mut root = Router::new();
+        for route in context.root_routers {
+            root = root.merge(route);
+        }
 
         let openapi = json!({
             "openapi": "3.0.3",
@@ -216,6 +228,11 @@ impl Server {
             module.start(&self.state);
         }
 
-        Ok(Router::new().nest(&self.api_prefix, api))
+        root = root.nest(&self.api_prefix, api);
+        for module in self.apps.iter() {
+            root = module.middleware(root, &self.state);
+        }
+
+        Ok(root.layer(axum::Extension(self.state)))
     }
 }

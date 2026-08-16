@@ -2,64 +2,52 @@ use argon2::{
     Argon2,
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
 };
-use che_orm::{Model, NaiveDateTime};
+use time::OffsetDateTime;
 
-#[derive(Debug, Clone, Model)]
-#[model(table = "auth_users")]
+#[derive(Debug, che_orm2::Model)]
+#[orm(table = "auth_users")]
 pub struct User {
-    #[field(primary_key)]
+    #[orm(primary_key)]
     pub id: i64,
-
-    #[field(unique, max_length = 150)]
+    #[orm(unique)]
     pub username: String,
-
     pub password_hash: String,
-
-    #[field(default = true)]
+    #[orm(default = "true")]
     pub is_active: bool,
-
-    #[field(default = false)]
+    #[orm(default = "false")]
     pub is_staff: bool,
-
-    #[field(default = false)]
+    #[orm(default = "false")]
     pub is_admin: bool,
-
-    #[field(default = false)]
+    #[orm(default = "false")]
     pub is_superuser: bool,
 }
 
-#[derive(Debug, Clone, Model)]
-#[model(table = "auth_tokens")]
+#[derive(Debug, che_orm2::Model)]
+#[orm(table = "auth_tokens", index("user_id"))]
 pub struct AuthToken {
-    #[field(primary_key)]
+    #[orm(primary_key)]
     pub id: i64,
-
-    #[field(foreign_key = User)]
+    #[orm(foreign_key = User, on_delete = "cascade")]
     pub user_id: i64,
-
-    #[field(unique, max_length = 64)]
+    #[orm(unique)]
     pub key_hash: String,
 }
 
-#[derive(Debug, Clone, Model)]
-#[model(table = "auth_sessions")]
+#[derive(Debug, che_orm2::Model)]
+#[orm(table = "auth_sessions", index("user_id"))]
 pub struct AuthSession {
-    #[field(primary_key)]
+    #[orm(primary_key)]
     pub id: i64,
-
-    #[field(foreign_key = User)]
+    #[orm(foreign_key = User, on_delete = "cascade")]
     pub user_id: i64,
-
-    #[field(unique, max_length = 64)]
+    #[orm(unique)]
     pub key_hash: String,
-
     pub csrf_hash: String,
     pub data: String,
     pub revision: i64,
-    pub expires_at: NaiveDateTime,
-
-    #[field(auto_now_add)]
-    pub created_at: NaiveDateTime,
+    pub expires_at: OffsetDateTime,
+    #[orm(auto_now_add)]
+    pub created_at: OffsetDateTime,
 }
 
 pub fn hash_password(password: &str) -> Result<String, argon2::password_hash::Error> {
