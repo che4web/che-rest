@@ -1,5 +1,11 @@
 [database]
 url = "sqlite://db.sqlite?mode=rwc"
+max_connections = 64
+
+[server]
+host = "127.0.0.1"
+port = 3001
+api_prefix = "/api"
 
 [auth.session]
 cookie_name = "cli_fullstack_session"

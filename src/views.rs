@@ -61,6 +61,14 @@ pub trait ViewSet: Clone + Send + Sync + 'static {
     ) -> AppResult<Map<String, Value>> {
         Ok(Map::new())
     }
+
+    async fn custom_list_response(
+        &self,
+        _state: &AppState,
+        _params: &HashMap<String, String>,
+    ) -> AppResult<Option<Value>> {
+        Ok(None)
+    }
 }
 
 pub struct DefaultViewSet<M: SqliteModel> {
@@ -155,6 +163,9 @@ where
                 ViewAction::List,
             )
             .await?;
+        if let Some(response) = viewset.custom_list_response(&state, &params).await? {
+            return Ok(json_response(response));
+        }
         let serializer = viewset.serializer().model_serializer();
         let filterset = viewset.filterset().filterset();
         let total = filterset

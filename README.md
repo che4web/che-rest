@@ -44,6 +44,9 @@ A complete runnable example with CRUD, authentication, WebSocket commands, inter
 TypeScript generation, and Vue admin generation is available in
 [`examples/cli_fullstack`](examples/cli_fullstack/README.md).
 
+For a minimal SQLite todo API, see the step-by-step
+[`Todo API From Scratch`](docs/TODO_TUTORIAL.md) tutorial.
+
 ## Management
 
 Applications define one installed app list and use it for both the API server and management commands:
@@ -94,6 +97,18 @@ server:
 cargo run --bin manage -- makemigrations
 cargo run --bin manage -- migrate
 ```
+
+The generated `app.toml` also configures the listener and API prefix:
+
+```toml
+[server]
+host = "127.0.0.1"
+port = 3000
+api_prefix = "/api"
+```
+
+The application entrypoint reads these values, so changing the bind address, port, or API prefix
+does not require editing Rust code.
 
 Installed app routes are served under `/api` by default. A viewset registered as `"/users"` is exposed as `/api/users`.
 Swagger UI is exposed at `/api/` and the OpenAPI JSON schema at `/api/openapi.json`.

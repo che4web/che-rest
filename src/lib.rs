@@ -19,7 +19,7 @@ pub use async_trait::async_trait;
 pub use channels::{ChannelModule, Channels};
 pub use che_orm::Database;
 pub use commands::{Command, CommandHandler, Commands};
-pub use config::{AppConfig, DatabaseConfig};
+pub use config::{AppConfig, DatabaseConfig, ServerConfig};
 pub use error::{AppError, AppResult};
 pub use filters::{Filter, FilterError, FilterSet, FilterSetSpec, Lookup};
 pub use management::Management;

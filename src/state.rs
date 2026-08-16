@@ -14,8 +14,17 @@ pub struct AppState {
 
 impl AppState {
     pub async fn from_config_file(path: impl AsRef<Path>) -> AppResult<Self> {
-        let config = AppConfig::from_file(path)?;
-        let db = Database::connect(&config.database.url).await?;
+        let mut config = AppConfig::from_file(path)?;
+        if let Ok(max_connections) = std::env::var("CHE_REST_DATABASE_MAX_CONNECTIONS")
+            && let Ok(max_connections) = max_connections.parse()
+        {
+            config.database.max_connections = max_connections;
+        }
+        let db = Database::connect_with_max_connections(
+            &config.database.url,
+            config.database.max_connections,
+        )
+        .await?;
 
         Ok(Self {
             config,

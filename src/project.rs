@@ -130,6 +130,12 @@ tokio = {{ version = "1", features = ["macros", "net", "rt-multi-thread", "sync"
 fn app_toml_template() -> &'static str {
     r#"[database]
 url = "sqlite://db.sqlite?mode=rwc"
+max_connections = 64
+
+[server]
+host = "127.0.0.1"
+port = 3000
+api_prefix = "/api"
 "#
 }
 
@@ -223,12 +229,15 @@ fn main_rs_template(crate_name: &str) -> String {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {{
     let state = AppState::from_config_file("app.toml").await?;
+    let server_config = state.config.server.clone();
     let app = Server::new(state)
         .install({crate_name}::apps::installed_apps())
+        .api_prefix(&server_config.api_prefix)
         .build()
         .await?;
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
+    let address = format!("{{}}:{{}}", server_config.host, server_config.port);
+    let listener = tokio::net::TcpListener::bind(&address).await?;
     axum::serve(listener, app).await?;
 
     Ok(())

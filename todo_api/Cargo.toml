@@ -1,0 +1,11 @@
+[package]
+name = "todo_api"
+version = "0.1.0"
+edition = "2024"
+default-run = "todo_api"
+
+[dependencies]
+axum = "0.8"
+che-orm = { path = "../../che-orm/crates/che-orm" }
+che-rest = { path = "../../che-rest" }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync"] }
