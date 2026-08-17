@@ -4,8 +4,13 @@ use std::{
 };
 
 use cli_fullstack::apps::{self, notifications::models::Notification, tasks::models::Task};
+use futures_util::{SinkExt, StreamExt};
 use reqwest::header::SET_COOKIE;
 use serde_json::json;
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{Message, client::IntoClientRequest},
+};
 
 #[tokio::test]
 async fn fullstack_session_rest_smoke() {
@@ -167,6 +172,40 @@ async fn fullstack_session_rest_smoke() {
         })
         .unwrap()
         .to_owned();
+    let session = login
+        .headers()
+        .get_all(SET_COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .find_map(|value| {
+            value
+                .strip_prefix("che_rest_session=")
+                .and_then(|value| value.split(';').next())
+        })
+        .unwrap()
+        .to_owned();
+
+    let ws_url = format!("ws://{address}/v1/ws/");
+    let mut request = ws_url.into_client_request().unwrap();
+    request.headers_mut().insert(
+        "Cookie",
+        format!("che_rest_session={session}; csrf_token={csrf}")
+            .parse()
+            .unwrap(),
+    );
+    let (mut socket, _) = connect_async(request).await.unwrap();
+    socket
+        .send(Message::Text(
+            json!({"action": "subscribe", "signal": "tasks.created"})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    let subscribed = socket.next().await.unwrap().unwrap().into_text().unwrap();
+    let subscribed: serde_json::Value = serde_json::from_str(&subscribed).unwrap();
+    assert_eq!(subscribed["type"], "subscribed");
+    assert_eq!(subscribed["signal"], "tasks.created");
 
     let relation_users = client
         .get(format!("{base_url}/v1/auth/users/"))
@@ -192,6 +231,11 @@ async fn fullstack_session_rest_smoke() {
     assert_eq!(task_payload["status"], "draft");
     assert_eq!(task_payload["assignee_id"], 2);
     let task_id = task_payload["id"].as_i64().unwrap();
+    let signal = socket.next().await.unwrap().unwrap().into_text().unwrap();
+    let signal: serde_json::Value = serde_json::from_str(&signal).unwrap();
+    assert_eq!(signal["type"], "signal");
+    assert_eq!(signal["signal"], "tasks.created");
+    assert_eq!(signal["payload"]["id"], task_id);
 
     let second_task = client
         .post(format!("{base_url}/v1/tasks/"))

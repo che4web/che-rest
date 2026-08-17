@@ -104,8 +104,8 @@ curl -X POST http://127.0.0.1:3001/api/tasks/ \
   -d '{"name":"Pair on the task","status":"in_progress","assignee_id":2}'
 ```
 
-Every task creation path, including REST, admin, and the WebSocket command below, emits the
-internal `tasks.created` event.
+Every task creation path, including REST and admin, emits the public WebSocket `tasks.created`
+signal.
 
 List tasks in ascending or descending order with the `ordering` query key. The example exposes
 `id`, `name`, `created_at`, and `updated_at`:
@@ -115,24 +115,23 @@ curl 'http://127.0.0.1:3001/api/tasks/?ordering=name'
 curl 'http://127.0.0.1:3001/api/tasks/?ordering=-created_at'
 ```
 
-## WebSocket Command
+## WebSocket Signals
 
-The tasks module registers the `tasks.create` command. Browser WebSockets use the authenticated
+The project installs `che_rest::channels::module()`. Browser WebSockets use the authenticated
 same-origin session cookie from the login above.
 
-Then send this command from a browser or WebSocket client:
+Subscribe from a browser or WebSocket client:
 
 ```json
 {
-  "action": "publish",
-  "event": "tasks.create",
-  "payload": { "name": "Write a channel example" }
+  "action": "subscribe",
+  "signal": "tasks.created"
 }
 ```
 
-The command creates a task. The tasks module bridges the ORM `PostSave` signal to the internal
-`tasks.created` application channel, and the notifications module subscribes to that channel in
-`AppModule::subscribe`; it is never visible as a WebSocket channel.
+Creating a task through REST or admin emits a `tasks.created` signal to subscribed clients. The
+notifications module demonstrates the separate internal `AppChannels` API in `AppModule::subscribe`;
+internal channels are not exposed as WebSocket signals.
 
 Run the end-to-end smoke test:
 
@@ -157,12 +156,12 @@ Use the generated WebSocket client:
 import { ChannelClient } from "./generated/channels";
 
 const channels = new ChannelClient({
-  onMessage: (event) => console.log(event.channel, event.payload),
+  onMessage: (event) => console.log(event.signal, event.payload),
   onError: (event) => console.error(event.code, event.detail),
 });
 
 await channels.connect();
-channels.publish("tasks.create", { name: "From TypeScript" });
+channels.subscribe("tasks.created");
 ```
 
 Generate the standalone Vue admin project:

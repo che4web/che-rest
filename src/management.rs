@@ -180,10 +180,12 @@ impl Management {
             CommandKind::GenerateTs { out, config } => {
                 AppConfig::from_file(config)?;
                 let state = AppState::from_database(Database::connect_in_memory()?);
-                let endpoints = self.apps.api_endpoints(state);
+                let endpoints = self.apps.api_endpoints(state.clone());
+                let signals = self.apps.api_signals(state);
                 let files = crate::generate_ts::generate(
                     &out,
                     &endpoints,
+                    &signals,
                     self.apps.find("auth").is_some(),
                 )?;
                 println!("generated {} files in {}", files.len(), out.display());
@@ -191,10 +193,12 @@ impl Management {
             CommandKind::GenerateAdmin { out, config, force } => {
                 AppConfig::from_file(config)?;
                 let state = AppState::from_database(Database::connect_in_memory()?);
-                let endpoints = self.apps.api_endpoints(state);
+                let endpoints = self.apps.api_endpoints(state.clone());
+                let signals = self.apps.api_signals(state);
                 let generated = crate::generate_ts::generate(
                     &out.join("src/generated"),
                     &endpoints,
+                    &signals,
                     self.apps.find("auth").is_some(),
                 )?;
                 let admin = crate::generate_admin::generate(&out, &endpoints, force)?;

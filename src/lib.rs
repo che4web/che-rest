@@ -9,6 +9,7 @@ pub mod management;
 pub mod module;
 pub mod project;
 pub mod rest;
+pub mod signals;
 pub mod state;
 
 pub use app_channels::AppChannels;
@@ -27,4 +28,5 @@ pub use rest::{
     AllowAny, CrudViewSet, Filter, FilterError, FilterSet, FilterSetSpec, FilterValue, Lookup,
     Permission, RestQuerySet, ViewAction, ViewSet, openapi_column_schema, openapi_json_for, router,
 };
+pub use signals::{SignalAccess, SignalBus, SignalEvent};
 pub use state::AppState;

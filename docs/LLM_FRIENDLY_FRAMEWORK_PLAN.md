@@ -8,13 +8,13 @@
 - Генерировать `AGENTS.md` через `startproject`.
 - Описать канонический workflow:
   `startapp` -> `makemigrations` -> `migrate` -> запуск сервера.
-- Документировать структуру app, viewsets, serializers, filters, permissions, commands и channels.
+- Документировать структуру app, viewsets, serializers, filters, permissions, WebSocket signals и internal channels.
 - Использовать короткие проверенные snippets без конкурирующих вариантов.
 - Добавить раздел conventions:
   - `author_id` назначается через `system_create_values`;
   - таблицы создаются только через `migrate`;
-  - WebSocket commands отделены от `AppChannels`;
-  - ORM signals не превращаются в application events автоматически;
+  - public WebSocket signals отделены от internal `AppChannels`;
+  - REST lifecycle signals публикуются viewsets; ORM writes не превращаются в application events автоматически;
   - generated admin использует session cookies и `csrf_token`.
 
 ## Приоритет 2: JSON-инспекция [x]
@@ -32,7 +32,7 @@ cargo run --bin manage -- inspect --format json
 - foreign keys;
 - routes и permissions;
 - OpenAPI paths;
-- зарегистрированные WebSocket commands;
+- зарегистрированные WebSocket signals;
 - состояние migrations;
 - auth/session configuration.
 
@@ -42,10 +42,10 @@ JSON должен быть стабильным, без человекоорие
 ## Приоритет 3: машинные contracts
 
 - Сохранить OpenAPI как основной HTTP contract.
-- Добавить описание WebSocket commands в machine-readable виде, например через
-  `x-che-rest-commands` в OpenAPI.
-- Для каждой command описывать имя, payload schema, authentication requirement, response и errors.
-- Генерировать TypeScript types для commands.
+- Добавить описание WebSocket signals в machine-readable виде через
+  `x-che-rest-signals` в OpenAPI.
+- Для каждого signal описывать имя, authentication requirement и payload schema, когда она известна.
+- Генерировать TypeScript types для signal names.
 
 ## Приоритет 4: идемпотентный CLI [x]
 
@@ -64,9 +64,9 @@ JSON должен быть стабильным, без человекоорие
 - CRUD;
 - session auth;
 - CSRF;
-- WebSocket command;
+- WebSocket signal subscription;
 - internal application channel;
-- ORM signal bridge;
+- declared REST lifecycle signals;
 - task author из текущего пользователя;
 - TypeScript client;
 - Vue admin.
@@ -76,9 +76,9 @@ JSON должен быть стабильным, без человекоорие
 1. Создать или применить migrations.
 2. Создать пользователя и выполнить session login.
 3. Создать task через REST.
-4. Создать task через WebSocket command.
-5. Проверить `author_id`.
-6. Проверить публикацию `tasks.created`.
+4. Подписаться на `tasks.created` через WebSocket.
+5. Создать task через REST.
+6. Проверить `author_id` и публикацию `tasks.created`.
 
 Smoke test запускается командой:
 
@@ -100,7 +100,7 @@ cargo test --manifest-path examples/cli_fullstack/Cargo.toml --test smoke
 
 1. Генерация `AGENTS.md` и улучшение canonical example.
 2. `inspect --format json`.
-3. WebSocket contract и TypeScript types.
+3. WebSocket signal contract и TypeScript types.
 4. JSON output для management commands.
 5. E2E smoke tests.
 6. Error cookbook и автоматическая проверка документации.

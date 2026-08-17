@@ -61,7 +61,7 @@ Include the built-in auth module in the generated app registry:
 cargo run --bin manage -- startproject my_project --with-auth
 ```
 
-A complete runnable example with CRUD, authentication, WebSocket commands, internal channels,
+A complete runnable example with CRUD, authentication, WebSocket signals, internal channels,
 TypeScript generation, and Vue admin generation is available in
 [`examples/cli_fullstack`](examples/cli_fullstack/README.md).
 
@@ -339,9 +339,10 @@ source files or require the HTTP server to be running.
 
 Generated TypeScript clients expose `setAuthToken(token)` in `api_client.ts`.
 
-## WebSocket Channels
+## WebSocket Signals
 
-Install the channel module together with auth. The WebSocket endpoint is available at `/api/ws/`:
+Install the channel module. The WebSocket endpoint is available at `/api/ws/` under the configured
+API prefix:
 
 ```rust
 pub fn installed_apps() -> InstalledApps {
@@ -352,8 +353,24 @@ pub fn installed_apps() -> InstalledApps {
 }
 ```
 
-WebSocket channels are public transport channels. Modules can create separate internal application
-channels through `AppState::app_channels()`, which are never exposed to WebSocket clients:
+WebSocket clients subscribe only to declared public signals. CRUD viewsets declare authenticated
+`<resource>.created`, `<resource>.updated`, and `<resource>.deleted` signals automatically. Modules
+can declare additional signals in `init`:
+
+```rust
+fn init(&self, ctx: &mut che_rest::ModuleContext) {
+    ctx.signal("chat.message.created", che_rest::SignalAccess::Authenticated);
+}
+```
+
+Publish a declared signal with:
+
+```rust
+state.signals().publish("chat.message.created", serde_json::json!({ "id": 42 }));
+```
+
+Modules can create separate internal application channels through `AppState::app_channels()`, which
+are never exposed to WebSocket clients:
 
 ```rust
 let channels = state.app_channels().clone();
@@ -406,17 +423,8 @@ impl che_rest::AppModule for Notifications {
 Application channels use bounded broadcast queues. A slow subscriber receives `Lagged` and should
 resynchronize as needed. They are only available inside the server process.
 
-WebSocket clients still send commands to registered command handlers. The server always associates a
-client command with the authenticated user; the client cannot choose another user's channel:
-
-```typescript
-await channels.connect();
-channels.publish("chat.message.send", { text: "Hello" });
-```
-
-Each command has one handler. Internal events can have multiple handlers; all of them run in
-independent application-channel subscriptions. If no command handler is registered, the client
-receives a `command_error` response.
+Internal events can have multiple handlers; all of them run in independent application-channel
+subscriptions. Public WebSocket signals are independent from internal application channels.
 
 Connections must be authenticated. Non-browser clients can provide `Authorization: Token <token>`
 during the WebSocket upgrade. Browser `WebSocket` connections use the existing same-origin session
@@ -428,12 +436,12 @@ The TypeScript generator creates `channels.ts` with a cookie-authenticated `Chan
 import { ChannelClient } from "./generated/channels";
 
 const channels = new ChannelClient({
-  onMessage: (event) => console.log(event.channel, event.payload),
+  onMessage: (event) => console.log(event.signal, event.payload),
   onError: (event) => console.error(event.code, event.detail),
 });
 
 await channels.connect();
-channels.subscribe("orders:42");
+channels.subscribe("orders.created");
 ```
 
 The client derives `/api/ws/` from `VITE_API_BASE_URL`, converting `http` to `ws` and `https` to
@@ -445,20 +453,19 @@ Subscribe and unsubscribe using text JSON frames:
 const socket = new WebSocket("ws://127.0.0.1:3000/api/ws/");
 
 socket.addEventListener("open", () => {
-  socket.send(JSON.stringify({ action: "subscribe", channel: "orders:42" }));
+  socket.send(JSON.stringify({ action: "subscribe", signal: "orders.created" }));
 });
 
 socket.addEventListener("message", ({ data }) => {
   console.log(JSON.parse(data));
-  // { type: "message", channel: "orders:42", payload: { status: "paid" } }
+  // { type: "signal", signal: "orders.created", payload: { status: "paid" } }
 });
 ```
 
-Each connection is automatically subscribed to its private `user:{id}` channel. Client publication
-is routed to the command handler with the authenticated `CurrentUser`; event handlers may respond
-through `publish_user`. Clients cannot subscribe directly to `user:` channels. Other channel names
-may contain ASCII letters, numbers, `:`, `-`, `_`, and `.`. The server confirms subscription changes
-with `subscribed` and `unsubscribed` messages.
+Clients cannot subscribe to undeclared signals. Private user signals can be published with
+`publish_user` and use `user:{id}:<signal>` names; only that user can subscribe. Signal names may
+contain ASCII letters, numbers, `:`, `-`, `_`, and `.`. The server confirms subscription changes with
+`subscribed` and `unsubscribed` messages.
 
 This is in-memory pub/sub for one server process: messages are delivered only to currently connected
 clients, are not persisted, and do not cross process boundaries. A slow receiver receives a `lagged`

@@ -611,6 +611,16 @@ pub trait ViewSet: Clone + Send + Sync + 'static {
     fn openapi_actions(&self) -> serde_json::Value {
         json!({})
     }
+    fn signal_name(&self, action: ViewAction) -> Option<String> {
+        match action {
+            ViewAction::Create => Some(format!("{}.created", self.path().trim_matches('/'))),
+            ViewAction::Update | ViewAction::Patch => {
+                Some(format!("{}.updated", self.path().trim_matches('/')))
+            }
+            ViewAction::Delete => Some(format!("{}.deleted", self.path().trim_matches('/'))),
+            ViewAction::List | ViewAction::Retrieve => None,
+        }
+    }
 }
 
 pub struct CrudViewSet<M, S> {
@@ -915,6 +925,9 @@ async fn destroy<V: ViewSet>(
         )?;
     }
     state.database().delete::<V::Model>(id).await?;
+    if let Some(signal) = viewset.signal_name(ViewAction::Delete) {
+        state.signals().publish(signal, json!({"id": id}));
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -942,7 +955,11 @@ where
         .first(state.database())
         .await?
         .ok_or(AppError::NotFound)?;
-    Ok((StatusCode::CREATED, Json(V::Serializer::to_json(item)?)))
+    let payload = V::Serializer::to_json(item)?;
+    if let Some(signal) = viewset.signal_name(ViewAction::Create) {
+        state.signals().publish(signal, payload.clone());
+    }
+    Ok((StatusCode::CREATED, Json(payload)))
 }
 
 async fn patch<V: ViewSet>(
@@ -985,7 +1002,11 @@ where
         .first(state.database())
         .await?
         .ok_or(AppError::NotFound)?;
-    Ok(Json(V::Serializer::to_json(item)?))
+    let payload = V::Serializer::to_json(item)?;
+    if let Some(signal) = viewset.signal_name(ViewAction::Patch) {
+        state.signals().publish(signal, payload.clone());
+    }
+    Ok(Json(payload))
 }
 
 async fn update<V: ViewSet>(
@@ -1028,5 +1049,9 @@ where
         .first(state.database())
         .await?
         .ok_or(AppError::NotFound)?;
-    Ok(Json(V::Serializer::to_json(item)?))
+    let payload = V::Serializer::to_json(item)?;
+    if let Some(signal) = viewset.signal_name(ViewAction::Update) {
+        state.signals().publish(signal, payload.clone());
+    }
+    Ok(Json(payload))
 }

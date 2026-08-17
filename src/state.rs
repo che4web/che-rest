@@ -3,14 +3,14 @@ use std::path::Path;
 use che_orm2::Database;
 
 use crate::{AppConfig, AppResult};
-use crate::{app_channels::AppChannels, channels::Channels};
+use crate::{app_channels::AppChannels, channels::Channels, signals::SignalBus};
 
 #[derive(Clone)]
 pub struct AppState {
     pub config: AppConfig,
     database: Database,
-    channels: Channels,
     app_channels: AppChannels,
+    signals: SignalBus,
 }
 
 impl AppState {
@@ -18,8 +18,8 @@ impl AppState {
         Self {
             config: AppConfig::default(),
             database,
-            channels: Channels::new(),
             app_channels: AppChannels::new(),
+            signals: SignalBus::new(),
         }
     }
 
@@ -32,8 +32,8 @@ impl AppState {
         Ok(Self {
             config,
             database,
-            channels: Channels::new(),
             app_channels: AppChannels::new(),
+            signals: SignalBus::new(),
         })
     }
 
@@ -42,11 +42,15 @@ impl AppState {
     }
 
     pub fn channels(&self) -> &Channels {
-        &self.channels
+        &self.signals
     }
 
     pub fn app_channels(&self) -> &AppChannels {
         &self.app_channels
+    }
+
+    pub fn signals(&self) -> &SignalBus {
+        &self.signals
     }
 }
 

@@ -301,7 +301,7 @@ schema, API metadata, and router together. Do not use only `ctx.route(...)` for 
 - Use `IsAuthenticated` for resources that require the current user.
 - Application events use `AppState::app_channels()` and `AppModule::subscribe()`.
 - `AppState::app_channels()` is for internal application events and is never a public WebSocket channel.
-- ORM model signals are separate from application channels; bridge them explicitly in `AppModule::subscribe()`.
+- Public WebSocket signals use `AppState::signals()` and must be declared with `ModuleContext::signal(...)`; CRUD viewsets declare authenticated lifecycle signals automatically.
 - Generated admin uses session cookies and the readable `csrf_token` cookie.
 {auth_note}
 ## Verification

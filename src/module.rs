@@ -5,8 +5,8 @@ use che_orm2::SchemaSet;
 use serde_json::{Map, Value, json};
 
 use crate::{
-    AppError, AppResult, AppState, CrudViewSet, FilterSetSpec, Model, ModelSerializer, ViewSet,
-    openapi_column_schema, openapi_json_for, router,
+    AppError, AppResult, AppState, CrudViewSet, FilterSetSpec, Model, ModelSerializer,
+    SignalAccess, ViewAction, ViewSet, openapi_column_schema, openapi_json_for, router,
 };
 
 pub trait AppModule: Send + Sync + 'static {
@@ -31,6 +31,12 @@ pub struct ApiEndpoint {
     pub fields: Vec<che_orm2::SerializerField>,
     pub columns: Vec<ApiColumn>,
     pub filters: Vec<ApiFilter>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ApiSignal {
+    pub name: String,
+    pub access: SignalAccess,
 }
 
 #[derive(Debug, Clone)]
@@ -83,6 +89,20 @@ impl InstalledApps {
         }
         context.api_endpoints
     }
+
+    pub fn api_signals(&self, state: AppState) -> Vec<ApiSignal> {
+        let mut context = ModuleContext::new(state.clone());
+        for module in self.iter() {
+            context.current_app = module.name();
+            module.init(&mut context);
+        }
+        state
+            .signals()
+            .public_signals()
+            .into_iter()
+            .map(|(name, access)| ApiSignal { name, access })
+            .collect()
+    }
 }
 
 #[derive(Default)]
@@ -111,6 +131,14 @@ impl ModuleContext {
 
     pub fn route_at_root(&mut self, router: Router) {
         self.root_routers.push(router);
+    }
+
+    pub fn signal(&mut self, signal: impl Into<String>, access: SignalAccess) {
+        let state = self
+            .state
+            .as_ref()
+            .expect("module context is not initialized");
+        state.signals().declare(signal, access);
     }
 
     pub fn model<M: Model>(&mut self) {
@@ -164,6 +192,15 @@ impl ModuleContext {
                 })
                 .collect(),
         });
+        if let Some(signal) = viewset.signal_name(ViewAction::Create) {
+            self.signal(signal, SignalAccess::Authenticated);
+        }
+        if let Some(signal) = viewset.signal_name(ViewAction::Update) {
+            self.signal(signal, SignalAccess::Authenticated);
+        }
+        if let Some(signal) = viewset.signal_name(ViewAction::Delete) {
+            self.signal(signal, SignalAccess::Authenticated);
+        }
         let state = self
             .state
             .as_ref()
@@ -320,6 +357,7 @@ impl Server {
             "servers": [{"url": self.api_prefix.clone()}],
             "paths": openapi_paths,
             "components": openapi_components,
+            "x-che-rest-signals": self.state.signals().public_signals().into_iter().map(|(name, access)| json!({"name": name, "access": format!("{:?}", access)})).collect::<Vec<_>>(),
         });
         api = api.route(
             "/openapi.json",
