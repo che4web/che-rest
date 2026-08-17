@@ -53,7 +53,7 @@ fn admin_schema(endpoints: &[ApiEndpoint]) -> String {
         out.push_str("  {\n");
         out.push_str(&format!(
             "    appName: {}, name: {}, resource: {}, api: {}Api,\n",
-            js(&endpoint.app_name),
+            js(endpoint.app_name),
             js(&endpoint.model_name),
             js(&endpoint.resource),
             lower_first(&endpoint.model_name)
@@ -72,7 +72,15 @@ fn admin_schema(endpoints: &[ApiEndpoint]) -> String {
                 .and_then(|column| column.choices.as_ref())
                 .map(|choices| format!(", choices: {}", serde_json::to_string(choices).unwrap()))
                 .unwrap_or_default();
-            out.push_str(&format!("      {{ name: {}, source: {}, type: {}, label: {}, readOnly: {}, writeOnly: {}, required: {}, nullable: {}, hasDefault: {}{}{}{} }},\n", js(field.name), js(&source), js(ty), js(&label(field.name)), read_only, field.write_only, !read_only && !field.write_only && !nullable && !has_default, nullable, has_default, choices, related.map(|value| format!(", relatedModel: {}", js(value))).unwrap_or_default(), nested_relation.then(|| format!(", relationField: {}", js(field.name))).unwrap_or_default()));
+            let related_model = related
+                .map(|value| format!(", relatedModel: {}", js(value)))
+                .unwrap_or_default();
+            let relation_field = if nested_relation {
+                format!(", relationField: {}", js(field.name))
+            } else {
+                String::new()
+            };
+            out.push_str(&format!("      {{ name: {}, source: {}, type: {}, label: {}, readOnly: {}, writeOnly: {}, required: {}, nullable: {}, hasDefault: {}{}{}{} }},\n", js(field.name), js(&source), js(ty), js(&label(field.name)), read_only, field.write_only, !read_only && !field.write_only && !nullable && !has_default, nullable, has_default, choices, related_model, relation_field));
         }
         out.push_str("    ],\n    filters: [\n");
         for filter in &endpoint.filters {
@@ -105,18 +113,18 @@ fn admin_schema(endpoints: &[ApiEndpoint]) -> String {
     }
     out.push_str("];\n\n");
     for endpoint in endpoints {
-        out.push_str(&format!("export const {}AdminModel = adminModels.find((model) => model.appName === {} && model.resource === {}) as AdminModel;\n", lower_first(&endpoint.model_name), js(&endpoint.app_name), js(&endpoint.resource)));
+        out.push_str(&format!("export const {}AdminModel = adminModels.find((model) => model.appName === {} && model.resource === {}) as AdminModel;\n", lower_first(&endpoint.model_name), js(endpoint.app_name), js(&endpoint.resource)));
     }
     out.push_str("\nexport const adminApps: AdminApp[] = [\n");
     for endpoint in endpoints {
-        if apps.iter().any(|app: &&str| *app == endpoint.app_name) {
+        if apps.contains(&endpoint.app_name) {
             continue;
         }
         apps.push(endpoint.app_name);
         out.push_str(&format!(
             "  {{ name: {}, models: adminModels.filter((model) => model.appName === {}) }},\n",
-            js(&endpoint.app_name),
-            js(&endpoint.app_name)
+            js(endpoint.app_name),
+            js(endpoint.app_name)
         ));
     }
     out.push_str("];\n");
@@ -131,7 +139,7 @@ fn static_files(endpoints: &[ApiEndpoint]) -> Vec<(String, String)> {
         ("tsconfig.json".into(), r#"{"compilerOptions":{"target":"ES2020","useDefineForClassFields":true,"module":"ESNext","lib":["ES2020","DOM","DOM.Iterable"],"skipLibCheck":true,"moduleResolution":"Bundler","allowImportingTsExtensions":true,"resolveJsonModule":true,"isolatedModules":true,"noEmit":true,"jsx":"preserve","strict":true,"types":["vite/client"]},"include":["src/**/*.ts","src/**/*.vue"]}"#.into()),
         ("src/main.ts".into(), "import { createApp } from \"vue\";\nimport App from \"./App.vue\";\nimport router from \"./router\";\ncreateApp(App).use(router).mount(\"#app\");\n".into()),
         ("src/App.vue".into(), "<script setup lang=\"ts\">\nimport { RouterView } from \"vue-router\";\n</script>\n<template><RouterView /></template>\n".into()),
-        ("src/router.ts".into(), format!("import {{ createRouter, createWebHistory }} from \"vue-router\";\nimport {{ adminRoutes }} from \"./admin/generated/adminRoutes\";\nexport default createRouter({{ history: createWebHistory(), routes: adminRoutes }});\n")),
+        ("src/router.ts".into(), "import { createRouter, createWebHistory } from \"vue-router\";\nimport { adminRoutes } from \"./admin/generated/adminRoutes\";\nexport default createRouter({ history: createWebHistory(), routes: adminRoutes });\n".to_string()),
         ("src/admin/AdminModelList.vue".into(), "<template><main><h1>Models</h1><RouterLink v-for=\"model in adminModels\" :key=\"model.resource\" :to=\"`/${model.resource}`\">{{ model.name }}</RouterLink></main></template>\n<script setup lang=\"ts\">\nimport { adminModels } from \"./generated/adminSchema\";\n</script>\n".into()),
         ("src/admin/components/GenericModelTable.vue".into(), "<script setup lang=\"ts\">\nimport { onMounted, ref } from \"vue\";\nconst props = defineProps<{ model: any }>(); const rows = ref<any[]>([]);\nonMounted(async () => { rows.value = (await props.model.api.list({ limit: 50 })).results; });\n</script>\n<template><main><h1>{{ model.name }}</h1><table><tr v-for=\"row in rows\" :key=\"row.id\"><td v-for=\"field in model.fields.filter((item: any) => !item.writeOnly)\" :key=\"field.name\">{{ row[field.name] }}</td></tr></table></main></template>\n".into()),
         ("src/admin/components/GenericModelForm.vue".into(), "<script setup lang=\"ts\">\nconst props = defineProps<{ model: any }>();\n</script>\n<template><main><h1>{{ model.name }}</h1><p>Use the generated API to edit this model.</p></main></template>\n".into()),

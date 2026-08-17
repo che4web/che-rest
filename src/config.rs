@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crate::error::AppResult;
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize)]
 pub struct AppConfig {
     #[serde(default)]
     pub database: DatabaseConfig,
@@ -10,16 +10,6 @@ pub struct AppConfig {
     pub server: ServerConfig,
     #[serde(default)]
     pub auth: AuthConfig,
-}
-
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            database: DatabaseConfig::default(),
-            server: ServerConfig::default(),
-            auth: AuthConfig::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -40,7 +30,7 @@ impl Default for ServerConfig {
     }
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(default)]
 pub struct AuthConfig {
     pub session: SessionConfig,
@@ -54,14 +44,6 @@ pub struct SessionConfig {
     pub ttl_seconds: i64,
     pub secure: bool,
     pub same_site: String,
-}
-
-impl Default for AuthConfig {
-    fn default() -> Self {
-        Self {
-            session: SessionConfig::default(),
-        }
-    }
 }
 
 impl Default for SessionConfig {

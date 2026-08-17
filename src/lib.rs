@@ -1,3 +1,5 @@
+#![allow(clippy::items_after_test_module, clippy::type_complexity)]
+
 pub mod app_channels;
 pub mod auth;
 pub mod channels;

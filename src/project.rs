@@ -225,6 +225,8 @@ fn validate_model_name(name: &str) -> ProjectResult<()> {
 }
 
 fn cargo_toml_template(name: &str, che_rest_path: &str, che_orm2_path: &str) -> String {
+    let che_orm2 = dependency("che-orm2", "0.1.0", che_orm2_path);
+    let che_rest = dependency("che-rest", "0.1.0", che_rest_path);
     format!(
         r#"[package]
 name = "{name}"
@@ -234,13 +236,21 @@ default-run = "{name}"
 
 [dependencies]
 axum = "0.8"
-che-orm2 = {{ path = "{che_orm2_path}" }}
-che-rest = {{ path = "{che_rest_path}" }}
+{che_orm2}
+{che_rest}
 serde = {{ version = "1", features = ["derive"] }}
 time = "0.3"
 tokio = {{ version = "1", features = ["macros", "net", "rt-multi-thread", "sync"] }}
 "#
     )
+}
+
+fn dependency(name: &str, version: &str, path: &str) -> String {
+    if path.is_empty() {
+        format!("{name} = \"{version}\"")
+    } else {
+        format!("{name} = {{ version = \"{version}\", path = \"{path}\" }}")
+    }
 }
 
 fn app_toml_template() -> &'static str {
@@ -301,7 +311,7 @@ schema, API metadata, and router together. Do not use only `ctx.route(...)` for 
 - Use `IsAuthenticated` for resources that require the current user.
 - Application events use `AppState::app_channels()` and `AppModule::subscribe()`.
 - `AppState::app_channels()` is for internal application events and is never a public WebSocket channel.
-- Public WebSocket signals use `AppState::signals()` and must be declared with `ModuleContext::signal(...)`; CRUD viewsets declare authenticated lifecycle signals automatically and publish `{{ "id": ... }}` payloads.
+- Public WebSocket signals use `AppState::signals()` and must be declared with `ModuleContext::signal(...)`; CRUD lifecycle signals are opt-in via `ViewSet::signal_access` and publish `{{ "id": ... }}` payloads.
 - Generated admin uses session cookies and the readable `csrf_token` cookie.
 {auth_note}
 ## Verification

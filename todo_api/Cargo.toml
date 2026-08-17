@@ -10,7 +10,7 @@ sqlite = []
 
 [dependencies]
 axum = "0.8"
-che-rest = { path = "../../che-rest" }
-che-orm2 = { path = "../../che-orm2" }
+che-rest = { version = "0.1.0", path = "../../che-rest" }
+che-orm2 = { version = "0.1.0", path = "../../che-orm2" }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync"] }

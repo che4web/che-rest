@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: che-rest
+      - uses: actions/checkout@v4
+        with:
+          repository: che4web/che-orm2
+          path: che-orm2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Rust format
+        run: cargo fmt --check
+        working-directory: che-rest
+      - name: Rust tests
+        run: cargo test
+        working-directory: che-rest
+      - name: Fullstack smoke test
+        run: cargo test --manifest-path examples/cli_fullstack/Cargo.toml --test smoke
+        working-directory: che-rest
+      - name: Client build
+        run: npm ci && npm run build
+        working-directory: che-rest/examples/cli_fullstack/frontend/client
+      - name: Admin build
+        run: npm ci && npm run build
+        working-directory: che-rest/examples/cli_fullstack/frontend/admin
+      - name: Package dry run
+        run: cargo package --allow-dirty
+        working-directory: che-rest

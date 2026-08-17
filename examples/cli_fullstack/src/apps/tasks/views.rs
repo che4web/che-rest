@@ -1,4 +1,4 @@
-use che_rest::{AllowAny, CurrentUser, Model, ViewSet};
+use che_rest::{AllowAny, CurrentUser, Model, SignalAccess, ViewAction, ViewSet};
 
 use super::{filters::TaskFilterSet, models::Task, serializers::TaskSerializer};
 
@@ -33,5 +33,14 @@ impl ViewSet for TaskViewSet {
 
     fn path(&self) -> &'static str {
         "/tasks"
+    }
+
+    fn signal_access(&self, action: ViewAction) -> Option<SignalAccess> {
+        match action {
+            ViewAction::Create | ViewAction::Update | ViewAction::Patch | ViewAction::Delete => {
+                Some(SignalAccess::Authenticated)
+            }
+            ViewAction::List | ViewAction::Retrieve => None,
+        }
     }
 }

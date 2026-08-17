@@ -28,7 +28,18 @@ cargo run --manifest-path todo_api/Cargo.toml
 Create a new runnable `che-rest` application:
 
 ```bash
-cargo run --bin manage -- startproject my_project
+cargo install che-rest --bin che-rest
+che-rest startproject my_project
+cd my_project
+cargo run
+```
+
+When developing against local checkouts, point the generated project at them:
+
+```bash
+cargo run --bin manage -- startproject my_project \
+  --che-rest-path ../che-rest \
+  --che-orm2-path ../che-orm2
 cd my_project
 cargo run
 ```
@@ -40,19 +51,11 @@ and a local `manage` binary. Create the first app with:
 cargo run --bin manage -- startapp users
 ```
 
-By default the generator assumes this repo layout:
+Path overrides are useful for this repo layout:
 
 ```text
 ../che-rest
 ../che-orm2
-```
-
-Override paths when needed:
-
-```bash
-cargo run --bin manage -- startproject my_project \
-  --che-rest-path ../che-rest \
-  --che-orm2-path ../che-orm2
 ```
 
 Include the built-in auth module in the generated app registry:
@@ -145,21 +148,18 @@ field. The generated admin uses an async relation selector, while nested fields 
 
 ## Typed ViewSets
 
-Generated and custom viewsets use associated types for their serializer, filters, and permissions:
+Generated and custom viewsets use associated types for their serializer, queryset, filters, and
+permissions:
 
 ```rust
-use che_rest::{AllowAny, Field, Filter, FilterSetSpec, Serializer, ViewSet};
+use che_rest::{AllowAny, Filter, FilterSetSpec, Model, ViewSet};
 
-#[derive(Clone, Copy, Default)]
-pub struct TaskSerializer;
-
-#[che_rest::async_trait]
-impl Serializer for TaskSerializer {
-    type Model = Task;
-
-    fn fields(&self) -> &'static [Field] {
-        TASK_FIELDS
-    }
+#[derive(che_orm2::ModelSerializer, serde::Serialize)]
+#[serializer(model = Task)]
+pub struct TaskSerializer {
+    pub id: i64,
+    pub name: String,
+    pub completed: bool,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -180,8 +180,17 @@ pub struct TaskViewSet;
 impl ViewSet for TaskViewSet {
     type Model = Task;
     type Serializer = TaskSerializer;
+    type QuerySet = che_orm2::DatabaseQuery<Task>;
     type FilterSet = TaskFilterSet;
     type Permission = AllowAny;
+
+    fn get_queryset(&self) -> Self::QuerySet {
+        che_orm2::DatabaseQuery::new(Task::query())
+    }
+
+    fn path(&self) -> &'static str {
+        "/tasks"
+    }
 }
 ```
 
@@ -191,37 +200,37 @@ Register a typed viewset with `viewset_with`; this also registers its model sche
 ctx.viewset_with("/tasks", TaskViewSet);
 ```
 
-`Serializer` and `FilterSetSpec` types must implement `Default`. Their default values are used by the
-viewset, so no `serializer()` or `filterset()` method is required. Built-in permissions include
-`AllowAny`, `IsAuthenticated`, and `IsAdminUser`.
+`FilterSetSpec` types must implement `Default`. Built-in permissions include `AllowAny`,
+`IsAuthenticated`, and `IsAdminUser`.
 
-The `Model` derive generates a `<Model>Fields` type with compile-time-safe database field constants.
-Use those constants when declaring filters:
+The `Model` derive generates compile-time-safe field constants on the model type. Use those constants
+when declaring filters:
 
 ```rust
 static TASK_FILTERS: &[Filter<Task>] = &[
-    Filter::exact(TaskFields::COMPLETED),
-    Filter::contains(TaskFields::TITLE),
-    Filter::gte(TaskFields::CREATED_AT),
+    Filter::exact(Task::COMPLETED),
+    Filter::contains(Task::NAME),
+    Filter::gte(Task::CREATED_AT),
 ];
 ```
 
 The model type is part of `Filter<M>`, so a filter for one model cannot be accidentally used in
-another model's `FilterSet`. `Filter::exact_as("assignee", TaskFields::EXECUTOR_ID)` can be used
+another model's `FilterSet`. `Filter::exact_as("assignee", Task::ASSIGNEE_ID)` can be used
 when the public query name should differ from the database field name. Query builders also accept
 typed fields directly:
 
 ```rust
-db.query::<Task>()
-    .filter(TaskFields::COMPLETED.eq(false))
-    .all(&db)
+Task::query()
+    .filter(Task::COMPLETED.eq(false))
+    .all(database)
     .await?;
 ```
 
-Relations use the related serializer type directly:
+Relations use serializer attributes with generated ORM2 relation markers:
 
 ```rust
-Field::related::<EmployeeSerializer>("author", "author_id")
+#[serializer(one = User, relation = TaskAuthorRelation)]
+pub author: UserSerializer,
 ```
 
 Fields populated by the server should be read-only in the serializer and assigned in the viewset's
@@ -249,13 +258,9 @@ impl ViewSet for TaskViewSet {
 
 ## Breaking API Changes
 
-ORM writes use generated field descriptors: replace `.set("title", value)` with
-`.set(TaskFields::TITLE, value)`. Replace `db.update_fields::<Task>(id)` and
-`db.update::<Task>(id, data)` with `db.update::<Task>(id).set(TaskFields::TITLE, value)`.
-
-`Serializer` now has async default `create` and `update` methods, so implementations require
-`#[che_rest::async_trait]`. The defaults persist validated data through the checked runtime write
-boundary; override either method when custom persistence should use typed ORM `.set` calls.
+ORM writes use generated field descriptors: use `.set(Task::NAME, value)` instead of string field
+names. Serializer validation returns `ValidatedWrite`; viewset `prepare_*` hooks can add server-owned
+fields before `ValidatedWrite::save(database)` persists the change.
 
 Disable the runtime Swagger UI if needed:
 
@@ -341,12 +346,13 @@ pub fn installed_apps() -> InstalledApps {
 }
 ```
 
-WebSocket clients subscribe only to declared public signals. CRUD viewsets declare authenticated
-`<resource>.created`, `<resource>.updated`, and `<resource>.deleted` signals automatically. The
-default lifecycle payload is `{ "id": <primary key> }`; clients that need current object data should
-reload it through the REST endpoint, so viewset permissions still apply. Nested resource names use
-dots, for example `/auth/users` declares `auth.users.created`. Modules can declare additional
-signals in `init`:
+WebSocket clients subscribe only to declared public signals. CRUD viewsets can opt in to lifecycle
+signals by overriding `ViewSet::signal_access`; the default names are `<resource>.created`,
+`<resource>.updated`, and `<resource>.deleted`. The default lifecycle payload is
+`{ "id": <primary key> }`; clients that need current object data should reload it through the REST
+endpoint, so viewset permissions still apply. Nested resource names use dots, for example
+`/auth/users` maps to `auth.users.created` when lifecycle signals are enabled. Modules can declare
+additional signals in `init`:
 
 ```rust
 fn init(&self, ctx: &mut che_rest::ModuleContext) {
@@ -569,11 +575,11 @@ Then add the app to `apps::installed_apps()`:
 InstalledApps::new().add(taskapp::module())
 ```
 
-Create migrations for all installed apps, or scope generation to one app:
+Create migrations for all installed apps. The optional positional value names the generated migration:
 
 ```bash
 cargo run --bin manage -- makemigrations
-cargo run --bin manage -- makemigrations users
+cargo run --bin manage -- makemigrations add_users
 ```
 
 Generate TypeScript models and API client from installed app metadata:
@@ -596,8 +602,9 @@ This writes:
 
 The OpenAPI document describes CRUD routes registered with `ModuleContext::viewset` and
 `viewset_with`, including list filters, `limit`, `offset`, and `ordering` query
-parameters. It is available from the running server at `/api/openapi.json` by default. Custom
-`extra_routes()` are not included automatically.
+parameters. It is available from the running server at `/api/openapi.json` by default. Custom routes
+registered only with `ViewSet::actions()` are not included automatically; add OpenAPI metadata with
+`ViewSet::openapi_actions()`.
 The same schema is also served by running applications at `/api/openapi.json`, with
 Swagger UI available at `/api/` by default.
 

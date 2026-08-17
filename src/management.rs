@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     env, fs,
     path::PathBuf,
     process::Command,
@@ -8,6 +8,7 @@ use std::{
 
 use che_orm2::{Database, Model, SchemaSet, SqliteDialect, rusqlite::OptionalExtension};
 use clap::{Parser, Subcommand};
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 use crate::auth::{User, hash_password};
 use crate::{AppConfig, AppModule, AppState, InstalledApps, StartAppOptions, StartProjectOptions};
@@ -27,9 +28,9 @@ enum CommandKind {
         name: String,
         #[arg(long, default_value = ".")]
         out: PathBuf,
-        #[arg(long, default_value = "../che-rest")]
+        #[arg(long, default_value = "")]
         che_rest_path: String,
-        #[arg(long, default_value = "../che-orm2")]
+        #[arg(long, default_value = "")]
         che_orm2_path: String,
         #[arg(long, default_value_t = false)]
         with_auth: bool,
@@ -253,11 +254,7 @@ fn print_schema(apps: &InstalledApps) {
 
 async fn apply_migrations(config: &AppConfig, dir: PathBuf) -> ManageResult<()> {
     let migrations = load_atlas_migrations(&dir)?;
-    let applied_count = run_with_refinery(config, migrations, true, |runner, connection| {
-        let report = runner.run(connection)?;
-        Ok(report.applied_migrations().len())
-    })
-    .await?;
+    let applied_count = run_sqlite_migrations(config, migrations).await?;
 
     if applied_count == 0 {
         println!("No pending migrations.");
@@ -267,13 +264,146 @@ async fn apply_migrations(config: &AppConfig, dir: PathBuf) -> ManageResult<()> 
     Ok(())
 }
 
+async fn run_sqlite_migrations(
+    config: &AppConfig,
+    migrations: Vec<refinery::Migration>,
+) -> ManageResult<usize> {
+    let database = Database::connect_with_pool_size(
+        sqlite_path(&config.database.url),
+        config.database.max_connections as usize,
+    )?;
+    let pool = database.pool().clone();
+    let result = pool
+        .get()
+        .await?
+        .interact(move |connection| apply_sqlite_migrations(connection, migrations))
+        .await
+        .map_err(|error| format!("database interaction error: {error}"))?;
+    result.map_err(|error| error as Box<dyn std::error::Error>)
+}
+
+fn apply_sqlite_migrations(
+    connection: &mut che_orm2::rusqlite::Connection,
+    migrations: Vec<refinery::Migration>,
+) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+    let applied = applied_migrations(connection)?;
+    let filesystem = migrations
+        .iter()
+        .map(|migration| (migration.version(), migration.clone()))
+        .collect::<HashMap<_, _>>();
+    for migration in &applied {
+        match filesystem.get(&migration.version()) {
+            Some(expected)
+                if expected.name() == migration.name()
+                    && expected.checksum() == migration.checksum() => {}
+            Some(expected) => {
+                return Err(format!(
+                    "divergent V{}__{} (filesystem: V{}__{})",
+                    migration.version(),
+                    migration.name(),
+                    expected.version(),
+                    expected.name()
+                )
+                .into());
+            }
+            None => {
+                return Err(
+                    format!("missing V{}__{}", migration.version(), migration.name()).into(),
+                );
+            }
+        }
+    }
+
+    let applied_versions = applied
+        .iter()
+        .map(|migration| migration.version())
+        .collect::<HashSet<_>>();
+    let pending = migrations
+        .into_iter()
+        .filter(|migration| !applied_versions.contains(&migration.version()))
+        .collect::<Vec<_>>();
+    if pending.is_empty() {
+        return Ok(0);
+    }
+
+    connection
+        .execute_batch("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE;")
+        .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)?;
+    let result = (|| {
+        connection.execute_batch(MIGRATION_HISTORY_SQL)?;
+        for migration in &pending {
+            connection.execute_batch(
+                migration
+                    .sql()
+                    .ok_or("pending migration is missing SQL content")?,
+            )?;
+            connection.execute(
+                "INSERT INTO refinery_schema_history (version, name, applied_on, checksum) VALUES (?1, ?2, ?3, ?4)",
+                che_orm2::rusqlite::params![
+                    migration.version(),
+                    migration.name(),
+                    OffsetDateTime::now_utc().format(&Rfc3339)?,
+                    migration.checksum().to_string(),
+                ],
+            )?;
+        }
+        assert_foreign_keys_valid(connection)?;
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    })();
+
+    match result {
+        Ok(()) => {
+            connection
+                .execute_batch("COMMIT; PRAGMA foreign_keys = ON;")
+                .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)?;
+            Ok(pending.len())
+        }
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK; PRAGMA foreign_keys = ON;");
+            Err(error)
+        }
+    }
+}
+
+const MIGRATION_HISTORY_SQL: &str = "CREATE TABLE IF NOT EXISTS refinery_schema_history(\n             version int8 PRIMARY KEY,\n             name VARCHAR(255),\n             applied_on VARCHAR(255),\n             checksum VARCHAR(255));";
+
+fn applied_migrations(
+    connection: &che_orm2::rusqlite::Connection,
+) -> Result<Vec<refinery::Migration>, Box<dyn std::error::Error + Send + Sync>> {
+    let has_history = connection
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'refinery_schema_history'",
+            [],
+            |_| Ok(()),
+        )
+        .optional()?;
+    if has_history.is_none() {
+        return Ok(Vec::new());
+    }
+    let mut statement = connection.prepare(
+        "SELECT version, name, applied_on, checksum FROM refinery_schema_history ORDER BY version ASC",
+    )?;
+    let mut rows = statement.query([])?;
+    let mut migrations = Vec::new();
+    while let Some(row) = rows.next()? {
+        let applied_on: String = row.get(2)?;
+        migrations.push(refinery::Migration::applied(
+            row.get(0)?,
+            row.get(1)?,
+            OffsetDateTime::parse(&applied_on, &Rfc3339)?,
+            row.get::<_, String>(3)?.parse()?,
+        ));
+    }
+    Ok(migrations)
+}
+
 async fn migration_status(config: &AppConfig, dir: PathBuf) -> ManageResult<()> {
     let migrations = load_atlas_migrations(&dir)?;
     let filesystem = migrations
         .iter()
         .map(|migration| (migration.version(), migration.clone()))
         .collect::<BTreeMap<_, _>>();
-    let applied = run_with_refinery(config, migrations, false, |runner, connection| {
+    let applied = run_with_refinery(config, migrations, |runner, connection| {
         let has_history = connection
             .query_row(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'refinery_schema_history'",
@@ -334,7 +464,6 @@ async fn migration_status(config: &AppConfig, dir: PathBuf) -> ManageResult<()> 
 async fn run_with_refinery<T, F>(
     config: &AppConfig,
     migrations: Vec<refinery::Migration>,
-    validate_foreign_keys: bool,
     action: F,
 ) -> ManageResult<T>
 where
@@ -358,29 +487,7 @@ where
             let runner = refinery::Runner::new(&migrations)
                 .set_abort_divergent(true)
                 .set_abort_missing(true);
-            if validate_foreign_keys {
-                connection
-                    .execute_batch("PRAGMA foreign_keys = OFF;")
-                    .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)?;
-            }
-            let result = action(runner, connection);
-            let restore = if validate_foreign_keys {
-                connection.execute_batch("PRAGMA foreign_keys = ON;")
-            } else {
-                Ok(())
-            };
-            match (result, restore) {
-                (Ok(value), Ok(())) => {
-                    if validate_foreign_keys {
-                        assert_foreign_keys_valid(connection)?;
-                    }
-                    Ok(value)
-                }
-                (Ok(_), Err(error)) => {
-                    Err(Box::new(error) as Box<dyn std::error::Error + Send + Sync>)
-                }
-                (Err(error), _) => Err(error),
-            }
+            action(runner, connection)
         })
         .await
         .map_err(|error| format!("database interaction error: {error}"))?;
@@ -510,7 +617,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use che_orm2::{Database, Model};
+    use che_orm2::{Database, Model, rusqlite::OptionalExtension};
     use clap::Parser;
 
     use super::{Cli, Management, apply_migrations, migration_status};
@@ -723,6 +830,26 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("foreign key violations"));
+
+        let connection = che_orm2::rusqlite::Connection::open(&database_path).unwrap();
+        let children_table: Option<String> = connection
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'children'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert!(children_table.is_none());
+        let history_table: Option<String> = connection
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'refinery_schema_history'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert!(history_table.is_none());
 
         let _ = fs::remove_dir_all(migrations);
         let _ = fs::remove_file(database_path);

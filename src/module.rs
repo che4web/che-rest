@@ -64,6 +64,7 @@ impl InstalledApps {
         Self::default()
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn add<M: AppModule>(mut self, module: M) -> Self {
         self.modules.push(Arc::new(module));
         self
@@ -192,14 +193,23 @@ impl ModuleContext {
                 })
                 .collect(),
         });
-        if let Some(signal) = viewset.signal_name(ViewAction::Create) {
-            self.signal(signal, SignalAccess::Authenticated);
+        if let (Some(signal), Some(access)) = (
+            viewset.signal_name(ViewAction::Create),
+            viewset.signal_access(ViewAction::Create),
+        ) {
+            self.signal(signal, access);
         }
-        if let Some(signal) = viewset.signal_name(ViewAction::Update) {
-            self.signal(signal, SignalAccess::Authenticated);
+        if let (Some(signal), Some(access)) = (
+            viewset.signal_name(ViewAction::Update),
+            viewset.signal_access(ViewAction::Update),
+        ) {
+            self.signal(signal, access);
         }
-        if let Some(signal) = viewset.signal_name(ViewAction::Delete) {
-            self.signal(signal, SignalAccess::Authenticated);
+        if let (Some(signal), Some(access)) = (
+            viewset.signal_name(ViewAction::Delete),
+            viewset.signal_access(ViewAction::Delete),
+        ) {
+            self.signal(signal, access);
         }
         let state = self
             .state
@@ -280,6 +290,16 @@ mod tests {
         let apps = InstalledApps::new().add(First).add(Second);
         assert_eq!(apps.names().collect::<Vec<_>>(), ["first", "second"]);
         assert!(apps.find("first").is_some());
+    }
+
+    #[test]
+    fn lifecycle_signals_are_opt_in() {
+        let state = AppState::from_database(che_orm2::Database::connect_in_memory().unwrap());
+        let mut context = ModuleContext::new(state.clone());
+
+        context.viewset_with("/auth/users", crate::auth::AdminUserViewSet);
+
+        assert!(state.signals().public_signals().is_empty());
     }
 }
 

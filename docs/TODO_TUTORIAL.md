@@ -141,13 +141,13 @@ pub completed: bool,
 Expose it through the serializer in `src/apps/tasks/serializers.rs`:
 
 ```rust
-Field::new("completed"),
+pub completed: bool,
 ```
 
 Optionally enable exact filtering in `src/apps/tasks/filters.rs`:
 
 ```rust
-Filter::exact(TaskFields::COMPLETED),
+Filter::exact(Task::COMPLETED),
 ```
 
 Then generate and apply the next migration:
@@ -157,14 +157,14 @@ cargo run --bin manage -- makemigrations
 cargo run --bin manage -- migrate
 ```
 
-Use generated `TaskFields` descriptors whenever application code writes a model directly:
+Use generated model field descriptors whenever application code writes a model directly:
 
 ```rust
 state
-    .db()
+    .database()
     .create::<Task>()
-    .set(TaskFields::NAME, "Write tests")
-    .set(TaskFields::COMPLETED, false)
+    .set(Task::NAME, "Write tests")
+    .set(Task::COMPLETED, false)
     .execute()
     .await?;
 ```
