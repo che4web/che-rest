@@ -228,25 +228,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "che-orm2-rest"
-version = "0.1.0"
-dependencies = [
- "axum",
- "che-orm2",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
-]
-
-[[package]]
 name = "che-rest"
 version = "0.1.0"
 dependencies = [
  "argon2",
  "axum",
  "che-orm2",
- "che-orm2-rest",
  "clap",
  "hex",
  "rand 0.8.7",

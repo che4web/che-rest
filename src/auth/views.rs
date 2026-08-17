@@ -12,7 +12,7 @@ use super::{
     AuthSession, AuthToken, CurrentSession, CurrentUser, User, cookie_header, generate_token,
     token_hash, verify_password,
 };
-use crate::{AppResult, AppState, RestError};
+use crate::{AppError, AppResult, AppState};
 
 #[derive(Debug, Deserialize)]
 struct LoginRequest {
@@ -118,7 +118,7 @@ async fn session_me(
     user: Option<Extension<CurrentUser>>,
     session: Option<Extension<CurrentSession>>,
 ) -> AppResult<impl IntoResponse> {
-    let user = user.ok_or(RestError::Unauthorized)?;
+    let user = user.ok_or(AppError::Unauthorized("invalid credentials".into()))?;
     Ok(Json(json!({
         "user": user.0,
         "session": session.map(|session| json!({
@@ -136,9 +136,9 @@ async fn find_user(state: &AppState, payload: LoginRequest) -> AppResult<User> {
         .filter(User::USERNAME.eq(payload.username))
         .first()
         .await?
-        .ok_or(RestError::Unauthorized)?;
+        .ok_or(AppError::Unauthorized("invalid session".into()))?;
     if !user.is_active || !verify_password(&payload.password, &user.password_hash) {
-        return Err(RestError::Unauthorized.into());
+        return Err(AppError::Unauthorized("invalid session".into()));
     }
     Ok(user)
 }
@@ -156,7 +156,7 @@ fn user_payload(user: &User) -> serde_json::Value {
 fn set_cookie(response: &mut Response, value: String) -> AppResult<()> {
     response.headers_mut().append(
         header::SET_COOKIE,
-        HeaderValue::from_str(&value).map_err(|error| RestError::BadRequest(error.to_string()))?,
+        HeaderValue::from_str(&value).map_err(|error| AppError::BadRequest(error.to_string()))?,
     );
     Ok(())
 }

@@ -4,7 +4,6 @@ use che_orm2::Database;
 
 use crate::{AppConfig, AppResult};
 use crate::{app_channels::AppChannels, channels::Channels};
-use che_orm2_rest::RestState;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -15,6 +14,15 @@ pub struct AppState {
 }
 
 impl AppState {
+    pub fn from_database(database: Database) -> Self {
+        Self {
+            config: AppConfig::default(),
+            database,
+            channels: Channels::new(),
+            app_channels: AppChannels::new(),
+        }
+    }
+
     pub async fn from_config_file(path: impl AsRef<Path>) -> AppResult<Self> {
         let config = AppConfig::from_file(path)?;
         let database = Database::connect_with_pool_size(
@@ -31,10 +39,6 @@ impl AppState {
 
     pub fn database(&self) -> &Database {
         &self.database
-    }
-
-    pub fn rest_state(&self) -> RestState {
-        RestState::new(self.database.clone())
     }
 
     pub fn channels(&self) -> &Channels {

@@ -11,12 +11,18 @@ use axum::{
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
-use crate::{AppModule, AppState, ModuleContext, RestState};
-use che_orm2_rest::{Permission, ViewAction};
+use crate::{AppModule, AppState, ModuleContext, Permission, ViewAction};
 
 pub use models::{AuthSession, AuthToken, User, hash_password, verify_password};
 
-pub use che_orm2_rest::AuthenticatedUser as CurrentUser;
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CurrentUser {
+    pub id: i64,
+    pub username: String,
+    pub is_staff: bool,
+    pub is_admin: bool,
+    pub is_superuser: bool,
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct IsAuthenticated;
@@ -24,11 +30,13 @@ pub struct IsAuthenticated;
 impl<M: che_orm2::Model> Permission<M> for IsAuthenticated {
     fn check(
         &self,
-        _state: &RestState,
+        _state: &AppState,
         user: Option<&CurrentUser>,
         _action: ViewAction,
-    ) -> Result<(), crate::RestError> {
-        user.map(|_| ()).ok_or(crate::RestError::Unauthorized)
+    ) -> crate::AppResult<()> {
+        user.map(|_| ()).ok_or(crate::AppError::Unauthorized(
+            "authentication credentials were not provided".into(),
+        ))
     }
 }
 
@@ -38,14 +46,16 @@ pub struct IsAdminUser;
 impl<M: che_orm2::Model> Permission<M> for IsAdminUser {
     fn check(
         &self,
-        _state: &RestState,
+        _state: &AppState,
         user: Option<&CurrentUser>,
         _action: ViewAction,
-    ) -> Result<(), crate::RestError> {
+    ) -> crate::AppResult<()> {
         if user.is_some_and(|user| user.is_admin || user.is_superuser) {
             Ok(())
         } else {
-            Err(crate::RestError::Forbidden)
+            Err(crate::AppError::Forbidden(
+                "admin permissions are required".into(),
+            ))
         }
     }
 }
@@ -109,13 +119,13 @@ pub async fn auth_middleware(
             .first()
             .await
         else {
-            return crate::RestError::Unauthorized.into_response();
+            return crate::AppError::Unauthorized("invalid token".into()).into_response();
         };
         let Ok(Some(user)) = state.database().get::<User>(auth_token.user_id).await else {
-            return crate::RestError::Unauthorized.into_response();
+            return crate::AppError::Unauthorized("invalid token".into()).into_response();
         };
         if !user.is_active {
-            return crate::RestError::Unauthorized.into_response();
+            return crate::AppError::Unauthorized("inactive user".into()).into_response();
         }
         request.extensions_mut().insert(current_user(&user));
         return next.run(request).await;
@@ -128,7 +138,7 @@ pub async fn auth_middleware(
         return next.run(request).await;
     };
     if unsafe_method(request.method()) && !csrf_valid(&request, &session) {
-        return crate::RestError::Forbidden.into_response();
+        return crate::AppError::Forbidden("CSRF validation failed".into()).into_response();
     }
     request.extensions_mut().insert(current_user(&user));
     request.extensions_mut().insert(session);
@@ -279,7 +289,7 @@ mod tests {
 
     #[test]
     fn admin_permission_requires_admin_or_superuser() {
-        let state = RestState::new(che_orm2::Database::connect(":memory:").unwrap());
+        let state = AppState::from_database(che_orm2::Database::connect(":memory:").unwrap());
         let regular = CurrentUser {
             id: 1,
             username: "regular".into(),

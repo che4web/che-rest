@@ -12,6 +12,16 @@ pub struct AppConfig {
     pub auth: AuthConfig,
 }
 
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            database: DatabaseConfig::default(),
+            server: ServerConfig::default(),
+            auth: AuthConfig::default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(default)]
 pub struct ServerConfig {

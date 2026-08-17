@@ -5,8 +5,8 @@ use che_orm2::SchemaSet;
 use serde_json::{Map, Value, json};
 
 use crate::{
-    AppError, AppResult, AppState, CrudViewSet, Model, ModelSerializer, RestState, ViewSet,
-    openapi_json_for, router,
+    AppError, AppResult, AppState, CrudViewSet, Model, ModelSerializer, ViewSet, openapi_json_for,
+    router,
 };
 
 pub trait AppModule: Send + Sync + 'static {
@@ -50,7 +50,7 @@ impl InstalledApps {
 
 #[derive(Default)]
 pub struct ModuleContext {
-    rest_state: Option<RestState>,
+    state: Option<AppState>,
     routers: Vec<Router>,
     root_routers: Vec<Router>,
     schemas: Vec<SchemaSet>,
@@ -59,9 +59,9 @@ pub struct ModuleContext {
 }
 
 impl ModuleContext {
-    fn new(rest_state: RestState) -> Self {
+    fn new(state: AppState) -> Self {
         Self {
-            rest_state: Some(rest_state),
+            state: Some(state),
             ..Self::default()
         }
     }
@@ -97,23 +97,25 @@ impl ModuleContext {
         V::Serializer: serde::Serialize,
     {
         let state = self
-            .rest_state
+            .state
             .as_ref()
             .expect("module context is not initialized");
-        let document = openapi_json_for::<V::Model, V::Serializer>(path, Default::default());
+        let document = openapi_json_for::<V::Model, V::Serializer>(path);
+        let mut document = document;
+        if let Some(action_paths) = viewset
+            .openapi_actions()
+            .get("paths")
+            .and_then(Value::as_object)
+        {
+            if let Some(paths) = document["paths"].as_object_mut() {
+                paths.extend(action_paths.clone());
+            }
+        }
         if let Some(paths) = document["paths"].as_object() {
-            self.openapi_paths.extend(
-                paths
-                    .iter()
-                    .map(|(key, value)| (key.clone(), value.clone())),
-            );
+            self.openapi_paths.extend(paths.clone());
         }
         if let Some(schemas) = document["components"]["schemas"].as_object() {
-            self.openapi_components.extend(
-                schemas
-                    .iter()
-                    .map(|(key, value)| (key.clone(), value.clone())),
-            );
+            self.openapi_components.extend(schemas.clone());
         }
         self.routers.push(router(state.clone(), viewset));
     }
@@ -191,7 +193,7 @@ impl Server {
     }
 
     pub async fn build(self) -> AppResult<Router> {
-        let mut context = ModuleContext::new(self.state.rest_state());
+        let mut context = ModuleContext::new(self.state.clone());
         for module in self.apps.iter() {
             context.schemas.push(module.schema());
             module.init(&mut context);
