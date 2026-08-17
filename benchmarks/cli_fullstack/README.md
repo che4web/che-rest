@@ -42,7 +42,8 @@ reset between frameworks rather than provide a clean framework comparison.
 Use `--retrieve-id` when the seed contains fewer than 500 rows, for example `--retrieve-id 50`.
 The `--parity` flag only validates responses and does not run the load benchmark.
 
-Requirements: Rust/Cargo, Atlas, Python 3.11+, `uv`, and Apache Bench (`ab`).
+Requirements: Rust/Cargo, Python 3.11+, `uv`, and Apache Bench (`ab`). Atlas is only required when
+regenerating migrations.
 
 The Django server can also be started directly:
 

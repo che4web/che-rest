@@ -16,7 +16,7 @@ Create a fresh project with built-in authentication. The temporary output path k
 example untouched:
 
 ```bash
-cargo run --bin che-rest -- startproject cli_fullstack \
+cargo run --bin manage -- startproject cli_fullstack \
   --out /tmp \
   --with-auth \
   --che-rest-path "$PWD" \
@@ -33,12 +33,11 @@ cargo run --bin manage -- startapp notifications --model Notification
 ```
 
 The checked-in example keeps the generated `Task` CRUD module and adds a command handler plus an
-internal notification subscriber. In a newly generated project, add both modules to
-`src/apps/mod.rs` as shown in this example.
+internal notification subscriber. `startapp` registers generated modules in `src/apps/mod.rs`.
 
 ## Migrations And Auth
 
-Generate and apply migrations:
+Generate and apply migrations. `makemigrations` requires Atlas; `migrate` uses the built-in runner:
 
 ```bash
 cargo run --bin manage -- makemigrations

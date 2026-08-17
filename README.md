@@ -28,13 +28,13 @@ cargo run --manifest-path todo_api/Cargo.toml
 Create a new runnable `che-rest` application:
 
 ```bash
-cargo run --bin che-rest -- startproject my_project
+cargo run --bin manage -- startproject my_project
 cd my_project
 cargo run
 ```
 
-The generated project includes `app.toml`, a server entrypoint, an empty `apps::installed_apps()`
-registry, and a local `manage` binary. Create the first app with:
+The generated project includes `app.toml`, a server entrypoint, an `apps::installed_apps()` registry,
+and a local `manage` binary. Create the first app with:
 
 ```bash
 cargo run --bin manage -- startapp users
@@ -50,7 +50,7 @@ By default the generator assumes this repo layout:
 Override paths when needed:
 
 ```bash
-cargo run --bin che-rest -- startproject my_project \
+cargo run --bin manage -- startproject my_project \
   --che-rest-path ../che-rest \
   --che-orm2-path ../che-orm2
 ```
@@ -58,7 +58,7 @@ cargo run --bin che-rest -- startproject my_project \
 Include the built-in auth module in the generated app registry:
 
 ```bash
-cargo run --bin che-rest -- startproject my_project --with-auth
+cargo run --bin manage -- startproject my_project --with-auth
 ```
 
 A complete runnable example with CRUD, authentication, WebSocket commands, internal channels,
@@ -708,7 +708,7 @@ Defaults:
 ```
 
 `makemigrations` processes the schemas of all installed apps and writes one Atlas migration to the
-project-level `migrations/` directory:
+project-level `migrations/` directory. This command requires Atlas on the development machine:
 
 ```bash
 cargo run --bin manage -- makemigrations
@@ -720,11 +720,12 @@ Generated migrations are stored under:
 migrations/
 ```
 
-The database URL is read from `[database].url` in `app.toml`. Apply all project migrations with:
+The database URL is read from `[database].url` in `app.toml`. Apply all project migrations with the
+built-in SQLite runner; Atlas is not required on the target system:
 
 ```bash
 cargo run --bin manage -- migrate
 ```
 
 Do not create model tables from application startup; production servers only apply already-created
-Atlas migrations.
+SQL migrations.

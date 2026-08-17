@@ -10,6 +10,7 @@ clap = { version = "4", features = ["derive"] }
 che-orm2 = { path = "../che-orm2" }
 hex = "0.4"
 rand = "0.8"
+refinery = { version = "0.9.2", default-features = false, features = ["rusqlite", "int8-versions"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

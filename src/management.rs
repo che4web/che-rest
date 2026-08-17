@@ -1,4 +1,5 @@
 use std::{
+    collections::{BTreeMap, HashSet},
     env, fs,
     path::PathBuf,
     process::Command,
@@ -9,7 +10,7 @@ use che_orm2::{Database, Model, SchemaSet, SqliteDialect};
 use clap::{Parser, Subcommand};
 
 use crate::auth::{User, hash_password};
-use crate::{AppConfig, AppModule, AppState, InstalledApps};
+use crate::{AppConfig, AppModule, AppState, InstalledApps, StartAppOptions, StartProjectOptions};
 
 type ManageResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -22,6 +23,28 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum CommandKind {
+    Startproject {
+        name: String,
+        #[arg(long, default_value = ".")]
+        out: PathBuf,
+        #[arg(long, default_value = "../che-rest")]
+        che_rest_path: String,
+        #[arg(long, default_value = "../che-orm2")]
+        che_orm2_path: String,
+        #[arg(long, default_value_t = false)]
+        with_auth: bool,
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
+    Startapp {
+        name: String,
+        #[arg(long = "model")]
+        models: Vec<String>,
+        #[arg(long)]
+        root: Option<PathBuf>,
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
     Schema,
     Makemigrations {
         name: Option<String>,
@@ -70,11 +93,20 @@ enum MigrateAction {
 
 pub struct Management {
     apps: InstalledApps,
+    project_root: PathBuf,
 }
 
 impl Management {
     pub fn new(apps: InstalledApps) -> Self {
-        Self { apps }
+        Self {
+            apps,
+            project_root: PathBuf::from("."),
+        }
+    }
+
+    pub fn project_root(mut self, project_root: impl Into<PathBuf>) -> Self {
+        self.project_root = project_root.into();
+        self
     }
 
     pub async fn run(self) -> ManageResult<()> {
@@ -83,6 +115,32 @@ impl Management {
 
     async fn run_from(self, cli: Cli) -> ManageResult<()> {
         match cli.command {
+            CommandKind::Startproject {
+                name,
+                out,
+                che_rest_path,
+                che_orm2_path,
+                with_auth,
+                force,
+            } => crate::startproject(StartProjectOptions {
+                name,
+                out,
+                che_rest_path,
+                che_orm2_path,
+                with_auth,
+                force,
+            })?,
+            CommandKind::Startapp {
+                name,
+                models,
+                root,
+                force,
+            } => crate::startapp(StartAppOptions {
+                name,
+                models,
+                root: root.unwrap_or(self.project_root),
+                force,
+            })?,
             CommandKind::Schema => print_schema(&self.apps),
             CommandKind::Makemigrations { name, dir } => {
                 let name = name.unwrap_or_else(|| {
@@ -101,22 +159,8 @@ impl Management {
                 let config = AppConfig::from_file(config)?;
                 let action = action.unwrap_or(MigrateAction::Apply);
                 match action {
-                    MigrateAction::Apply => atlas_command(&[
-                        "migrate",
-                        "apply",
-                        "--dir",
-                        &file_url(&dir),
-                        "--url",
-                        &config.database.url,
-                    ])?,
-                    MigrateAction::Status => atlas_command(&[
-                        "migrate",
-                        "status",
-                        "--dir",
-                        &file_url(&dir),
-                        "--url",
-                        &config.database.url,
-                    ])?,
+                    MigrateAction::Apply => apply_migrations(&config, dir).await?,
+                    MigrateAction::Status => migration_status(&config, dir).await?,
                     MigrateAction::Lint => atlas_command(&[
                         "migrate",
                         "lint",
@@ -203,6 +247,171 @@ fn print_schema(apps: &InstalledApps) {
     print!("{}", schema(apps).to_sql::<SqliteDialect>());
 }
 
+async fn apply_migrations(config: &AppConfig, dir: PathBuf) -> ManageResult<()> {
+    let migrations = load_atlas_migrations(&dir)?;
+    let applied_count = run_with_refinery(config, migrations, |runner, connection| {
+        let report = runner.run(connection)?;
+        Ok(report.applied_migrations().len())
+    })
+    .await?;
+
+    if applied_count == 0 {
+        println!("No pending migrations.");
+    } else {
+        println!("Applied {applied_count} migration(s).");
+    }
+    Ok(())
+}
+
+async fn migration_status(config: &AppConfig, dir: PathBuf) -> ManageResult<()> {
+    let migrations = load_atlas_migrations(&dir)?;
+    let filesystem = migrations
+        .iter()
+        .map(|migration| (migration.version(), migration.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let applied = run_with_refinery(config, migrations, |runner, connection| {
+        runner
+            .get_applied_migrations(connection)
+            .map_err(Into::into)
+    })
+    .await?;
+    let applied_versions = applied
+        .iter()
+        .map(|migration| migration.version())
+        .collect::<HashSet<_>>();
+
+    for migration in &applied {
+        match filesystem.get(&migration.version()) {
+            Some(expected)
+                if expected.name() == migration.name()
+                    && expected.checksum() == migration.checksum() =>
+            {
+                println!("applied V{}__{}", migration.version(), migration.name());
+            }
+            Some(expected) => {
+                println!(
+                    "divergent V{}__{} (filesystem: V{}__{})",
+                    migration.version(),
+                    migration.name(),
+                    expected.version(),
+                    expected.name()
+                );
+            }
+            None => println!("missing V{}__{}", migration.version(), migration.name()),
+        }
+    }
+
+    for migration in filesystem.values() {
+        if !applied_versions.contains(&migration.version()) {
+            println!("pending V{}__{}", migration.version(), migration.name());
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_with_refinery<T, F>(
+    config: &AppConfig,
+    migrations: Vec<refinery::Migration>,
+    action: F,
+) -> ManageResult<T>
+where
+    T: Send + 'static,
+    F: FnOnce(
+            refinery::Runner,
+            &mut che_orm2::rusqlite::Connection,
+        ) -> Result<T, Box<dyn std::error::Error + Send + Sync>>
+        + Send
+        + 'static,
+{
+    let database = Database::connect_with_pool_size(
+        sqlite_path(&config.database.url),
+        config.database.max_connections as usize,
+    )?;
+    let pool = database.pool().clone();
+    let result = pool
+        .get()
+        .await?
+        .interact(move |connection| {
+            let runner = refinery::Runner::new(&migrations)
+                .set_abort_divergent(true)
+                .set_abort_missing(true);
+            connection
+                .execute_batch("PRAGMA foreign_keys = OFF;")
+                .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)?;
+            let result = action(runner, connection);
+            let restore = connection.execute_batch("PRAGMA foreign_keys = ON;");
+            match (result, restore) {
+                (Ok(value), Ok(())) => Ok(value),
+                (Ok(_), Err(error)) => {
+                    Err(Box::new(error) as Box<dyn std::error::Error + Send + Sync>)
+                }
+                (Err(error), _) => Err(error),
+            }
+        })
+        .await
+        .map_err(|error| format!("database interaction error: {error}"))?;
+    result.map_err(|error| error as Box<dyn std::error::Error>)
+}
+
+fn load_atlas_migrations(dir: &PathBuf) -> ManageResult<Vec<refinery::Migration>> {
+    let mut migrations = Vec::new();
+    let mut versions = HashSet::new();
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("sql") {
+            continue;
+        }
+        let stem = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .ok_or_else(|| format!("invalid migration filename: {}", path.display()))?;
+        let Some((version, name)) = stem.split_once('_') else {
+            return Err(format!(
+                "invalid Atlas migration filename `{}`; expected <version>_<name>.sql",
+                path.display()
+            )
+            .into());
+        };
+        if version.len() != 14 || !version.chars().all(|ch| ch.is_ascii_digit()) {
+            return Err(format!(
+                "invalid Atlas migration version `{version}` in {}; expected 14 digits",
+                path.display()
+            )
+            .into());
+        }
+        if name.is_empty()
+            || !name
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        {
+            return Err(format!(
+                "invalid Atlas migration name `{name}` in {}; use only ascii letters, digits, and underscores",
+                path.display()
+            )
+            .into());
+        }
+        if !versions.insert(version.to_string()) {
+            return Err(format!("duplicate migration version `{version}`").into());
+        }
+
+        let sql = fs::read_to_string(&path)?;
+        let refinery_name = format!("V{version}__{name}");
+        migrations.push(refinery::Migration::unapplied(&refinery_name, &sql)?);
+    }
+    migrations.sort();
+    Ok(migrations)
+}
+
+fn sqlite_path(url: &str) -> String {
+    url.strip_prefix("sqlite://")
+        .and_then(|value| value.split('?').next())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(url)
+        .to_string()
+}
+
 fn atlas_diff(apps: &InstalledApps, dir: &PathBuf, name: &str) -> ManageResult<()> {
     let temp_path = env::temp_dir().join(format!("che-rest-schema-{}.sql", std::process::id()));
     fs::write(&temp_path, schema(apps).to_sql::<SqliteDialect>())?;
@@ -245,25 +454,57 @@ fn file_url(path: &PathBuf) -> String {
 mod tests {
     use std::{
         fs,
+        path::PathBuf,
         time::{SystemTime, UNIX_EPOCH},
     };
 
     use che_orm2::{Database, Model};
     use clap::Parser;
 
-    use super::{Cli, Management};
+    use super::{Cli, Management, apply_migrations};
     use crate::InstalledApps;
     use crate::auth::{User, verify_password};
+    use crate::{AppConfig, DatabaseConfig};
 
-    #[tokio::test]
-    async fn creates_superuser_with_hashed_password() {
+    fn temp_path(name: &str, extension: &str) -> PathBuf {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let database_path =
-            std::env::temp_dir().join(format!("che_rest_superuser_{suffix}.sqlite"));
-        let config_path = std::env::temp_dir().join(format!("che_rest_superuser_{suffix}.toml"));
+        std::env::temp_dir().join(format!("che_rest_{name}_{suffix}.{extension}"))
+    }
+
+    fn sqlite_config(database_path: &std::path::Path) -> AppConfig {
+        AppConfig {
+            database: DatabaseConfig {
+                url: format!("sqlite://{}?mode=rwc", database_path.display()),
+                max_connections: 1,
+            },
+            ..AppConfig::default()
+        }
+    }
+
+    #[test]
+    fn parses_project_generation_commands() {
+        Cli::try_parse_from([
+            "manage",
+            "startproject",
+            "todo_api",
+            "--out",
+            "..",
+            "--with-auth",
+        ])
+        .unwrap();
+        Cli::try_parse_from([
+            "manage", "startapp", "tasks", "--model", "Task", "--model", "Comment",
+        ])
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn creates_superuser_with_hashed_password() {
+        let database_path = temp_path("superuser", "sqlite");
+        let config_path = temp_path("superuser", "toml");
         fs::write(
             &config_path,
             format!(
@@ -334,5 +575,92 @@ mod tests {
         assert!(output.join("src/admin/generated/adminSchema.ts").exists());
         assert!(output.join("src/router.ts").exists());
         let _ = fs::remove_dir_all(output);
+    }
+
+    #[tokio::test]
+    async fn migrate_apply_runs_refinery_without_atlas() {
+        let migrations = temp_path("migrations", "dir");
+        fs::create_dir_all(&migrations).unwrap();
+        fs::write(
+            migrations.join("20260817000000_initial.sql"),
+            "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT NOT NULL);",
+        )
+        .unwrap();
+        fs::write(
+            migrations.join("20260817000001_add_rows.sql"),
+            "INSERT INTO items (name) VALUES ('one');",
+        )
+        .unwrap();
+        let database_path = temp_path("migrate_apply", "sqlite");
+        let config = sqlite_config(&database_path);
+
+        apply_migrations(&config, migrations.clone()).await.unwrap();
+        apply_migrations(&config, migrations.clone()).await.unwrap();
+
+        let connection = che_orm2::rusqlite::Connection::open(&database_path).unwrap();
+        let count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM items", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+
+        let history_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM refinery_schema_history", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(history_count, 2);
+
+        let _ = fs::remove_dir_all(migrations);
+        let _ = fs::remove_file(database_path);
+    }
+
+    #[tokio::test]
+    async fn migrate_apply_rejects_changed_migration() {
+        let migrations = temp_path("migrations_changed", "dir");
+        fs::create_dir_all(&migrations).unwrap();
+        let migration = migrations.join("20260817000000_initial.sql");
+        fs::write(&migration, "CREATE TABLE items (id INTEGER PRIMARY KEY);").unwrap();
+        let database_path = temp_path("migrate_changed", "sqlite");
+        let config = sqlite_config(&database_path);
+
+        apply_migrations(&config, migrations.clone()).await.unwrap();
+        fs::write(&migration, "CREATE TABLE changed (id INTEGER PRIMARY KEY);").unwrap();
+
+        let error = apply_migrations(&config, migrations.clone())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(!error.is_empty());
+
+        let _ = fs::remove_dir_all(migrations);
+        let _ = fs::remove_file(database_path);
+    }
+
+    #[tokio::test]
+    async fn migrate_apply_runs_checked_in_atlas_migrations() {
+        let database_path = temp_path("cli_fullstack_migrate", "sqlite");
+        let config = sqlite_config(&database_path);
+        let migrations =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/cli_fullstack/migrations");
+
+        apply_migrations(&config, migrations).await.unwrap();
+
+        let connection = che_orm2::rusqlite::Connection::open(&database_path).unwrap();
+        let task_table: String = connection
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tasks_task'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(task_table, "tasks_task");
+        let history_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM refinery_schema_history", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(history_count, 3);
+
+        let _ = fs::remove_file(database_path);
     }
 }

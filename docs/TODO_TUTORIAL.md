@@ -13,7 +13,7 @@ che-orm2/
 From the `che-rest` repository root, create the project next to the two framework repositories:
 
 ```bash
-cargo run --bin che-rest -- startproject todo_api \
+cargo run --bin manage -- startproject todo_api \
   --out .. \
   --che-rest-path ../che-rest \
   --che-orm2-path ../che-orm2
@@ -77,8 +77,9 @@ cargo run --bin manage -- makemigrations
 cargo run --bin manage -- migrate
 ```
 
-Migrations are stored in the project-level `migrations/` directory. Run these commands after every
-model schema change; starting the server does not create tables.
+Migrations are stored in the project-level `migrations/` directory. `makemigrations` requires Atlas;
+`migrate` applies the checked-in SQL files without Atlas. Run these commands after every model
+schema change; starting the server does not create tables.
 
 ## 4. Start The API
 
