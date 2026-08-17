@@ -1,4 +1,4 @@
-use std::{collections::HashMap, marker::PhantomData};
+use std::{collections::HashMap, future::Future, marker::PhantomData, pin::Pin};
 
 use axum::{
     Extension, Json, Router,
@@ -8,7 +8,9 @@ use axum::{
     routing::get,
 };
 use che_orm2::{
-    DatabaseQuery, Model, ModelField, ModelSerializer, ModelWriteSerializer, QueryValue,
+    Database, DatabaseQuery, Loaded, Model, ModelField, ModelSerializer, ModelWriteSerializer,
+    PrefetchRelatedQuery, QueryValue, SelectRelatedQuery, ValidatedWrite, WithOne, WithOptionalOne,
+    WriteMode,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -20,6 +22,7 @@ pub enum ViewAction {
     List,
     Retrieve,
     Create,
+    Update,
     Patch,
     Delete,
 }
@@ -104,20 +107,59 @@ impl FilterValue for String {
     }
 }
 
-type Apply<M> = for<'a> fn(
-    DatabaseQuery<'a, M>,
-    &'static str,
-    &str,
-) -> Result<DatabaseQuery<'a, M>, FilterError>;
-type Order<M> = for<'a> fn(DatabaseQuery<'a, M>, &'static str, bool) -> DatabaseQuery<'a, M>;
+pub trait RestQuerySet: Sized + Send {
+    type Model: Model + Send + Sync + 'static;
+    type Item: Send + Sync + 'static;
+
+    fn item_model(item: &Self::Item) -> &Self::Model;
+
+    fn filter(self, expr: che_orm2::Expr) -> Self;
+    fn order_by(self, order: che_orm2::OrderBy) -> Self;
+    fn limit(self, limit: u64) -> Self;
+    fn offset(self, offset: u64) -> Self;
+    fn all<'a>(
+        self,
+        database: &'a Database,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<Self::Item>, che_orm2::OrmError>> + Send + 'a>>
+    where
+        Self: 'a;
+
+    fn count<'a>(
+        self,
+        database: &'a Database,
+    ) -> Pin<Box<dyn Future<Output = Result<usize, che_orm2::OrmError>> + Send + 'a>>
+    where
+        Self: 'a,
+    {
+        Box::pin(async move { Ok(<Self as RestQuerySet>::all(self, database).await?.len()) })
+    }
+
+    fn first<'a>(
+        self,
+        database: &'a Database,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Self::Item>, che_orm2::OrmError>> + Send + 'a>>
+    where
+        Self: 'a,
+    {
+        Box::pin(async move {
+            Ok(<Self as RestQuerySet>::all(self.limit(1), database)
+                .await?
+                .into_iter()
+                .next())
+        })
+    }
+}
+
+type Apply = fn(&'static str, &str) -> Result<che_orm2::Expr, FilterError>;
+type Order = fn(&'static str, bool) -> che_orm2::OrderBy;
 
 #[derive(Clone, Copy)]
 pub struct Filter<M: Model> {
     pub name: &'static str,
     source: &'static str,
     lookup: Lookup,
-    apply: Apply<M>,
-    order: Order<M>,
+    apply: Apply,
+    order: Order,
     _marker: PhantomData<fn() -> M>,
 }
 
@@ -145,11 +187,7 @@ impl<M: Model> Filter<M> {
         result.name = name;
         result
     }
-    const fn typed<T: FilterValue>(
-        field: ModelField<M, T>,
-        lookup: Lookup,
-        apply: Apply<M>,
-    ) -> Self {
+    const fn typed<T: FilterValue>(field: ModelField<M, T>, lookup: Lookup, apply: Apply) -> Self {
         Self {
             name: field.column().name,
             source: field.column().name,
@@ -174,11 +212,10 @@ impl<M: Model> Filter<M> {
 pub trait FilterSetSpec: Clone + Send + Sync + 'static {
     type Model: Model;
     fn filters(&self) -> &'static [Filter<Self::Model>];
-    fn apply<'a>(
-        &self,
-        query: DatabaseQuery<'a, Self::Model>,
-        params: &HashMap<String, String>,
-    ) -> Result<DatabaseQuery<'a, Self::Model>, FilterError> {
+    fn apply<Q>(&self, query: Q, params: &HashMap<String, String>) -> Result<Q, FilterError>
+    where
+        Q: RestQuerySet<Model = Self::Model>,
+    {
         FilterSet::new(self.filters()).apply(query, params)
     }
 }
@@ -199,11 +236,10 @@ impl<M: Model + 'static> FilterSet<M> {
             _marker: PhantomData,
         }
     }
-    pub fn apply<'a>(
-        &self,
-        mut query: DatabaseQuery<'a, M>,
-        params: &HashMap<String, String>,
-    ) -> Result<DatabaseQuery<'a, M>, FilterError> {
+    pub fn apply<Q>(&self, mut query: Q, params: &HashMap<String, String>) -> Result<Q, FilterError>
+    where
+        Q: RestQuerySet<Model = M>,
+    {
         for (name, value) in params {
             if matches!(name.as_str(), "limit" | "offset" | "ordering") {
                 continue;
@@ -213,13 +249,13 @@ impl<M: Model + 'static> FilterSet<M> {
                 .iter()
                 .find(|f| f.matches(name))
                 .ok_or_else(|| FilterError::UnknownFilter(name.clone()))?;
-            query = (f.apply)(query, f.source, value).map_err(|e| match e {
+            query = query.filter((f.apply)(f.source, value).map_err(|e| match e {
                 FilterError::InvalidValue { expected, .. } => FilterError::InvalidValue {
                     field: name.clone(),
                     expected,
                 },
                 other => other,
-            })?;
+            })?);
         }
         if let Some(ordering) = params.get("ordering") {
             let descending = ordering.starts_with('-');
@@ -229,7 +265,7 @@ impl<M: Model + 'static> FilterSet<M> {
                 .iter()
                 .find(|f| f.name == name)
                 .ok_or_else(|| FilterError::UnknownOrdering(name.to_owned()))?;
-            query = (f.order)(query, f.source, descending);
+            query = query.order_by((f.order)(f.source, descending));
         }
         Ok(query)
     }
@@ -246,28 +282,25 @@ impl<M: Model + 'static> FilterSetSpec for FilterSet<M> {
     }
 }
 
-fn apply_exact<'a, M: Model, T: FilterValue>(
-    q: DatabaseQuery<'a, M>,
+fn apply_exact<M: Model, T: FilterValue>(
     field: &'static str,
     value: &str,
-) -> Result<DatabaseQuery<'a, M>, FilterError> {
-    Ok(q.filter(ModelField::<M, T>::new(M::table_name(), field).eq(T::parse(value)?)))
+) -> Result<che_orm2::Expr, FilterError> {
+    Ok(ModelField::<M, T>::new(M::table_name(), field).eq(T::parse(value)?))
 }
-fn apply_contains<'a, M: Model>(
-    q: DatabaseQuery<'a, M>,
+fn apply_contains<M: Model>(
     field: &'static str,
     value: &str,
-) -> Result<DatabaseQuery<'a, M>, FilterError> {
-    Ok(q.filter(ModelField::<M, String>::new(M::table_name(), field).contains(value)))
+) -> Result<che_orm2::Expr, FilterError> {
+    Ok(ModelField::<M, String>::new(M::table_name(), field).contains(value))
 }
 macro_rules! range {
     ($fn:ident, $method:ident) => {
-        fn $fn<'a, M: Model, T: FilterValue>(
-            q: DatabaseQuery<'a, M>,
+        fn $fn<M: Model, T: FilterValue>(
             field: &'static str,
             value: &str,
-        ) -> Result<DatabaseQuery<'a, M>, FilterError> {
-            Ok(q.filter(ModelField::<M, T>::new(M::table_name(), field).$method(T::parse(value)?)))
+        ) -> Result<che_orm2::Expr, FilterError> {
+            Ok(ModelField::<M, T>::new(M::table_name(), field).$method(T::parse(value)?))
         }
     };
 }
@@ -275,41 +308,260 @@ range!(apply_gt, gt);
 range!(apply_gte, gte);
 range!(apply_lt, lt);
 range!(apply_lte, lte);
-fn apply_order<'a, M: Model, T>(
-    q: DatabaseQuery<'a, M>,
-    field: &'static str,
-    desc: bool,
-) -> DatabaseQuery<'a, M> {
+fn apply_order<M: Model, T>(field: &'static str, desc: bool) -> che_orm2::OrderBy {
     let f = ModelField::<M, T>::new(M::table_name(), field);
-    if desc {
-        q.order_by(f.desc())
-    } else {
-        q.order_by(f.asc())
+    if desc { f.desc() } else { f.asc() }
+}
+
+impl<M> RestQuerySet for DatabaseQuery<M>
+where
+    M: Model + Send + Sync + 'static,
+{
+    type Model = M;
+    type Item = M;
+
+    fn item_model(item: &Self::Item) -> &Self::Model {
+        item
+    }
+
+    fn filter(self, expr: che_orm2::Expr) -> Self {
+        DatabaseQuery::filter(self, expr)
+    }
+
+    fn order_by(self, order: che_orm2::OrderBy) -> Self {
+        DatabaseQuery::order_by(self, order)
+    }
+
+    fn limit(self, limit: u64) -> Self {
+        DatabaseQuery::limit(self, limit)
+    }
+
+    fn offset(self, offset: u64) -> Self {
+        DatabaseQuery::offset(self, offset)
+    }
+
+    fn all<'a>(
+        self,
+        database: &'a Database,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<Self::Item>, che_orm2::OrmError>> + Send + 'a>>
+    where
+        Self: 'a,
+    {
+        Box::pin(DatabaseQuery::all(self, database))
+    }
+
+    fn count<'a>(
+        self,
+        database: &'a Database,
+    ) -> Pin<Box<dyn Future<Output = Result<usize, che_orm2::OrmError>> + Send + 'a>>
+    where
+        Self: 'a,
+    {
+        Box::pin(DatabaseQuery::count(self, database))
+    }
+}
+
+impl<M, R, Relation> RestQuerySet for SelectRelatedQuery<M, R, Relation, i64>
+where
+    M: Model + Send + Sync + 'static,
+    R: Model + Send + Sync + 'static,
+    Relation: Send + Sync + 'static,
+{
+    type Model = M;
+    type Item = WithOne<M, R, Relation>;
+
+    fn item_model(item: &Self::Item) -> &Self::Model {
+        &item.model
+    }
+
+    fn filter(self, expr: che_orm2::Expr) -> Self {
+        SelectRelatedQuery::<M, R, Relation, i64>::filter(self, expr)
+    }
+
+    fn order_by(self, order: che_orm2::OrderBy) -> Self {
+        SelectRelatedQuery::<M, R, Relation, i64>::order_by(self, order)
+    }
+
+    fn limit(self, limit: u64) -> Self {
+        SelectRelatedQuery::<M, R, Relation, i64>::limit(self, limit)
+    }
+
+    fn offset(self, offset: u64) -> Self {
+        SelectRelatedQuery::<M, R, Relation, i64>::offset(self, offset)
+    }
+
+    fn all<'a>(
+        self,
+        database: &'a Database,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<Self::Item>, che_orm2::OrmError>> + Send + 'a>>
+    where
+        Self: 'a,
+    {
+        Box::pin(SelectRelatedQuery::<M, R, Relation, i64>::all(
+            self, database,
+        ))
+    }
+
+    fn count<'a>(
+        self,
+        database: &'a Database,
+    ) -> Pin<Box<dyn Future<Output = Result<usize, che_orm2::OrmError>> + Send + 'a>>
+    where
+        Self: 'a,
+    {
+        Box::pin(SelectRelatedQuery::<M, R, Relation, i64>::count(
+            self, database,
+        ))
+    }
+}
+
+impl<M, R, Relation> RestQuerySet for SelectRelatedQuery<M, R, Relation, Option<i64>>
+where
+    M: Model + Send + Sync + 'static,
+    R: Model + Send + Sync + 'static,
+    Relation: Send + Sync + 'static,
+{
+    type Model = M;
+    type Item = WithOptionalOne<M, R, Relation>;
+
+    fn item_model(item: &Self::Item) -> &Self::Model {
+        &item.model
+    }
+
+    fn filter(self, expr: che_orm2::Expr) -> Self {
+        SelectRelatedQuery::<M, R, Relation, Option<i64>>::filter(self, expr)
+    }
+
+    fn order_by(self, order: che_orm2::OrderBy) -> Self {
+        SelectRelatedQuery::<M, R, Relation, Option<i64>>::order_by(self, order)
+    }
+
+    fn limit(self, limit: u64) -> Self {
+        SelectRelatedQuery::<M, R, Relation, Option<i64>>::limit(self, limit)
+    }
+
+    fn offset(self, offset: u64) -> Self {
+        SelectRelatedQuery::<M, R, Relation, Option<i64>>::offset(self, offset)
+    }
+
+    fn all<'a>(
+        self,
+        database: &'a Database,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<Self::Item>, che_orm2::OrmError>> + Send + 'a>>
+    where
+        Self: 'a,
+    {
+        Box::pin(SelectRelatedQuery::<M, R, Relation, Option<i64>>::all(
+            self, database,
+        ))
+    }
+
+    fn count<'a>(
+        self,
+        database: &'a Database,
+    ) -> Pin<Box<dyn Future<Output = Result<usize, che_orm2::OrmError>> + Send + 'a>>
+    where
+        Self: 'a,
+    {
+        Box::pin(SelectRelatedQuery::<M, R, Relation, Option<i64>>::count(
+            self, database,
+        ))
+    }
+}
+
+impl<M, R, Relation> RestQuerySet for PrefetchRelatedQuery<M, R, Relation, i64>
+where
+    M: Model + Send + Sync + 'static,
+    R: Model + Send + Sync + 'static,
+    Relation: Send + Sync + 'static,
+{
+    type Model = M;
+    type Item = Loaded<M, (che_orm2::LoadedMany<R, Relation>,)>;
+
+    fn item_model(item: &Self::Item) -> &Self::Model {
+        &item.model
+    }
+
+    fn filter(self, expr: che_orm2::Expr) -> Self {
+        PrefetchRelatedQuery::filter(self, expr)
+    }
+
+    fn order_by(self, order: che_orm2::OrderBy) -> Self {
+        PrefetchRelatedQuery::order_by(self, order)
+    }
+
+    fn limit(self, limit: u64) -> Self {
+        PrefetchRelatedQuery::limit(self, limit)
+    }
+
+    fn offset(self, offset: u64) -> Self {
+        PrefetchRelatedQuery::offset(self, offset)
+    }
+
+    fn all<'a>(
+        self,
+        database: &'a Database,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<Self::Item>, che_orm2::OrmError>> + Send + 'a>>
+    where
+        Self: 'a,
+    {
+        Box::pin(PrefetchRelatedQuery::all(self, database))
+    }
+
+    fn count<'a>(
+        self,
+        database: &'a Database,
+    ) -> Pin<Box<dyn Future<Output = Result<usize, che_orm2::OrmError>> + Send + 'a>>
+    where
+        Self: 'a,
+    {
+        Box::pin(PrefetchRelatedQuery::count(self, database))
     }
 }
 
 pub trait ViewSet: Clone + Send + Sync + 'static {
-    type Model: Model + Send + 'static;
-    type Serializer: ModelSerializer<Model = Self::Model, Input = Self::Model>
+    type Model: Model + Send + Sync + 'static;
+    type Serializer: ModelSerializer<Model = Self::Model>
         + ModelWriteSerializer<Model = Self::Model>
         + Serialize
         + Send
         + Sync
         + 'static;
+    type QuerySet: RestQuerySet<Model = Self::Model, Item = <Self::Serializer as ModelSerializer>::Input>
+        + Send
+        + Sync;
     type FilterSet: FilterSetSpec<Model = Self::Model> + Default;
     type Permission: Permission<Self::Model>;
     fn path(&self) -> &'static str;
     fn filterset(&self) -> Self::FilterSet {
         Default::default()
     }
-    fn list_query<'a>(&self, q: DatabaseQuery<'a, Self::Model>) -> DatabaseQuery<'a, Self::Model> {
-        q
-    }
-    fn retrieve_query<'a>(
+    fn get_queryset(&self) -> Self::QuerySet;
+    fn prepare_create(
         &self,
-        q: DatabaseQuery<'a, Self::Model>,
-    ) -> DatabaseQuery<'a, Self::Model> {
-        q
+        _state: &AppState,
+        _user: Option<&CurrentUser>,
+        write: ValidatedWrite<Self::Model>,
+    ) -> AppResult<ValidatedWrite<Self::Model>> {
+        Ok(write)
+    }
+    fn prepare_update(
+        &self,
+        _state: &AppState,
+        _user: Option<&CurrentUser>,
+        _current: &Self::Model,
+        write: ValidatedWrite<Self::Model>,
+    ) -> AppResult<ValidatedWrite<Self::Model>> {
+        Ok(write)
+    }
+    fn prepare_patch(
+        &self,
+        _state: &AppState,
+        _user: Option<&CurrentUser>,
+        _current: &Self::Model,
+        write: ValidatedWrite<Self::Model>,
+    ) -> AppResult<ValidatedWrite<Self::Model>> {
+        Ok(write)
     }
     fn actions(&self) -> Router {
         Router::new()
@@ -341,7 +593,7 @@ impl<M, S> CrudViewSet<M, S> {
 }
 impl<M, S> ViewSet for CrudViewSet<M, S>
 where
-    M: Model + Send + 'static,
+    M: Model + Send + Sync + 'static,
     S: ModelSerializer<Model = M, Input = M>
         + ModelWriteSerializer<Model = M>
         + Serialize
@@ -351,8 +603,12 @@ where
 {
     type Model = M;
     type Serializer = S;
+    type QuerySet = DatabaseQuery<M>;
     type FilterSet = FilterSet<M>;
     type Permission = AllowAny;
+    fn get_queryset(&self) -> Self::QuerySet {
+        DatabaseQuery::new(M::query())
+    }
     fn path(&self) -> &'static str {
         self.path
     }
@@ -367,7 +623,10 @@ where
         .route(&format!("{path}/"), get(list::<V>).post(create::<V>))
         .route(
             &format!("{path}/{{id}}/"),
-            get(retrieve::<V>).patch(patch::<V>).delete(destroy::<V>),
+            get(retrieve::<V>)
+                .put(update::<V>)
+                .patch(patch::<V>)
+                .delete(destroy::<V>),
         )
         .merge(viewset.actions())
         .layer(Extension(state))
@@ -377,7 +636,7 @@ where
 pub fn openapi_json_for<M, S>(path: &str) -> serde_json::Value
 where
     M: Model,
-    S: ModelSerializer<Model = M, Input = M> + ModelWriteSerializer<Model = M> + Serialize,
+    S: ModelSerializer<Model = M> + ModelWriteSerializer<Model = M> + Serialize,
 {
     let response = format!(
         "{}Response",
@@ -403,6 +662,9 @@ fn user(ext: &Option<Extension<CurrentUser>>) -> Option<&CurrentUser> {
 }
 fn error_filter(e: FilterError) -> AppError {
     AppError::BadRequest(e.to_string())
+}
+fn error_validation(e: che_orm2::ValidationErrors) -> AppError {
+    AppError::BadRequest(e.detail)
 }
 fn error_write(e: che_orm2::OrmError) -> AppError {
     match e {
@@ -433,17 +695,10 @@ where
     let u = user(&who);
     V::Permission::default().check(&state, u, ViewAction::List)?;
     let filter = viewset.filterset();
-    let count = state
-        .database()
-        .count_query(
-            filter
-                .apply(
-                    viewset.list_query(state.database().query::<V::Model>()),
-                    &params,
-                )
-                .map_err(error_filter)?
-                .into_select_query(),
-        )
+    let count = filter
+        .apply(viewset.get_queryset(), &params)
+        .map_err(error_filter)?
+        .count(state.database())
         .await?;
     let offset = page(&params, "offset")?;
     let limit =
@@ -452,18 +707,15 @@ where
         return Err(AppError::BadRequest("limit must not exceed 100".into()));
     }
     let rows = filter
-        .apply(
-            viewset.list_query(state.database().query::<V::Model>()),
-            &params,
-        )
+        .apply(viewset.get_queryset(), &params)
         .map_err(error_filter)?
         .limit(limit)
         .offset(offset)
-        .all()
+        .all(state.database())
         .await?;
     let results = rows
         .into_iter()
-        .map(|m| serde_json::to_value(V::Serializer::from_input(m)))
+        .map(V::Serializer::to_json)
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Json(json!({"count": count, "results": results})))
 }
@@ -479,16 +731,19 @@ where
 {
     let u = user(&who);
     V::Permission::default().check(&state, u, ViewAction::Retrieve)?;
-    let model = viewset
-        .retrieve_query(state.database().query::<V::Model>())
+    let item = viewset
+        .get_queryset()
         .filter(V::Model::primary_key().eq(id))
-        .first()
+        .first(state.database())
         .await?
         .ok_or(AppError::NotFound)?;
-    V::Permission::default().check_object(&state, u, ViewAction::Retrieve, &model)?;
-    Ok(Json(serde_json::to_value(V::Serializer::from_input(
-        model,
-    ))?))
+    V::Permission::default().check_object(
+        &state,
+        u,
+        ViewAction::Retrieve,
+        V::QuerySet::item_model(&item),
+    )?;
+    Ok(Json(V::Serializer::to_json(item)?))
 }
 
 async fn destroy<V: ViewSet>(
@@ -499,35 +754,49 @@ async fn destroy<V: ViewSet>(
 ) -> AppResult<impl IntoResponse> {
     let u = user(&who);
     V::Permission::default().check(&state, u, ViewAction::Delete)?;
-    let model = viewset
-        .retrieve_query(state.database().query::<V::Model>())
-        .filter(V::Model::primary_key().eq(id))
-        .first()
-        .await?
-        .ok_or(AppError::NotFound)?;
-    V::Permission::default().check_object(&state, u, ViewAction::Delete, &model)?;
+    {
+        let item = viewset
+            .get_queryset()
+            .filter(V::Model::primary_key().eq(id))
+            .first(state.database())
+            .await?
+            .ok_or(AppError::NotFound)?;
+        V::Permission::default().check_object(
+            &state,
+            u,
+            ViewAction::Delete,
+            V::QuerySet::item_model(&item),
+        )?;
+    }
     state.database().delete::<V::Model>(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn create<V: ViewSet>(
     Extension(state): Extension<AppState>,
-    Extension(_viewset): Extension<V>,
+    Extension(viewset): Extension<V>,
     who: Option<Extension<CurrentUser>>,
-    Json(input): Json<<V::Serializer as ModelWriteSerializer>::CreateInput>,
+    Json(data): Json<serde_json::Value>,
 ) -> AppResult<impl IntoResponse>
 where
     V::Serializer: Serialize,
 {
     let u = user(&who);
     V::Permission::default().check(&state, u, ViewAction::Create)?;
-    let model = V::Serializer::create(state.database(), input)
+    let write = V::Serializer::is_valid(data, WriteMode::Create).map_err(error_validation)?;
+    let model = viewset
+        .prepare_create(&state, u, write)?
+        .save(state.database())
         .await
-        .map_err(error_write)?;
-    Ok((
-        StatusCode::CREATED,
-        Json(serde_json::to_value(V::Serializer::from_input(model))?),
-    ))
+        .map_err(error_write)?
+        .ok_or(AppError::BadRequest("create did not return a model".into()))?;
+    let item = viewset
+        .get_queryset()
+        .filter(V::Model::primary_key().eq(model.primary_key_value()))
+        .first(state.database())
+        .await?
+        .ok_or(AppError::NotFound)?;
+    Ok((StatusCode::CREATED, Json(V::Serializer::to_json(item)?)))
 }
 
 async fn patch<V: ViewSet>(
@@ -535,25 +804,83 @@ async fn patch<V: ViewSet>(
     Extension(viewset): Extension<V>,
     who: Option<Extension<CurrentUser>>,
     Path(id): Path<i64>,
-    Json(input): Json<<V::Serializer as ModelWriteSerializer>::PatchInput>,
+    Json(data): Json<serde_json::Value>,
 ) -> AppResult<impl IntoResponse>
 where
     V::Serializer: Serialize,
 {
     let u = user(&who);
     V::Permission::default().check(&state, u, ViewAction::Patch)?;
-    let current = viewset
-        .retrieve_query(state.database().query::<V::Model>())
-        .filter(V::Model::primary_key().eq(id))
-        .first()
-        .await?
-        .ok_or(AppError::NotFound)?;
-    V::Permission::default().check_object(&state, u, ViewAction::Patch, &current)?;
-    let model = V::Serializer::patch(state.database(), id, input)
+    let write = {
+        let current = viewset
+            .get_queryset()
+            .filter(V::Model::primary_key().eq(id))
+            .first(state.database())
+            .await?
+            .ok_or(AppError::NotFound)?;
+        V::Permission::default().check_object(
+            &state,
+            u,
+            ViewAction::Patch,
+            V::QuerySet::item_model(&current),
+        )?;
+        let write =
+            V::Serializer::is_valid(data, WriteMode::Patch { id }).map_err(error_validation)?;
+        viewset.prepare_patch(&state, u, V::QuerySet::item_model(&current), write)?
+    };
+    let model = write
+        .save(state.database())
         .await
         .map_err(error_write)?
         .ok_or(AppError::NotFound)?;
-    Ok(Json(serde_json::to_value(V::Serializer::from_input(
-        model,
-    ))?))
+    let item = viewset
+        .get_queryset()
+        .filter(V::Model::primary_key().eq(model.primary_key_value()))
+        .first(state.database())
+        .await?
+        .ok_or(AppError::NotFound)?;
+    Ok(Json(V::Serializer::to_json(item)?))
+}
+
+async fn update<V: ViewSet>(
+    Extension(state): Extension<AppState>,
+    Extension(viewset): Extension<V>,
+    who: Option<Extension<CurrentUser>>,
+    Path(id): Path<i64>,
+    Json(data): Json<serde_json::Value>,
+) -> AppResult<impl IntoResponse>
+where
+    V::Serializer: Serialize,
+{
+    let u = user(&who);
+    V::Permission::default().check(&state, u, ViewAction::Update)?;
+    let write = {
+        let current = viewset
+            .get_queryset()
+            .filter(V::Model::primary_key().eq(id))
+            .first(state.database())
+            .await?
+            .ok_or(AppError::NotFound)?;
+        V::Permission::default().check_object(
+            &state,
+            u,
+            ViewAction::Update,
+            V::QuerySet::item_model(&current),
+        )?;
+        let write =
+            V::Serializer::is_valid(data, WriteMode::Update { id }).map_err(error_validation)?;
+        viewset.prepare_update(&state, u, V::QuerySet::item_model(&current), write)?
+    };
+    let model = write
+        .save(state.database())
+        .await
+        .map_err(error_write)?
+        .ok_or(AppError::NotFound)?;
+    let item = viewset
+        .get_queryset()
+        .filter(V::Model::primary_key().eq(model.primary_key_value()))
+        .first(state.database())
+        .await?
+        .ok_or(AppError::NotFound)?;
+    Ok(Json(V::Serializer::to_json(item)?))
 }

@@ -116,7 +116,7 @@ pub async fn auth_middleware(
             .database()
             .query::<AuthToken>()
             .filter(AuthToken::KEY_HASH.eq(token_hash(token)))
-            .first()
+            .first(state.database())
             .await
         else {
             return crate::AppError::Unauthorized("invalid token".into()).into_response();
@@ -160,7 +160,7 @@ async fn load_session(state: &AppState, key: &str) -> Option<(CurrentSession, Us
         .database()
         .query::<AuthSession>()
         .filter(AuthSession::KEY_HASH.eq(token_hash(key)))
-        .first()
+        .first(state.database())
         .await
         .ok()??;
     if session.expires_at <= OffsetDateTime::now_utc() {

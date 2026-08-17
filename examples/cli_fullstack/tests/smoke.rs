@@ -58,6 +58,28 @@ async fn fullstack_session_rest_smoke() {
         .json(&json!({"author_id": 1, "name": "REST task"}))
         .send().await.unwrap();
     assert_eq!(task.status(), reqwest::StatusCode::CREATED);
+    let task_id = task.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_i64().unwrap();
+
+    let updated = client.put(format!("{base_url}/api/tasks/{task_id}/"))
+        .header("X-CSRF-Token", &csrf)
+        .json(&json!({"author_id": 1, "name": "Updated task"}))
+        .send().await.unwrap();
+    assert_eq!(updated.status(), reqwest::StatusCode::OK);
+    assert_eq!(updated.json::<serde_json::Value>().await.unwrap()["name"], "Updated task");
+
+    let patched = client.patch(format!("{base_url}/api/tasks/{task_id}/"))
+        .header("X-CSRF-Token", &csrf)
+        .json(&json!({"name": "Patched task"}))
+        .send().await.unwrap();
+    assert_eq!(patched.status(), reqwest::StatusCode::OK);
+    assert_eq!(patched.json::<serde_json::Value>().await.unwrap()["name"], "Patched task");
+
+    let empty_patch = client.patch(format!("{base_url}/api/tasks/{task_id}/"))
+        .header("X-CSRF-Token", &csrf)
+        .json(&json!({}))
+        .send().await.unwrap();
+    assert_eq!(empty_patch.status(), reqwest::StatusCode::BAD_REQUEST);
 
     let me = client.get(format!("{base_url}/api-session-auth/me/")).send().await.unwrap();
     assert_eq!(me.status(), reqwest::StatusCode::OK);

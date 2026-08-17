@@ -134,7 +134,7 @@ async fn find_user(state: &AppState, payload: LoginRequest) -> AppResult<User> {
         .database()
         .query::<User>()
         .filter(User::USERNAME.eq(payload.username))
-        .first()
+        .first(state.database())
         .await?
         .ok_or(AppError::Unauthorized("invalid session".into()))?;
     if !user.is_active || !verify_password(&payload.password, &user.password_hash) {

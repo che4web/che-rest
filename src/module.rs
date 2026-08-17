@@ -80,7 +80,7 @@ impl ModuleContext {
 
     pub fn viewset<M, S>(&mut self, path: &'static str, viewset: CrudViewSet<M, S>)
     where
-        M: Model + Send + 'static,
+        M: Model + Send + Sync + 'static,
         S: ModelSerializer<Model = M, Input = M>
             + che_orm2::ModelWriteSerializer<Model = M>
             + serde::Serialize

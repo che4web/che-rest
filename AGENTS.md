@@ -1,9 +1,9 @@
 # AGENTS.md
 
 ## Repo Shape
-- This is a single Rust library crate, not a Cargo workspace; Phase 1 depends on sibling paths `../../che-orm2` and `../../che-orm2/che-orm2-rest`.
-- Phase 1 intentionally builds only the ORM2 state/error and typed CRUD REST surface. Legacy auth, management, dynamic serializers, filters, modules and channels are not part of the public build.
-- Public API is re-exported from `src/lib.rs`; the migrated CRUD implementation lives in the `che-orm2-rest` dependency.
+- This is a single Rust library crate, not a Cargo workspace; it depends on the sibling path `../che-orm2`.
+- The ORM2 state/error and typed CRUD REST surface are implemented in this crate. Legacy ORM integrations are not part of the public build.
+- Public API is re-exported from `src/lib.rs`; the REST implementation lives under `src/rest`.
 
 ## Verification Commands
 - `cargo fmt --check` passes and is the fastest formatting check.
@@ -11,11 +11,12 @@
 - `cargo clippy --all-targets -- -D warnings` currently fails on existing lints in `src/management.rs` (`single_match`) and `src/module.rs` (`should_implement_trait`); do not present a change as clippy-clean unless those baseline lints are fixed.
 
 ## Framework Gotchas
-- `AppState::rest_state()` creates the ORM2 REST state used by `router` and `router_with_openapi`.
 - `CrudViewSet::<Model, Serializer>::new("/resource")` uses serializer types; no serializer instance is constructed.
-- The Phase 1 example uses `create_table` for local startup only. Production migration/management is intentionally deferred to a later phase.
+- Write handlers call `Serializer::is_valid` to build a `ValidatedWrite`; `ViewSet::prepare_*` may add server-owned fields before `ValidatedWrite::save` executes the mutation.
+- The examples use Atlas migrations for schema setup. Production startup must not create model tables.
 - `Server::new(state).install(apps).build().await` installs app routers under `/api` by default; override with `api_prefix(...)`.
 - `ModuleContext::viewset` and `viewset_with` both register the model schema, generated API metadata, and router; using only `route(...)` skips schema/codegen metadata.
+- `ViewSet::get_queryset` defines filtering scope and relation loading; serializers only convert the materialized queryset item and never query the database.
 - Installing `che_rest::auth::module()` enables token auth middleware for all routes under the API prefix and separately adds `/api-token-auth/` outside the prefix.
 - Management migrations default to project app files under `src/apps/<app>/migrations`; for app `auth`, migration application falls back to this crate's `src/auth/migrations` if the downstream project has no auth migration dir.
 - Config loading only reads TOML shape `[database] url = "..."`; management commands can override with `--database-url`.

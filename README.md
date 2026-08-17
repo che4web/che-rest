@@ -2,17 +2,17 @@
 
 Breaking v2 REST layer for `che-orm2` applications.
 
-The legacy `che-orm` integration, authentication, management commands,
-dynamic serializers and filter framework are disabled in this phase. The
-current v2 surface is the typed ORM2 CRUD router:
+The current v2 surface is the typed ORM2 CRUD router. A viewset builds its
+database-independent queryset in `get_queryset`; database access happens only
+when the queryset is materialized:
 
 ```rust
-use che_rest::{CrudViewSet, router_with_openapi};
+use che_rest::{CrudViewSet, Server};
 
-let app = router_with_openapi(
-    state.rest_state(),
-    CrudViewSet::<Task, TaskSerializer>::new("/tasks"),
-);
+let app = Server::new(state)
+    .install(apps::installed_apps())
+    .build()
+    .await?;
 ```
 
 The migration plan is documented in [`docs/ORM2_MIGRATION_PLAN.md`](docs/ORM2_MIGRATION_PLAN.md).
@@ -44,7 +44,7 @@ By default the generator assumes this repo layout:
 
 ```text
 ../che-rest
-../che-orm/crates/che-orm
+../che-orm2
 ```
 
 Override paths when needed:
@@ -52,7 +52,7 @@ Override paths when needed:
 ```bash
 cargo run --bin che-rest -- startproject my_project \
   --che-rest-path ../che-rest \
-  --che-orm-path ../che-orm/crates/che-orm
+  --che-orm2-path ../che-orm2
 ```
 
 Include the built-in auth module in the generated app registry:
@@ -215,7 +215,7 @@ typed fields directly:
 ```rust
 db.query::<Task>()
     .filter(TaskFields::COMPLETED.eq(false))
-    .all()
+    .all(&db)
     .await?;
 ```
 

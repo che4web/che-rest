@@ -10,7 +10,7 @@ pub struct StartProjectOptions {
     pub name: String,
     pub out: PathBuf,
     pub che_rest_path: String,
-    pub che_orm_path: String,
+    pub che_orm2_path: String,
     pub with_auth: bool,
     pub force: bool,
 }
@@ -25,7 +25,11 @@ pub fn startproject(options: StartProjectOptions) -> ProjectResult<()> {
 
     write_file(
         &project_dir.join("Cargo.toml"),
-        &cargo_toml_template(&options.name, &options.che_rest_path, &options.che_orm_path),
+        &cargo_toml_template(
+            &options.name,
+            &options.che_rest_path,
+            &options.che_orm2_path,
+        ),
     )?;
     write_file(&project_dir.join("app.toml"), app_toml_template())?;
     write_file(
@@ -110,7 +114,7 @@ fn validate_project_name(name: &str) -> ProjectResult<()> {
     Ok(())
 }
 
-fn cargo_toml_template(name: &str, che_rest_path: &str, che_orm_path: &str) -> String {
+fn cargo_toml_template(name: &str, che_rest_path: &str, che_orm2_path: &str) -> String {
     format!(
         r#"[package]
 name = "{name}"
@@ -120,7 +124,7 @@ default-run = "{name}"
 
 [dependencies]
 axum = "0.8"
-che-orm2 = {{ path = "{che_orm_path}" }}
+che-orm2 = {{ path = "{che_orm2_path}" }}
 che-rest = {{ path = "{che_rest_path}" }}
 tokio = {{ version = "1", features = ["macros", "net", "rt-multi-thread", "sync"] }}
 "#
@@ -180,7 +184,7 @@ schema, API metadata, and router together. Do not use only `ctx.route(...)` for 
 
 ## Conventions
 
-- Assign server-owned fields in `ViewSet::create_input()` or a custom serializer input flow.
+- Assign server-owned fields in `ViewSet::prepare_create()` or a custom serializer validation flow.
 - Mark server-owned serializer fields read-only so clients cannot supply them.
 - Use `IsAuthenticated` for resources that require the current user.
 - Application events use `AppState::app_channels()` and `AppModule::subscribe()`.

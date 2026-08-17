@@ -7,7 +7,7 @@ edition = "2024"
 axum = "0.8"
 argon2 = "0.5"
 clap = { version = "4", features = ["derive"] }
-che-orm2 = { path = "../../che-orm2" }
+che-orm2 = { path = "../che-orm2" }
 hex = "0.4"
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
