@@ -55,15 +55,28 @@ async fn fullstack_session_rest_smoke() {
 
     let task = client.post(format!("{base_url}/api/tasks/"))
         .header("X-CSRF-Token", &csrf)
-        .json(&json!({"author_id": 1, "name": "REST task"}))
+        .json(&json!({"name": "REST task"}))
         .send().await.unwrap();
     assert_eq!(task.status(), reqwest::StatusCode::CREATED);
-    let task_id = task.json::<serde_json::Value>().await.unwrap()["id"]
+    let task_payload = task.json::<serde_json::Value>().await.unwrap();
+    assert_eq!(task_payload["author"]["username"], "admin");
+    let task_id = task_payload["id"]
         .as_i64().unwrap();
+
+    let second_task = client.post(format!("{base_url}/api/tasks/"))
+        .header("X-CSRF-Token", &csrf)
+        .json(&json!({"name": "A first task"}))
+        .send().await.unwrap();
+    assert_eq!(second_task.status(), reqwest::StatusCode::CREATED);
+    let ordered = client.get(format!("{base_url}/api/tasks/?ordering=name"))
+        .send().await.unwrap();
+    assert_eq!(ordered.status(), reqwest::StatusCode::OK);
+    let ordered_payload = ordered.json::<serde_json::Value>().await.unwrap();
+    assert_eq!(ordered_payload["results"][0]["name"], "A first task");
 
     let updated = client.put(format!("{base_url}/api/tasks/{task_id}/"))
         .header("X-CSRF-Token", &csrf)
-        .json(&json!({"author_id": 1, "name": "Updated task"}))
+        .json(&json!({"name": "Updated task"}))
         .send().await.unwrap();
     assert_eq!(updated.status(), reqwest::StatusCode::OK);
     assert_eq!(updated.json::<serde_json::Value>().await.unwrap()["name"], "Updated task");

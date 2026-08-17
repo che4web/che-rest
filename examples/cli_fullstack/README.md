@@ -53,6 +53,9 @@ cargo run --bin manage -- createsuperuser \
   --password secret
 ```
 
+The command reads `app.toml` by default and creates an active superuser. Pass `--config` to use a
+different configuration file; the auth migrations must be applied first.
+
 Start the API:
 
 ```bash
@@ -88,6 +91,14 @@ curl -X POST http://127.0.0.1:3001/api/tasks/ \
 
 Every task creation path, including REST, admin, and the WebSocket command below, emits the
 internal `tasks.created` event.
+
+List tasks in ascending or descending order with the `ordering` query key. The example exposes
+`id`, `name`, `created_at`, and `updated_at`:
+
+```bash
+curl 'http://127.0.0.1:3001/api/tasks/?ordering=name'
+curl 'http://127.0.0.1:3001/api/tasks/?ordering=-created_at'
+```
 
 ## WebSocket Command
 

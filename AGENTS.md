@@ -17,9 +17,17 @@
 - `Server::new(state).install(apps).build().await` installs app routers under `/api` by default; override with `api_prefix(...)`.
 - `ModuleContext::viewset` and `viewset_with` both register the model schema, generated API metadata, and router; using only `route(...)` skips schema/codegen metadata.
 - `ViewSet::get_queryset` defines filtering scope and relation loading; serializers only convert the materialized queryset item and never query the database.
+- Nested serializer fields must name the generated relation marker, for example `#[serializer(one = User, relation = TaskAuthorRelation)]`; the viewset queryset must use the matching `select_related`/`prefetch_related` query type.
+- In `examples/cli_fullstack`, `Task.author` is a read-only nested `User`; `Task::AUTHOR_ID` is assigned in `prepare_create` from `CurrentUser`, so clients must submit only task fields.
 - Installing `che_rest::auth::module()` enables token auth middleware for all routes under the API prefix and separately adds `/api-token-auth/` outside the prefix.
 - Management migrations default to project app files under `src/apps/<app>/migrations`; for app `auth`, migration application falls back to this crate's `src/auth/migrations` if the downstream project has no auth migration dir.
 - Config loading only reads TOML shape `[database] url = "..."`; management commands can override with `--database-url`.
 - `generate-ts` writes `api_client.ts`, `channels.ts`, `models.ts`, `api.ts`, `useModelList.ts`, and `useModelItem.ts`; `generate-admin` writes Vue admin files and the same generated client files under `src/generated/`. These outputs are produced from installed app metadata, not by scanning source files.
 - `generate-admin` now creates a standalone Vite/Vue/Bootstrap project under `frontend/admin` by default. Re-running without `--force` updates only generated files and creates missing `src/admin/pages/<Model>{List,Form}.vue` wrappers; existing Vue/CSS/config/page files are preserved for user customization. Use `--force` to overwrite static templates and model pages.
 - Admin generated metadata lives in `src/admin/generated/adminSchema.ts`, generated routes in `src/admin/generated/adminRoutes.ts`, and API client files in `src/generated/*`. `src/admin/adminSchema.ts` is only a compatibility re-export shim. Do not direct users to edit files under `generated/`.
+
+## Current Plan
+- ORM2 querysets are database-independent; terminal database methods execute them.
+- Typed REST CRUD, filtering, pagination, relation loading, and response reloads use the ORM2 API.
+- `examples/cli_fullstack` demonstrates nested `Task.author` serialization with `select_related` and server-owned `author_id`.
+- Keep `cargo fmt --check`, `cargo test`, and the `cli_fullstack` smoke test passing when changing this surface.

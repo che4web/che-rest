@@ -106,6 +106,17 @@ impl FilterValue for String {
         Ok(v.to_owned())
     }
 }
+impl FilterValue for time::OffsetDateTime {
+    const EXPECTED: &'static str = "RFC3339 datetime";
+    fn parse(v: &str) -> Result<Self, FilterError> {
+        time::OffsetDateTime::parse(v, &time::format_description::well_known::Rfc3339).map_err(
+            |_| FilterError::InvalidValue {
+                field: String::new(),
+                expected: Self::EXPECTED,
+            },
+        )
+    }
+}
 
 pub trait RestQuerySet: Sized + Send {
     type Model: Model + Send + Sync + 'static;

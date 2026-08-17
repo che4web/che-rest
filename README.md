@@ -290,7 +290,7 @@ pub fn installed_apps() -> InstalledApps {
 Create the first superuser:
 
 ```bash
-cargo run --bin manage -- migrate auth
+cargo run --bin manage -- migrate
 ```
 
 Then create the first superuser:
@@ -300,6 +300,9 @@ cargo run --bin manage -- createsuperuser \
   --username admin \
   --password secret
 ```
+
+The command reads `app.toml` by default. Use `--config path/to/app.toml` to select another
+configuration file. The auth users table must exist before running the command.
 
 Get a token with the Django REST Framework compatible endpoint:
 

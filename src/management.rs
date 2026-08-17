@@ -5,10 +5,11 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use che_orm2::{SchemaSet, SqliteDialect};
+use che_orm2::{Model, SchemaSet, SqliteDialect};
 use clap::{Parser, Subcommand};
 
-use crate::{AppConfig, AppModule, InstalledApps};
+use crate::auth::{User, hash_password};
+use crate::{AppConfig, AppModule, AppState, InstalledApps};
 
 type ManageResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -34,6 +35,14 @@ enum CommandKind {
         config: PathBuf,
         #[arg(long, default_value = "migrations")]
         dir: PathBuf,
+    },
+    Createsuperuser {
+        #[arg(long)]
+        username: String,
+        #[arg(long)]
+        password: String,
+        #[arg(long, default_value = "app.toml")]
+        config: PathBuf,
     },
 }
 
@@ -105,9 +114,42 @@ impl Management {
                     MigrateAction::Diff { name } => atlas_diff(&self.apps, &dir, &name)?,
                 }
             }
+            CommandKind::Createsuperuser {
+                username,
+                password,
+                config,
+            } => create_superuser(username, password, config).await?,
         }
         Ok(())
     }
+}
+
+async fn create_superuser(username: String, password: String, config: PathBuf) -> ManageResult<()> {
+    let state = AppState::from_config_file(config).await?;
+    if state
+        .database()
+        .fetch_one(User::query().filter(User::USERNAME.eq(username.clone())))
+        .await?
+        .is_some()
+    {
+        return Err(format!("user `{username}` already exists").into());
+    }
+
+    let password_hash =
+        hash_password(&password).map_err(|error| format!("could not hash password: {error}"))?;
+    state
+        .database()
+        .create::<User>()
+        .set(User::USERNAME, username.as_str())
+        .set(User::PASSWORD_HASH, password_hash)
+        .set(User::IS_ACTIVE, true)
+        .set(User::IS_STAFF, true)
+        .set(User::IS_ADMIN, true)
+        .set(User::IS_SUPERUSER, true)
+        .execute()
+        .await?;
+    println!("Superuser created.");
+    Ok(())
 }
 
 fn schema(apps: &InstalledApps) -> SchemaSet {
@@ -156,4 +198,71 @@ fn file_url(path: &PathBuf) -> String {
         env::current_dir().unwrap_or_default().join(path)
     };
     format!("file://{}", path.display())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use che_orm2::{Database, Model};
+    use clap::Parser;
+
+    use super::{Cli, Management};
+    use crate::InstalledApps;
+    use crate::auth::{User, verify_password};
+
+    #[tokio::test]
+    async fn creates_superuser_with_hashed_password() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let database_path =
+            std::env::temp_dir().join(format!("che_rest_superuser_{suffix}.sqlite"));
+        let config_path = std::env::temp_dir().join(format!("che_rest_superuser_{suffix}.toml"));
+        fs::write(
+            &config_path,
+            format!(
+                "[database]\nurl = \"sqlite://{}?mode=rwc\"\n",
+                database_path.display()
+            ),
+        )
+        .unwrap();
+        Database::connect(database_path.to_string_lossy())
+            .unwrap()
+            .create_table::<User>()
+            .await
+            .unwrap();
+
+        let cli = Cli::try_parse_from([
+            "manage",
+            "createsuperuser",
+            "--username",
+            "admin",
+            "--password",
+            "secret",
+            "--config",
+            config_path.to_str().unwrap(),
+        ])
+        .unwrap();
+        Management::new(InstalledApps::new())
+            .run_from(cli)
+            .await
+            .unwrap();
+
+        let database = Database::connect(database_path.to_string_lossy()).unwrap();
+        let user = database
+            .fetch_one(User::query().filter(User::USERNAME.eq("admin")))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(verify_password("secret", &user.password_hash));
+        assert!(user.is_active && user.is_staff && user.is_admin && user.is_superuser);
+
+        let _ = fs::remove_file(database_path);
+        let _ = fs::remove_file(config_path);
+    }
 }
