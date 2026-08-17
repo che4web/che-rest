@@ -3,11 +3,16 @@
 
 import type { RouteRecordRaw } from "vue-router";
 import AdminModelList from "../AdminModelList.vue";
+import UserList from "../pages/UserList.vue";
+import UserForm from "../pages/UserForm.vue";
 import TaskList from "../pages/TaskList.vue";
 import TaskForm from "../pages/TaskForm.vue";
 
 export const adminRoutes: RouteRecordRaw[] = [
   { path: "", component: AdminModelList },
+  { path: "auth/users", component: UserList },
+  { path: "auth/users/new", component: UserForm },
+  { path: "auth/users/:id/edit", component: UserForm },
   { path: "tasks", component: TaskList },
   { path: "tasks/new", component: TaskForm },
   { path: "tasks/:id/edit", component: TaskForm },

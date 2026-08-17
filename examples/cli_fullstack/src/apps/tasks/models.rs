@@ -10,12 +10,14 @@ pub enum TaskStatus {
 }
 
 #[derive(Debug, che_orm2::Model)]
-#[orm(table = "tasks_task", index("author_id"))]
+#[orm(table = "tasks_task", index("author_id"), index("assignee_id"))]
 pub struct Task {
     #[orm(primary_key)]
     pub id: i64,
     #[orm(foreign_key = AuthUser, on_delete = "cascade")]
     pub author_id: i64,
+    #[orm(foreign_key = AuthUser, on_delete = "set null")]
+    pub assignee_id: Option<i64>,
     pub name: String,
     pub status: TaskStatus,
     #[orm(auto_now_add)]

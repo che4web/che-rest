@@ -83,7 +83,8 @@ curl -i -c cookies.txt -X POST \
 
 Create a task through the generated REST endpoint. Tasks require an authenticated user, and the
 server assigns the current session user as the author. The `author_id` field cannot be supplied by
-the client. Session writes also require the CSRF header:
+the client. The optional `assignee_id` field is a writable user relation; the generated admin uses
+`/api/auth/users/` to search available users. Session writes also require the CSRF header:
 
 ```bash
 CSRF_TOKEN=$(awk '$6 == "csrf_token" { print $7 }' cookies.txt)
@@ -92,6 +93,16 @@ curl -X POST http://127.0.0.1:3001/api/tasks/ \
   -H "X-CSRF-Token: $CSRF_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"name":"Read the documentation","status":"draft"}'
+```
+
+To assign a user from HTTP, include their user id:
+
+```bash
+curl -X POST http://127.0.0.1:3001/api/tasks/ \
+  -b cookies.txt \
+  -H "X-CSRF-Token: $CSRF_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Pair on the task","status":"in_progress","assignee_id":2}'
 ```
 
 Every task creation path, including REST, admin, and the WebSocket command below, emits the

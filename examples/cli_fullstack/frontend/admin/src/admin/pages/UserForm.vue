@@ -1,0 +1,1 @@
+<script setup lang="ts">import { userAdminModel } from "../generated/adminSchema"; import GenericModelForm from "../components/GenericModelForm.vue";</script><template><GenericModelForm :model="userAdminModel" /></template>

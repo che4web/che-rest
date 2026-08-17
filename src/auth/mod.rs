@@ -8,12 +8,56 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
+use che_orm2::Model;
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
-use crate::{AppModule, AppState, ModuleContext, Permission, ViewAction};
+use crate::{
+    AppModule, AppState, Filter, FilterSetSpec, ModuleContext, Permission, ViewAction, ViewSet,
+};
 
 pub use models::{AuthSession, AuthToken, User, hash_password, verify_password};
+
+#[derive(che_orm2::ModelSerializer)]
+#[serializer(model = User)]
+pub struct AdminUserSerializer {
+    #[serializer(read_only)]
+    pub id: i64,
+    #[serializer(read_only)]
+    pub username: String,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct AdminUserViewSet;
+
+#[derive(Clone, Copy, Default)]
+pub struct AdminUserFilterSet;
+
+static ADMIN_USER_FILTERS: &[Filter<User>] = &[Filter::contains(User::USERNAME)];
+
+impl FilterSetSpec for AdminUserFilterSet {
+    type Model = User;
+
+    fn filters(&self) -> &'static [Filter<Self::Model>] {
+        ADMIN_USER_FILTERS
+    }
+}
+
+impl ViewSet for AdminUserViewSet {
+    type Model = User;
+    type Serializer = AdminUserSerializer;
+    type QuerySet = che_orm2::DatabaseQuery<User>;
+    type FilterSet = AdminUserFilterSet;
+    type Permission = ReadOnlyAdminUser;
+
+    fn get_queryset(&self) -> Self::QuerySet {
+        che_orm2::DatabaseQuery::new(User::query())
+    }
+
+    fn path(&self) -> &'static str {
+        "/auth/users"
+    }
+}
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CurrentUser {
@@ -60,6 +104,27 @@ impl<M: che_orm2::Model> Permission<M> for IsAdminUser {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ReadOnlyAdminUser;
+
+impl<M: che_orm2::Model> Permission<M> for ReadOnlyAdminUser {
+    fn check(
+        &self,
+        state: &AppState,
+        user: Option<&CurrentUser>,
+        action: ViewAction,
+    ) -> crate::AppResult<()> {
+        <IsAdminUser as Permission<M>>::check(&IsAdminUser, state, user, action)?;
+        if matches!(action, ViewAction::List | ViewAction::Retrieve) {
+            Ok(())
+        } else {
+            Err(crate::AppError::Forbidden(
+                "user relation endpoint is read-only".into(),
+            ))
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CurrentSession {
     pub id: i64,
@@ -89,6 +154,7 @@ impl AppModule for AuthModule {
 
     fn init(&self, context: &mut ModuleContext) {
         context.route_at_root(views::routes());
+        context.viewset_with("/auth/users", AdminUserViewSet);
     }
 
     fn middleware(&self, router: axum::Router, _state: &AppState) -> axum::Router {

@@ -2,6 +2,7 @@
 // Run the appropriate che-rest management generator to update it.
 
 import {
+  userApi,
   taskApi,
 } from "../../generated/api";
 
@@ -18,10 +19,21 @@ export interface AdminApp { name: string; models: AdminModel[]; }
 
 export const adminModels: AdminModel[] = [
   {
+    appName: "auth", name: "User", resource: "auth/users", api: userApi,
+    fields: [
+      { name: "id", source: "id", type: "integer", label: "Id", readOnly: true, writeOnly: false, required: false, nullable: false, hasDefault: false },
+      { name: "username", source: "username", type: "text", label: "Username", readOnly: true, writeOnly: false, required: false, nullable: false, hasDefault: false },
+    ],
+    filters: [
+      { name: "username__contains", source: "username", type: "text", label: "Username Contains", nullable: false },
+    ],
+  },
+  {
     appName: "tasks", name: "Task", resource: "tasks", api: taskApi,
     fields: [
       { name: "id", source: "id", type: "integer", label: "Id", readOnly: true, writeOnly: false, required: false, nullable: false, hasDefault: false },
       { name: "author", source: "author_id", type: "integer", label: "Author", readOnly: true, writeOnly: false, required: false, nullable: false, hasDefault: false, relatedModel: "User", relationField: "author" },
+      { name: "assignee_id", source: "assignee_id", type: "integer", label: "Assignee Id", readOnly: false, writeOnly: false, required: false, nullable: true, hasDefault: false, relatedModel: "User" },
       { name: "name", source: "name", type: "text", label: "Name", readOnly: false, writeOnly: false, required: true, nullable: false, hasDefault: false },
       { name: "status", source: "status", type: "text", label: "Status", readOnly: false, writeOnly: false, required: true, nullable: false, hasDefault: false, choices: ["draft","in_progress","done"] },
       { name: "created_at", source: "created_at", type: "datetime", label: "Created At", readOnly: true, writeOnly: false, required: false, nullable: false, hasDefault: true },
@@ -37,8 +49,10 @@ export const adminModels: AdminModel[] = [
   },
 ];
 
+export const userAdminModel = adminModels.find((model) => model.appName === "auth" && model.resource === "auth/users") as AdminModel;
 export const taskAdminModel = adminModels.find((model) => model.appName === "tasks" && model.resource === "tasks") as AdminModel;
 
 export const adminApps: AdminApp[] = [
+  { name: "auth", models: adminModels.filter((model) => model.appName === "auth") },
   { name: "tasks", models: adminModels.filter((model) => model.appName === "tasks") },
 ];

@@ -19,6 +19,8 @@
 - `ViewSet::get_queryset` defines filtering scope and relation loading; serializers only convert the materialized queryset item and never query the database.
 - Nested serializer fields must name the generated relation marker, for example `#[serializer(one = User, relation = TaskAuthorRelation)]`; the viewset queryset must use the matching `select_related`/`prefetch_related` query type.
 - In `examples/cli_fullstack`, `Task.author` is a read-only nested `User`; `Task::AUTHOR_ID` is assigned in `prepare_create` from `CurrentUser`, so clients must submit only task fields.
+- Scalar writable relations use `#[serializer(foreign_key = User, relation = TaskAssigneeRelation)]` on an `i64` or `Option<i64>` field. The serializer source must match the generated relation marker; admin metadata then points `AsyncRelationSelect` at the related model endpoint.
+- `examples/cli_fullstack` exposes optional writable `Task.assignee_id`; `/auth/users/` is a read-only admin relation endpoint and requires an admin user.
 - Installing `che_rest::auth::module()` enables token auth middleware for all routes under the API prefix and separately adds `/api-token-auth/` outside the prefix.
 - Management migrations use the project-level Atlas directory `migrations/`; `makemigrations` derives it from all installed app schemas and `migrate` applies it.
 - Config loading only reads TOML shape `[database] url = "..."`; management commands can override with `--database-url`.
@@ -27,8 +29,8 @@
 - Admin generated metadata lives in `src/admin/generated/adminSchema.ts`, generated routes in `src/admin/generated/adminRoutes.ts`, and API client files in `src/generated/*`. `src/admin/adminSchema.ts` is only a compatibility re-export shim. Do not direct users to edit files under `generated/`.
 - Canonical admin templates live under `src/admin/templates/`; the checked-in `examples/cli_fullstack/frontend/admin/` tree is generated output. Update the canonical templates first, then regenerate the example.
 
-## Current Plan
+## Current Status
 - ORM2 querysets are database-independent; terminal database methods execute them.
-- Typed REST CRUD, filtering, pagination, relation loading, and response reloads use the ORM2 API.
-- `examples/cli_fullstack` demonstrates nested `Task.author` serialization with `select_related` and server-owned `author_id`.
-- Keep `cargo fmt --check`, `cargo test`, and the `cli_fullstack` smoke test passing when changing this surface.
+- Typed REST CRUD, filtering, pagination, relation loading, response reloads, writable FK metadata, and OpenAPI/Swagger integration use the ORM2 API.
+- `examples/cli_fullstack` demonstrates nested server-owned `Task.author` plus writable nullable `Task.assignee_id` through REST and the generated admin relation picker.
+- Keep `cargo fmt --check`, `cargo test`, frontend builds, and the `cli_fullstack` smoke test passing when changing this surface.

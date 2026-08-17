@@ -63,7 +63,8 @@ fn admin_schema(endpoints: &[ApiEndpoint]) -> String {
             let related = field.related_model.map(last_path_part);
             let source = field.source.to_owned();
             let ty = admin_type(field.rust_type, related.is_some());
-            let read_only = field.read_only || related.is_some();
+            let nested_relation = related.is_some_and(|_| field.name != field.source);
+            let read_only = field.read_only || nested_relation;
             let column = endpoint.columns.iter().find(|column| column.name == source);
             let nullable = column.is_some_and(|column| column.nullable);
             let has_default = column.is_some_and(|column| column.has_default);
@@ -71,7 +72,7 @@ fn admin_schema(endpoints: &[ApiEndpoint]) -> String {
                 .and_then(|column| column.choices.as_ref())
                 .map(|choices| format!(", choices: {}", serde_json::to_string(choices).unwrap()))
                 .unwrap_or_default();
-            out.push_str(&format!("      {{ name: {}, source: {}, type: {}, label: {}, readOnly: {}, writeOnly: {}, required: {}, nullable: {}, hasDefault: {}{}{}{} }},\n", js(field.name), js(&source), js(ty), js(&label(field.name)), read_only, field.write_only, !read_only && !field.write_only && !nullable && !has_default, nullable, has_default, choices, related.map(|value| format!(", relatedModel: {}", js(value))).unwrap_or_default(), related.map(|_| format!(", relationField: {}", js(field.name))).unwrap_or_default()));
+            out.push_str(&format!("      {{ name: {}, source: {}, type: {}, label: {}, readOnly: {}, writeOnly: {}, required: {}, nullable: {}, hasDefault: {}{}{}{} }},\n", js(field.name), js(&source), js(ty), js(&label(field.name)), read_only, field.write_only, !read_only && !field.write_only && !nullable && !has_default, nullable, has_default, choices, related.map(|value| format!(", relatedModel: {}", js(value))).unwrap_or_default(), nested_relation.then(|| format!(", relationField: {}", js(field.name))).unwrap_or_default()));
         }
         out.push_str("    ],\n    filters: [\n");
         for filter in &endpoint.filters {

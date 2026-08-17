@@ -3,9 +3,24 @@
 
 import type { ListParams } from "./api_client";
 
+export interface User {
+  id: number;
+  username: string;
+}
+
+export interface UserCreate {
+}
+
+export interface UserUpdate {
+}
+
+export interface UserListParams extends ListParams {
+}
+
 export interface Task {
   id: number;
   author: User;
+  assignee_id: number | null;
   name: string;
   status: "draft" | "in_progress" | "done";
   created_at: string;
@@ -13,11 +28,13 @@ export interface Task {
 }
 
 export interface TaskCreate {
+  assignee_id?: number | null;
   name: string;
   status: "draft" | "in_progress" | "done";
 }
 
 export interface TaskUpdate {
+  assignee_id?: number | null;
   name?: string;
   status?: "draft" | "in_progress" | "done";
 }
@@ -28,9 +45,4 @@ export interface TaskListParams extends ListParams {
   status?: "draft" | "in_progress" | "done";
   created_at?: string;
   updated_at?: string;
-}
-
-export interface User {
-  id: number;
-  [key: string]: unknown;
 }

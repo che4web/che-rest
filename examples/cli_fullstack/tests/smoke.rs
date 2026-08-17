@@ -56,6 +56,19 @@ async fn fullstack_session_rest_smoke() {
         .set(che_rest::auth::User::USERNAME, "admin")
         .set(che_rest::auth::User::PASSWORD_HASH, password_hash)
         .set(che_rest::auth::User::IS_ACTIVE, true)
+        .set(che_rest::auth::User::IS_ADMIN, true)
+        .execute()
+        .await
+        .unwrap();
+    state
+        .database()
+        .create::<che_rest::auth::User>()
+        .set(che_rest::auth::User::USERNAME, "assignee")
+        .set(
+            che_rest::auth::User::PASSWORD_HASH,
+            che_rest::auth::hash_password("secret").unwrap(),
+        )
+        .set(che_rest::auth::User::IS_ACTIVE, true)
         .execute()
         .await
         .unwrap();
@@ -76,11 +89,7 @@ async fn fullstack_session_rest_smoke() {
         .unwrap();
     let base_url = format!("http://{address}");
 
-    let swagger = client
-        .get(format!("{base_url}/v1/"))
-        .send()
-        .await
-        .unwrap();
+    let swagger = client.get(format!("{base_url}/v1/")).send().await.unwrap();
     assert_eq!(swagger.status(), reqwest::StatusCode::OK);
     let swagger_html = swagger.text().await.unwrap();
     assert!(swagger_html.contains("SwaggerUIBundle"));
@@ -103,17 +112,21 @@ async fn fullstack_session_rest_smoke() {
     assert!(openapi_payload["components"]["securitySchemes"]["SessionCookie"].is_object());
     assert!(openapi_payload["paths"]["/api-session-auth/login/"].is_object());
     assert!(openapi_payload["paths"]["/tasks/"]["post"]["requestBody"].is_object());
-    assert!(openapi_payload["components"]["schemas"]["TaskSerializerCreate"]["required"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|field| field == "status"));
+    assert!(
+        openapi_payload["components"]["schemas"]["TaskSerializerCreate"]["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field == "status")
+    );
     assert_eq!(
-        openapi_payload["components"]["schemas"]["TaskSerializerResponse"]["properties"]["status"]["enum"],
+        openapi_payload["components"]["schemas"]["TaskSerializerResponse"]["properties"]["status"]
+            ["enum"],
         serde_json::json!(["draft", "in_progress", "done"])
     );
     assert_eq!(
-        openapi_payload["components"]["schemas"]["TaskSerializerResponse"]["properties"]["author"]["type"],
+        openapi_payload["components"]["schemas"]["TaskSerializerResponse"]["properties"]["author"]
+            ["type"],
         "object"
     );
     assert_eq!(
@@ -155,10 +168,21 @@ async fn fullstack_session_rest_smoke() {
         .unwrap()
         .to_owned();
 
+    let relation_users = client
+        .get(format!("{base_url}/v1/auth/users/"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(relation_users.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        relation_users.json::<serde_json::Value>().await.unwrap()["count"],
+        2
+    );
+
     let task = client
         .post(format!("{base_url}/v1/tasks/"))
         .header("X-CSRF-Token", &csrf)
-        .json(&json!({"name": "REST task", "status": "draft"}))
+        .json(&json!({"name": "REST task", "status": "draft", "assignee_id": 2}))
         .send()
         .await
         .unwrap();
@@ -166,6 +190,7 @@ async fn fullstack_session_rest_smoke() {
     let task_payload = task.json::<serde_json::Value>().await.unwrap();
     assert_eq!(task_payload["author"]["username"], "admin");
     assert_eq!(task_payload["status"], "draft");
+    assert_eq!(task_payload["assignee_id"], 2);
     let task_id = task_payload["id"].as_i64().unwrap();
 
     let second_task = client
@@ -204,7 +229,7 @@ async fn fullstack_session_rest_smoke() {
     let updated = client
         .put(format!("{base_url}/v1/tasks/{task_id}/"))
         .header("X-CSRF-Token", &csrf)
-        .json(&json!({"name": "Updated task", "status": "done"}))
+        .json(&json!({"name": "Updated task", "status": "done", "assignee_id": null}))
         .send()
         .await
         .unwrap();

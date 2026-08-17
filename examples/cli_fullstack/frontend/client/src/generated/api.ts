@@ -3,10 +3,15 @@
 
 import { createModelApi } from "./api_client";
 import type {
+  User,
+  UserCreate,
+  UserUpdate,
+  UserListParams,
   Task,
   TaskCreate,
   TaskUpdate,
   TaskListParams,
 } from "./models";
 
+export const userApi = createModelApi<User, UserCreate, UserUpdate, UserListParams>("auth/users");
 export const taskApi = createModelApi<Task, TaskCreate, TaskUpdate, TaskListParams>("tasks");

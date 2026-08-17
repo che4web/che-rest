@@ -54,14 +54,17 @@ fn models(endpoints: &[ApiEndpoint]) -> String {
             "export interface {}Create {{\n",
             endpoint.model_name
         ));
-        for field in endpoint
-            .fields
-            .iter()
-            .filter(|field| !field.read_only && field.related_model.is_none())
-        {
+        for field in endpoint.fields.iter().filter(|field| {
+            !field.read_only && (field.related_model.is_none() || field.name == field.source)
+        }) {
             out.push_str(&format!(
-                "  {}: {};\n",
+                "  {}{}: {};\n",
                 field.name,
+                if field_required(endpoint, field) {
+                    ""
+                } else {
+                    "?"
+                },
                 field_ts_type(endpoint, field)
             ));
         }
@@ -70,11 +73,9 @@ fn models(endpoints: &[ApiEndpoint]) -> String {
             "export interface {}Update {{\n",
             endpoint.model_name
         ));
-        for field in endpoint
-            .fields
-            .iter()
-            .filter(|field| !field.read_only && field.related_model.is_none())
-        {
+        for field in endpoint.fields.iter().filter(|field| {
+            !field.read_only && (field.related_model.is_none() || field.name == field.source)
+        }) {
             out.push_str(&format!(
                 "  {}?: {};\n",
                 field.name,
@@ -145,6 +146,18 @@ fn api(endpoints: &[ApiEndpoint]) -> String {
 
 fn field_ts_type(endpoint: &ApiEndpoint, field: &che_orm2::SerializerField) -> String {
     if let Some(model) = field.related_model {
+        if field.name == field.source {
+            let nullable = endpoint
+                .columns
+                .iter()
+                .find(|column| column.name == field.source)
+                .is_some_and(|column| column.nullable);
+            return if nullable {
+                "number | null".into()
+            } else {
+                "number".into()
+            };
+        }
         let ty = last_path_part(model);
         return if field.many {
             format!("{}[]", ty)
@@ -171,6 +184,14 @@ fn field_ts_type(endpoint: &ApiEndpoint, field: &che_orm2::SerializerField) -> S
         value if value.contains("OffsetDateTime") => "string".into(),
         _ => "unknown".into(),
     }
+}
+
+fn field_required(endpoint: &ApiEndpoint, field: &che_orm2::SerializerField) -> bool {
+    endpoint
+        .columns
+        .iter()
+        .find(|column| column.name == field.source)
+        .is_some_and(|column| !column.nullable && !column.has_default)
 }
 
 fn filter_ts_type(endpoint: &ApiEndpoint, source: &str) -> String {

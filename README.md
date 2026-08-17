@@ -144,6 +144,11 @@ let app = Server::new(state)
     .await?;
 ```
 
+Writable foreign-key fields can be exposed separately from nested read-only output. Use
+`#[serializer(foreign_key = User, relation = TaskAssigneeRelation)]` on a scalar `Option<i64>`
+field. The generated admin uses an async relation selector, while nested fields such as
+`Task.author` remain read-only response data.
+
 ## Typed ViewSets
 
 Generated and custom viewsets use associated types for their serializer, filters, and permissions:
