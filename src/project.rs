@@ -301,7 +301,7 @@ schema, API metadata, and router together. Do not use only `ctx.route(...)` for 
 - Use `IsAuthenticated` for resources that require the current user.
 - Application events use `AppState::app_channels()` and `AppModule::subscribe()`.
 - `AppState::app_channels()` is for internal application events and is never a public WebSocket channel.
-- Public WebSocket signals use `AppState::signals()` and must be declared with `ModuleContext::signal(...)`; CRUD viewsets declare authenticated lifecycle signals automatically.
+- Public WebSocket signals use `AppState::signals()` and must be declared with `ModuleContext::signal(...)`; CRUD viewsets declare authenticated lifecycle signals automatically and publish `{{ "id": ... }}` payloads.
 - Generated admin uses session cookies and the readable `csrf_token` cookie.
 {auth_note}
 ## Verification
@@ -317,18 +317,7 @@ cargo check
 When adding or changing an endpoint, also run `cargo run --bin manage -- generate-ts` and inspect the
 generated OpenAPI at `/api/openapi.json` while the server is running.
 
-For machine-readable metadata, run:
-
-```bash
-cargo run --bin manage -- inspect --format json
-```
-
-The migration and code generation commands also support `--format json` for agent workflows.
-
-```bash
-cargo run --bin manage -- makemigrations --format json
-cargo run --bin manage -- migrate --format json
-```
+OpenAPI metadata is available from the running server at `/api/openapi.json` by default.
 "#
     )
 }

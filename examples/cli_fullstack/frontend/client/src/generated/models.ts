@@ -15,6 +15,7 @@ export interface UserUpdate {
 }
 
 export interface UserListParams extends ListParams {
+  username__contains?: string;
 }
 
 export interface Task {

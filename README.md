@@ -82,25 +82,19 @@ pub fn installed_apps() -> InstalledApps {
 }
 ```
 
-For machine-readable project metadata, inspect the installed apps from the project directory:
+Common management commands:
 
 ```bash
-cargo run --bin manage -- inspect --format json
+cargo run --bin manage -- startapp tasks --model Task
+cargo run --bin manage -- makemigrations
+cargo run --bin manage -- migrate
+cargo run --bin manage -- migrate status
+cargo run --bin manage -- generate-ts
+cargo run --bin manage -- generate-admin
 ```
 
-The stable `che-rest.inspect.v1` document includes models, API endpoints, filters, registered
-commands, migration files, and session configuration.
-
-Management commands that generate or apply changes support machine-readable output:
-
-```bash
-cargo run --bin manage -- makemigrations --format json
-cargo run --bin manage -- migrate --format json
-cargo run --bin manage -- generate-ts --format json
-cargo run --bin manage -- generate-admin --format json
-```
-
-The default `text` format remains intended for interactive use.
+OpenAPI is served by the running application at `/api/openapi.json` by default, and follows custom
+`Server::api_prefix(...)` values.
 
 Server startup:
 
@@ -230,31 +224,25 @@ Relations use the related serializer type directly:
 Field::related::<EmployeeSerializer>("author", "author_id")
 ```
 
-Fields populated by the server can be marked as system fields. They are rejected from client input,
-omitted from responses, and validated only through `system_create_values`:
+Fields populated by the server should be read-only in the serializer and assigned in the viewset's
+write preparation hook:
 
 ```rust
-static TASK_FIELDS: &[Field] = &[
-    Field::new("author_id").system(),
-    Field::new("title"),
-];
-
-#[che_rest::async_trait]
 impl ViewSet for TaskViewSet {
     type Model = Task;
     type Serializer = TaskSerializer;
-    type FilterSet = TaskFilterSet;
+    type QuerySet = che_orm2::DatabaseQuery<Task>;
+    type FilterSet = che_rest::FilterSet<Task>;
     type Permission = IsAuthenticated;
 
-    async fn system_create_values(
+    fn prepare_create(
         &self,
-        state: &AppState,
-        extensions: &axum::http::Extensions,
-    ) -> che_rest::AppResult<serde_json::Map<String, serde_json::Value>> {
-        let employee = current_employee(state, extensions).await?;
-        Ok([(String::from("author_id"), serde_json::json!(employee.id))]
-            .into_iter()
-            .collect())
+        _state: &che_rest::AppState,
+        user: Option<&che_rest::CurrentUser>,
+        write: che_rest::ValidatedWrite<Self::Model>,
+    ) -> che_rest::AppResult<che_rest::ValidatedWrite<Self::Model>> {
+        let user = user.ok_or_else(|| che_rest::AppError::Unauthorized("authentication required".into()))?;
+        Ok(write.set(Task::AUTHOR_ID, user.id))
     }
 }
 ```
@@ -354,8 +342,11 @@ pub fn installed_apps() -> InstalledApps {
 ```
 
 WebSocket clients subscribe only to declared public signals. CRUD viewsets declare authenticated
-`<resource>.created`, `<resource>.updated`, and `<resource>.deleted` signals automatically. Modules
-can declare additional signals in `init`:
+`<resource>.created`, `<resource>.updated`, and `<resource>.deleted` signals automatically. The
+default lifecycle payload is `{ "id": <primary key> }`; clients that need current object data should
+reload it through the REST endpoint, so viewset permissions still apply. Nested resource names use
+dots, for example `/auth/users` declares `auth.users.created`. Modules can declare additional
+signals in `init`:
 
 ```rust
 fn init(&self, ctx: &mut che_rest::ModuleContext) {
@@ -458,14 +449,14 @@ socket.addEventListener("open", () => {
 
 socket.addEventListener("message", ({ data }) => {
   console.log(JSON.parse(data));
-  // { type: "signal", signal: "orders.created", payload: { status: "paid" } }
+  // { type: "signal", signal: "orders.created", payload: { id: 42 } }
 });
 ```
 
 Clients cannot subscribe to undeclared signals. Private user signals can be published with
-`publish_user` and use `user:{id}:<signal>` names; only that user can subscribe. Signal names may
-contain ASCII letters, numbers, `:`, `-`, `_`, and `.`. The server confirms subscription changes with
-`subscribed` and `unsubscribed` messages.
+`publish_user` and use `user:{id}:<signal>` names; only that user can subscribe after the signal has
+been created by server-side publication. Signal names may contain ASCII letters, numbers, `:`, `-`,
+`_`, and `.`. The server confirms subscription changes with `subscribed` and `unsubscribed` messages.
 
 This is in-memory pub/sub for one server process: messages are delivered only to currently connected
 clients, are not persisted, and do not cross process boundaries. A slow receiver receives a `lagged`
@@ -603,25 +594,10 @@ This writes:
     useModelItem.ts
 ```
 
-Generate an OpenAPI 3.0 JSON schema from installed viewsets, serializers, and filters:
-
-```bash
-cargo run --bin manage -- generate-openapi --out openapi.json
-```
-
-Configure the generated API metadata:
-
-```bash
-cargo run --bin manage -- generate-openapi \
-  --out openapi.json \
-  --title "My API" \
-  --version "0.1.0" \
-  --api-prefix /api
-```
-
-The generator describes CRUD routes registered with `ModuleContext::viewset` and
+The OpenAPI document describes CRUD routes registered with `ModuleContext::viewset` and
 `viewset_with`, including list filters, `limit`, `offset`, and `ordering` query
-parameters. Custom `extra_routes()` are not included automatically.
+parameters. It is available from the running server at `/api/openapi.json` by default. Custom
+`extra_routes()` are not included automatically.
 The same schema is also served by running applications at `/api/openapi.json`, with
 Swagger UI available at `/api/` by default.
 

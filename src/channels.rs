@@ -18,6 +18,7 @@ use crate::{
 };
 
 pub type Channels = crate::signals::SignalBus;
+const MAX_SUBSCRIPTIONS_PER_SOCKET: usize = 32;
 
 pub fn module() -> ChannelsModule {
     ChannelsModule
@@ -147,6 +148,15 @@ async fn subscribe(
         let _ = events_tx
             .send(json!({"type": "subscribed", "signal": signal}))
             .await;
+        return;
+    }
+    if subscriptions.len() >= MAX_SUBSCRIPTIONS_PER_SOCKET {
+        send_error(
+            events_tx,
+            "too_many_subscriptions",
+            "too many subscriptions",
+        )
+        .await;
         return;
     }
 

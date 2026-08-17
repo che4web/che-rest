@@ -11,13 +11,13 @@
 - Документировать структуру app, viewsets, serializers, filters, permissions, WebSocket signals и internal channels.
 - Использовать короткие проверенные snippets без конкурирующих вариантов.
 - Добавить раздел conventions:
-  - `author_id` назначается через `system_create_values`;
+  - `author_id` назначается через `ViewSet::prepare_create`;
   - таблицы создаются только через `migrate`;
   - public WebSocket signals отделены от internal `AppChannels`;
   - REST lifecycle signals публикуются viewsets; ORM writes не превращаются в application events автоматически;
   - generated admin использует session cookies и `csrf_token`.
 
-## Приоритет 2: JSON-инспекция [x]
+## Приоритет 2: JSON-инспекция [ ]
 
 Добавить команду:
 
@@ -47,7 +47,7 @@ JSON должен быть стабильным, без человекоорие
 - Для каждого signal описывать имя, authentication requirement и payload schema, когда она известна.
 - Генерировать TypeScript types для signal names.
 
-## Приоритет 4: идемпотентный CLI [x]
+## Приоритет 4: идемпотентный CLI [ ]
 
 Для команд добавить структурированный режим `--format json`:
 

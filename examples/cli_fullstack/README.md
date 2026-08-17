@@ -105,7 +105,7 @@ curl -X POST http://127.0.0.1:3001/api/tasks/ \
 ```
 
 Every task creation path, including REST and admin, emits the public WebSocket `tasks.created`
-signal.
+signal with a `{ "id": ... }` payload.
 
 List tasks in ascending or descending order with the `ordering` query key. The example exposes
 `id`, `name`, `created_at`, and `updated_at`:
@@ -129,9 +129,10 @@ Subscribe from a browser or WebSocket client:
 }
 ```
 
-Creating a task through REST or admin emits a `tasks.created` signal to subscribed clients. The
-notifications module demonstrates the separate internal `AppChannels` API in `AppModule::subscribe`;
-internal channels are not exposed as WebSocket signals.
+Creating a task through REST or admin emits a `tasks.created` signal to subscribed clients. Clients
+that need the current object representation should reload it through REST. The notifications module
+demonstrates the separate internal `AppChannels` API in `AppModule::subscribe`; internal channels are
+not exposed as WebSocket signals.
 
 Run the end-to-end smoke test:
 
@@ -180,7 +181,8 @@ The generated admin uses session-cookie authentication for HTTP API requests and
 ## Vue Task Desk
 
 `frontend/client` is a small hand-written Vue task board. It uses the generated REST client under
-`src/generated`, session-cookie authentication, and the CSRF cookie when creating tasks:
+`frontend/client/src/generated`, session-cookie authentication, and the CSRF cookie when creating
+tasks:
 
 ```bash
 cargo run --bin manage -- generate-ts --out frontend/client/src/generated

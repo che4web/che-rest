@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use che_orm2::{Database, Model, SchemaSet, SqliteDialect};
+use che_orm2::{Database, Model, SchemaSet, SqliteDialect, rusqlite::OptionalExtension};
 use clap::{Parser, Subcommand};
 
 use crate::auth::{User, hash_password};
@@ -253,7 +253,7 @@ fn print_schema(apps: &InstalledApps) {
 
 async fn apply_migrations(config: &AppConfig, dir: PathBuf) -> ManageResult<()> {
     let migrations = load_atlas_migrations(&dir)?;
-    let applied_count = run_with_refinery(config, migrations, |runner, connection| {
+    let applied_count = run_with_refinery(config, migrations, true, |runner, connection| {
         let report = runner.run(connection)?;
         Ok(report.applied_migrations().len())
     })
@@ -273,16 +273,25 @@ async fn migration_status(config: &AppConfig, dir: PathBuf) -> ManageResult<()> 
         .iter()
         .map(|migration| (migration.version(), migration.clone()))
         .collect::<BTreeMap<_, _>>();
-    let applied = run_with_refinery(config, migrations, |runner, connection| {
-        runner
-            .get_applied_migrations(connection)
-            .map_err(Into::into)
+    let applied = run_with_refinery(config, migrations, false, |runner, connection| {
+        let has_history = connection
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'refinery_schema_history'",
+                [],
+                |_| Ok(()),
+            )
+            .optional()?;
+        if has_history.is_none() {
+            return Ok(Vec::new());
+        }
+        runner.get_applied_migrations(connection).map_err(Into::into)
     })
     .await?;
     let applied_versions = applied
         .iter()
         .map(|migration| migration.version())
         .collect::<HashSet<_>>();
+    let mut has_status_error = false;
 
     for migration in &applied {
         match filesystem.get(&migration.version()) {
@@ -293,6 +302,7 @@ async fn migration_status(config: &AppConfig, dir: PathBuf) -> ManageResult<()> 
                 println!("applied V{}__{}", migration.version(), migration.name());
             }
             Some(expected) => {
+                has_status_error = true;
                 println!(
                     "divergent V{}__{} (filesystem: V{}__{})",
                     migration.version(),
@@ -301,7 +311,10 @@ async fn migration_status(config: &AppConfig, dir: PathBuf) -> ManageResult<()> 
                     expected.name()
                 );
             }
-            None => println!("missing V{}__{}", migration.version(), migration.name()),
+            None => {
+                has_status_error = true;
+                println!("missing V{}__{}", migration.version(), migration.name());
+            }
         }
     }
 
@@ -311,12 +324,17 @@ async fn migration_status(config: &AppConfig, dir: PathBuf) -> ManageResult<()> 
         }
     }
 
-    Ok(())
+    if has_status_error {
+        Err("migration history contains missing or divergent migrations".into())
+    } else {
+        Ok(())
+    }
 }
 
 async fn run_with_refinery<T, F>(
     config: &AppConfig,
     migrations: Vec<refinery::Migration>,
+    validate_foreign_keys: bool,
     action: F,
 ) -> ManageResult<T>
 where
@@ -340,13 +358,24 @@ where
             let runner = refinery::Runner::new(&migrations)
                 .set_abort_divergent(true)
                 .set_abort_missing(true);
-            connection
-                .execute_batch("PRAGMA foreign_keys = OFF;")
-                .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)?;
+            if validate_foreign_keys {
+                connection
+                    .execute_batch("PRAGMA foreign_keys = OFF;")
+                    .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)?;
+            }
             let result = action(runner, connection);
-            let restore = connection.execute_batch("PRAGMA foreign_keys = ON;");
+            let restore = if validate_foreign_keys {
+                connection.execute_batch("PRAGMA foreign_keys = ON;")
+            } else {
+                Ok(())
+            };
             match (result, restore) {
-                (Ok(value), Ok(())) => Ok(value),
+                (Ok(value), Ok(())) => {
+                    if validate_foreign_keys {
+                        assert_foreign_keys_valid(connection)?;
+                    }
+                    Ok(value)
+                }
                 (Ok(_), Err(error)) => {
                     Err(Box::new(error) as Box<dyn std::error::Error + Send + Sync>)
                 }
@@ -356,6 +385,25 @@ where
         .await
         .map_err(|error| format!("database interaction error: {error}"))?;
     result.map_err(|error| error as Box<dyn std::error::Error>)
+}
+
+fn assert_foreign_keys_valid(
+    connection: &che_orm2::rusqlite::Connection,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut statement = connection
+        .prepare("PRAGMA foreign_key_check;")
+        .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)?;
+    let mut rows = statement
+        .query([])
+        .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)?;
+    if rows
+        .next()
+        .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)?
+        .is_some()
+    {
+        return Err("migration left foreign key violations".into());
+    }
+    Ok(())
 }
 
 fn load_atlas_migrations(dir: &PathBuf) -> ManageResult<Vec<refinery::Migration>> {
@@ -465,7 +513,7 @@ mod tests {
     use che_orm2::{Database, Model};
     use clap::Parser;
 
-    use super::{Cli, Management, apply_migrations};
+    use super::{Cli, Management, apply_migrations, migration_status};
     use crate::InstalledApps;
     use crate::auth::{User, verify_password};
     use crate::{AppConfig, DatabaseConfig};
@@ -635,6 +683,46 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(!error.is_empty());
+
+        let _ = fs::remove_dir_all(migrations);
+        let _ = fs::remove_file(database_path);
+    }
+
+    #[tokio::test]
+    async fn migrate_status_reports_pending_on_fresh_database() {
+        let migrations = temp_path("migrations_status", "dir");
+        fs::create_dir_all(&migrations).unwrap();
+        fs::write(
+            migrations.join("20260817000000_initial.sql"),
+            "CREATE TABLE items (id INTEGER PRIMARY KEY);",
+        )
+        .unwrap();
+        let database_path = temp_path("migrate_status", "sqlite");
+        let config = sqlite_config(&database_path);
+
+        migration_status(&config, migrations.clone()).await.unwrap();
+
+        let _ = fs::remove_dir_all(migrations);
+        let _ = fs::remove_file(database_path);
+    }
+
+    #[tokio::test]
+    async fn migrate_apply_rejects_foreign_key_violations() {
+        let migrations = temp_path("migrations_fk", "dir");
+        fs::create_dir_all(&migrations).unwrap();
+        fs::write(
+            migrations.join("20260817000000_initial.sql"),
+            "CREATE TABLE parents (id INTEGER PRIMARY KEY);\nCREATE TABLE children (id INTEGER PRIMARY KEY, parent_id INTEGER NOT NULL REFERENCES parents(id));\nINSERT INTO children (id, parent_id) VALUES (1, 999);",
+        )
+        .unwrap();
+        let database_path = temp_path("migrate_fk", "sqlite");
+        let config = sqlite_config(&database_path);
+
+        let error = apply_migrations(&config, migrations.clone())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("foreign key violations"));
 
         let _ = fs::remove_dir_all(migrations);
         let _ = fs::remove_file(database_path);

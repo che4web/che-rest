@@ -612,12 +612,11 @@ pub trait ViewSet: Clone + Send + Sync + 'static {
         json!({})
     }
     fn signal_name(&self, action: ViewAction) -> Option<String> {
+        let resource = self.path().trim_matches('/').replace('/', ".");
         match action {
-            ViewAction::Create => Some(format!("{}.created", self.path().trim_matches('/'))),
-            ViewAction::Update | ViewAction::Patch => {
-                Some(format!("{}.updated", self.path().trim_matches('/')))
-            }
-            ViewAction::Delete => Some(format!("{}.deleted", self.path().trim_matches('/'))),
+            ViewAction::Create => Some(format!("{resource}.created")),
+            ViewAction::Update | ViewAction::Patch => Some(format!("{resource}.updated")),
+            ViewAction::Delete => Some(format!("{resource}.deleted")),
             ViewAction::List | ViewAction::Retrieve => None,
         }
     }
@@ -683,6 +682,30 @@ where
         .merge(viewset.actions())
         .layer(Extension(state))
         .layer(Extension(viewset))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_signal_names_normalize_nested_paths() {
+        let viewset =
+            CrudViewSet::<crate::auth::User, crate::auth::AdminUserSerializer>::new("/auth/users");
+
+        assert_eq!(
+            viewset.signal_name(ViewAction::Create).as_deref(),
+            Some("auth.users.created")
+        );
+        assert_eq!(
+            viewset.signal_name(ViewAction::Update).as_deref(),
+            Some("auth.users.updated")
+        );
+        assert_eq!(
+            viewset.signal_name(ViewAction::Delete).as_deref(),
+            Some("auth.users.deleted")
+        );
+    }
 }
 
 pub fn openapi_json_for<M, S>(path: &str) -> serde_json::Value
@@ -957,7 +980,9 @@ where
         .ok_or(AppError::NotFound)?;
     let payload = V::Serializer::to_json(item)?;
     if let Some(signal) = viewset.signal_name(ViewAction::Create) {
-        state.signals().publish(signal, payload.clone());
+        state
+            .signals()
+            .publish(signal, json!({"id": model.primary_key_value()}));
     }
     Ok((StatusCode::CREATED, Json(payload)))
 }
@@ -1004,7 +1029,9 @@ where
         .ok_or(AppError::NotFound)?;
     let payload = V::Serializer::to_json(item)?;
     if let Some(signal) = viewset.signal_name(ViewAction::Patch) {
-        state.signals().publish(signal, payload.clone());
+        state
+            .signals()
+            .publish(signal, json!({"id": model.primary_key_value()}));
     }
     Ok(Json(payload))
 }
@@ -1051,7 +1078,9 @@ where
         .ok_or(AppError::NotFound)?;
     let payload = V::Serializer::to_json(item)?;
     if let Some(signal) = viewset.signal_name(ViewAction::Update) {
-        state.signals().publish(signal, payload.clone());
+        state
+            .signals()
+            .publish(signal, json!({"id": model.primary_key_value()}));
     }
     Ok(Json(payload))
 }

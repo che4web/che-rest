@@ -42,6 +42,12 @@ impl SignalBus {
     pub fn declare(&self, signal: impl Into<String>, access: SignalAccess) {
         let signal = signal.into();
         let mut state = self.inner.lock().expect("signal bus lock is poisoned");
+        if let Some(existing) = state.access.get(&signal) {
+            assert_eq!(
+                *existing, access,
+                "conflicting access declaration for signal `{signal}`"
+            );
+        }
         state.access.insert(signal.clone(), access);
         state
             .senders
@@ -77,6 +83,15 @@ impl SignalBus {
         user: Option<&CurrentUser>,
     ) -> Result<(), SignalError> {
         if let Some(owner_id) = private_user_id(signal) {
+            let known = self
+                .inner
+                .lock()
+                .expect("signal bus lock is poisoned")
+                .senders
+                .contains_key(signal);
+            if !known {
+                return Err(SignalError::Unknown);
+            }
             return match user {
                 Some(user) if user.id == owner_id => Ok(()),
                 Some(_) => Err(SignalError::Forbidden),
@@ -165,4 +180,47 @@ fn private_user_id(signal: &str) -> Option<i64> {
     let rest = signal.strip_prefix("user:")?;
     let (id, _) = rest.split_once(':')?;
     id.parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn user(id: i64) -> CurrentUser {
+        CurrentUser {
+            id,
+            username: format!("user{id}"),
+            is_staff: false,
+            is_admin: false,
+            is_superuser: false,
+        }
+    }
+
+    #[test]
+    fn private_user_signal_must_exist_before_subscription() {
+        let bus = SignalBus::new();
+        assert_eq!(
+            bus.check_access("user:1:notifications", Some(&user(1))),
+            Err(SignalError::Unknown)
+        );
+
+        bus.publish_user(1, "notifications", json!({"message": "ready"}));
+
+        assert_eq!(
+            bus.check_access("user:1:notifications", Some(&user(1))),
+            Ok(())
+        );
+        assert_eq!(
+            bus.check_access("user:1:notifications", Some(&user(2))),
+            Err(SignalError::Forbidden)
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "conflicting access declaration")]
+    fn duplicate_signal_declarations_must_keep_same_access() {
+        let bus = SignalBus::new();
+        bus.declare("tasks.created", SignalAccess::Authenticated);
+        bus.declare("tasks.created", SignalAccess::Public);
+    }
 }
