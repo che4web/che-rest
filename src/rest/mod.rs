@@ -10,7 +10,7 @@ pub mod router;
 pub mod viewset;
 
 pub use filters::{Filter, FilterError, FilterSet, FilterSetSpec, FilterValue, Lookup};
-pub use openapi::openapi_json_for;
+pub use openapi::{openapi_column_schema, openapi_json_for};
 pub use permissions::{AllowAny, Permission, ViewAction};
 pub use router::{CrudViewSet, RestQuerySet, router};
 pub use viewset::ViewSet;

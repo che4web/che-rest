@@ -9,6 +9,7 @@ import { useModelList } from "./generated/useModelList";
 const user = ref<AuthUser | null>(null);
 const newTask = ref("");
 const newTaskStatus = ref<TaskCreate["status"]>("draft");
+const statusFilter = ref<TaskCreate["status"] | "">("");
 const username = ref("admin");
 const password = ref("secret");
 const loginError = ref("");
@@ -17,6 +18,10 @@ const { items: tasks, filters, loading, error, load } = useModelList(taskApi, {
   defaultFilters: { ordering: "-created_at", limit: 50 },
   reloadOnFilterChange: true,
 });
+
+function statusLabel(status: TaskCreate["status"]) {
+  return status === "in_progress" ? "In progress" : status === "draft" ? "Draft" : "Done";
+}
 
 async function login() {
   loginError.value = "";
@@ -46,6 +51,11 @@ async function createTask() {
   } catch {
     loginError.value = "Unable to create the task.";
   }
+}
+
+async function applyStatusFilter() {
+  filters.status = statusFilter.value || undefined;
+  await load();
 }
 
 onMounted(async () => {
@@ -104,6 +114,12 @@ onMounted(async () => {
 
       <div class="toolbar">
         <input v-model="filters.name__contains" placeholder="Filter tasks" aria-label="Filter tasks" />
+        <select v-model="statusFilter" aria-label="Filter by status" @change="applyStatusFilter">
+          <option value="">Any status</option>
+          <option value="draft">Draft</option>
+          <option value="in_progress">In progress</option>
+          <option value="done">Done</option>
+        </select>
         <button class="quiet" type="button" :disabled="loading" @click="load()">
           {{ loading ? "Refreshing..." : "Refresh" }}
         </button>
@@ -113,7 +129,8 @@ onMounted(async () => {
       <ol class="task-list">
         <li v-for="task in tasks" :key="task.id">
           <span class="task-id">#{{ task.id }}</span>
-          <span>{{ task.name }}</span>
+           <span>{{ task.name }}</span>
+           <small class="status-badge" :class="`status-${task.status}`">{{ statusLabel(task.status) }}</small>
           <small>by {{ task.author.username }}</small>
         </li>
         <li v-if="!loading && tasks.length === 0" class="empty">No matching tasks.</li>

@@ -63,6 +63,7 @@ async fn fullstack_session_rest_smoke() {
     let server_state = state.clone();
     let app = che_rest::Server::new(server_state)
         .install(apps::installed_apps())
+        .api_prefix("/v1")
         .build()
         .await
         .unwrap();
@@ -75,9 +76,59 @@ async fn fullstack_session_rest_smoke() {
         .unwrap();
     let base_url = format!("http://{address}");
 
+    let swagger = client
+        .get(format!("{base_url}/v1/"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(swagger.status(), reqwest::StatusCode::OK);
+    let swagger_html = swagger.text().await.unwrap();
+    assert!(swagger_html.contains("SwaggerUIBundle"));
+    assert!(swagger_html.contains("withCredentials: true"));
+    assert!(swagger_html.contains("X-CSRF-Token"));
+
+    let openapi = client
+        .get(format!("{base_url}/v1/openapi.json"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(openapi.status(), reqwest::StatusCode::OK);
+    let openapi_payload = openapi.json::<serde_json::Value>().await.unwrap();
+    assert_eq!(openapi_payload["servers"][0]["url"], "/v1");
+    assert_eq!(
+        openapi_payload["paths"]["/api-session-auth/login/"]["post"]["servers"][0]["url"],
+        "/"
+    );
+    assert!(openapi_payload["components"]["securitySchemes"]["TokenAuth"].is_object());
+    assert!(openapi_payload["components"]["securitySchemes"]["SessionCookie"].is_object());
+    assert!(openapi_payload["paths"]["/api-session-auth/login/"].is_object());
+    assert!(openapi_payload["paths"]["/tasks/"]["post"]["requestBody"].is_object());
+    assert!(openapi_payload["components"]["schemas"]["TaskSerializerCreate"]["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|field| field == "status"));
+    assert_eq!(
+        openapi_payload["components"]["schemas"]["TaskSerializerResponse"]["properties"]["status"]["enum"],
+        serde_json::json!(["draft", "in_progress", "done"])
+    );
+    assert_eq!(
+        openapi_payload["components"]["schemas"]["TaskSerializerResponse"]["properties"]["author"]["type"],
+        "object"
+    );
+    assert_eq!(
+        openapi_payload["paths"]["/tasks/"]["get"]["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|parameter| parameter["name"] == "status")
+            .unwrap()["schema"]["enum"],
+        serde_json::json!(["draft", "in_progress", "done"])
+    );
+
     assert_eq!(
         client
-            .get(format!("{base_url}/api/tasks/"))
+            .get(format!("{base_url}/v1/tasks/"))
             .send()
             .await
             .unwrap()
@@ -105,7 +156,7 @@ async fn fullstack_session_rest_smoke() {
         .to_owned();
 
     let task = client
-        .post(format!("{base_url}/api/tasks/"))
+        .post(format!("{base_url}/v1/tasks/"))
         .header("X-CSRF-Token", &csrf)
         .json(&json!({"name": "REST task", "status": "draft"}))
         .send()
@@ -118,15 +169,31 @@ async fn fullstack_session_rest_smoke() {
     let task_id = task_payload["id"].as_i64().unwrap();
 
     let second_task = client
-        .post(format!("{base_url}/api/tasks/"))
+        .post(format!("{base_url}/v1/tasks/"))
         .header("X-CSRF-Token", &csrf)
         .json(&json!({"name": "A first task", "status": "in_progress"}))
         .send()
         .await
         .unwrap();
     assert_eq!(second_task.status(), reqwest::StatusCode::CREATED);
+    let filtered = client
+        .get(format!("{base_url}/v1/tasks/?status=in_progress"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(filtered.status(), reqwest::StatusCode::OK);
+    let filtered_payload = filtered.json::<serde_json::Value>().await.unwrap();
+    assert_eq!(filtered_payload["count"], 1);
+    assert_eq!(filtered_payload["results"][0]["name"], "A first task");
+
+    let invalid_filter = client
+        .get(format!("{base_url}/v1/tasks/?status=unknown"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(invalid_filter.status(), reqwest::StatusCode::BAD_REQUEST);
     let ordered = client
-        .get(format!("{base_url}/api/tasks/?ordering=name"))
+        .get(format!("{base_url}/v1/tasks/?ordering=name"))
         .send()
         .await
         .unwrap();
@@ -135,7 +202,7 @@ async fn fullstack_session_rest_smoke() {
     assert_eq!(ordered_payload["results"][0]["name"], "A first task");
 
     let updated = client
-        .put(format!("{base_url}/api/tasks/{task_id}/"))
+        .put(format!("{base_url}/v1/tasks/{task_id}/"))
         .header("X-CSRF-Token", &csrf)
         .json(&json!({"name": "Updated task", "status": "done"}))
         .send()
@@ -148,7 +215,7 @@ async fn fullstack_session_rest_smoke() {
     );
 
     let patched = client
-        .patch(format!("{base_url}/api/tasks/{task_id}/"))
+        .patch(format!("{base_url}/v1/tasks/{task_id}/"))
         .header("X-CSRF-Token", &csrf)
         .json(&json!({"name": "Patched task", "status": "done"}))
         .send()
@@ -161,7 +228,7 @@ async fn fullstack_session_rest_smoke() {
     );
 
     let empty_patch = client
-        .patch(format!("{base_url}/api/tasks/{task_id}/"))
+        .patch(format!("{base_url}/v1/tasks/{task_id}/"))
         .header("X-CSRF-Token", &csrf)
         .json(&json!({}))
         .send()

@@ -97,6 +97,30 @@ impl AppModule for AuthModule {
             auth_middleware,
         ))
     }
+
+    fn openapi(&self, state: &AppState) -> serde_json::Value {
+        serde_json::json!({
+            "paths": {
+                "/api-token-auth/": {"post": {"servers": [{"url": "/"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LoginRequest"}}}}, "responses": {"200": {"description": "Token issued"}, "401": {"$ref": "#/components/responses/Unauthorized"}}}},
+                "/api-session-auth/login/": {"post": {"servers": [{"url": "/"}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/LoginRequest"}}}}, "responses": {"200": {"description": "Session cookie issued"}, "401": {"$ref": "#/components/responses/Unauthorized"}}}},
+                "/api-session-auth/logout/": {"post": {"servers": [{"url": "/"}], "responses": {"204": {"description": "Logged out"}}}},
+                "/api-session-auth/me/": {"get": {"servers": [{"url": "/"}], "security": [{"SessionCookie": []}], "responses": {"200": {"description": "Current session"}, "401": {"$ref": "#/components/responses/Unauthorized"}}}}
+            },
+            "components": {
+                "schemas": {
+                    "LoginRequest": {"type": "object", "required": ["username", "password"], "properties": {"username": {"type": "string"}, "password": {"type": "string", "format": "password"}}}
+                },
+                "responses": {
+                    "Unauthorized": {"description": "Unauthorized", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+                },
+                "securitySchemes": {
+                    "TokenAuth": {"type": "apiKey", "in": "header", "name": "Authorization", "description": "Use the format: Token <key>"},
+                    "SessionCookie": {"type": "apiKey", "in": "cookie", "name": state.config.auth.session.cookie_name},
+                    "CsrfToken": {"type": "apiKey", "in": "header", "name": "X-CSRF-Token"}
+                }
+            }
+        })
+    }
 }
 
 pub async fn auth_middleware(

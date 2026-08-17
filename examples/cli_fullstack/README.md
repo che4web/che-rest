@@ -63,7 +63,12 @@ cargo run
 ```
 
 The API is available at `http://127.0.0.1:3001`. CRUD routes are under `/api/tasks/`, Swagger UI is
-at `/api/`, and OpenAPI JSON is at `/api/openapi.json`.
+at `/api/`, and OpenAPI JSON is at `/api/openapi.json`. Swagger uses `/api` as the CRUD server base;
+the authentication paths remain at the root, such as `/api-session-auth/login/`.
+
+Use the session login operation in Swagger first. The browser keeps the session and CSRF cookies,
+and the Swagger request interceptor sends `X-CSRF-Token` automatically for write operations. Token
+authentication can be used through the `Authorize` dialog with the value `Token <key>`.
 
 ## HTTP CRUD
 

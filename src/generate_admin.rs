@@ -47,7 +47,7 @@ fn admin_schema(endpoints: &[ApiEndpoint]) -> String {
     out.push_str("} from \"../../generated/api\";\n\n");
     out.push_str("export type AdminFieldType = \"integer\" | \"text\" | \"boolean\" | \"real\" | \"datetime\";\n\n");
     out.push_str(
-        "export interface AdminField { name: string; source: string; type: AdminFieldType; label: string; readOnly: boolean; writeOnly: boolean; required: boolean; nullable: boolean; hasDefault: boolean; choices?: string[]; relatedModel?: string; relationField?: string; }\n\nexport interface AdminFilter { name: string; source: string; type: AdminFieldType; label: string; nullable: boolean; }\n\nexport interface AdminModelApi { list: (params?: any) => Promise<{ count: number; results: any[] }>; retrieve: (id: number) => Promise<any>; create: (payload: any) => Promise<any>; update: (id: number, payload: any) => Promise<any>; remove: (id: number) => Promise<void>; }\n\nexport interface AdminModel { appName: string; name: string; resource: string; api: AdminModelApi; fields: AdminField[]; filters: AdminFilter[]; }\nexport interface AdminApp { name: string; models: AdminModel[]; }\n\nexport const adminModels: AdminModel[] = [\n",
+        "export interface AdminField { name: string; source: string; type: AdminFieldType; label: string; readOnly: boolean; writeOnly: boolean; required: boolean; nullable: boolean; hasDefault: boolean; choices?: string[]; relatedModel?: string; relationField?: string; }\n\nexport interface AdminFilter { name: string; source: string; type: AdminFieldType; label: string; nullable: boolean; choices?: string[]; }\n\nexport interface AdminModelApi { list: (params?: any) => Promise<{ count: number; results: any[] }>; retrieve: (id: number) => Promise<any>; create: (payload: any) => Promise<any>; update: (id: number, payload: any) => Promise<any>; remove: (id: number) => Promise<void>; }\n\nexport interface AdminModel { appName: string; name: string; resource: string; api: AdminModelApi; fields: AdminField[]; filters: AdminFilter[]; }\nexport interface AdminApp { name: string; models: AdminModel[]; }\n\nexport const adminModels: AdminModel[] = [\n",
     );
     for endpoint in endpoints {
         out.push_str("  {\n");
@@ -84,12 +84,20 @@ fn admin_schema(endpoints: &[ApiEndpoint]) -> String {
                 crate::Lookup::Lte => "__lte",
             };
             let name = format!("{}{}", filter.name, suffix);
+            let choices = endpoint
+                .columns
+                .iter()
+                .find(|column| column.name == filter.source)
+                .and_then(|column| column.choices.as_ref())
+                .map(|choices| format!(", choices: {}", serde_json::to_string(choices).unwrap()))
+                .unwrap_or_default();
             out.push_str(&format!(
-                "      {{ name: {}, source: {}, type: {}, label: {}, nullable: false }},\n",
+                "      {{ name: {}, source: {}, type: {}, label: {}, nullable: false{} }},\n",
                 js(&name),
                 js(filter.source),
                 js(filter_type(filter.source)),
-                js(&label(&name))
+                js(&label(&name)),
+                choices
             ));
         }
         out.push_str("    ],\n  },\n");

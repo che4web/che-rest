@@ -25,6 +25,7 @@ export interface TaskUpdate {
 export interface TaskListParams extends ListParams {
   id?: number;
   name__contains?: string;
+  status?: "draft" | "in_progress" | "done";
   created_at?: string;
   updated_at?: string;
 }

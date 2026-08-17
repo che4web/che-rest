@@ -6,7 +6,7 @@
 
 * { box-sizing: border-box; }
 body { margin: 0; }
-button, input { font: inherit; }
+button, input, select { font: inherit; }
 button { cursor: pointer; }
 
 .shell { max-width: 880px; margin: 0 auto; padding: 9vh 24px 64px; }
@@ -21,8 +21,8 @@ h2 { font-size: 2rem; }
 .login-card p { color: #657268; }
 form { display: grid; gap: 14px; }
 label { display: grid; gap: 6px; font-weight: 600; }
-input { width: 100%; border: 1px solid #bfc9be; border-radius: 9px; background: #fff; padding: 11px 12px; }
-input:focus { border-color: #2d6951; outline: 3px solid #cde4d5; }
+input, select { width: 100%; border: 1px solid #bfc9be; border-radius: 9px; background: #fff; padding: 11px 12px; }
+input:focus, select:focus { border-color: #2d6951; outline: 3px solid #cde4d5; }
 button { border: 0; border-radius: 9px; background: #1e5a43; color: #fff; padding: 11px 15px; font-weight: 700; }
 button:hover { background: #174934; }
 button:disabled { cursor: wait; opacity: 0.65; }
@@ -30,12 +30,16 @@ button:disabled { cursor: wait; opacity: 0.65; }
 .quiet:hover { background: #e7f0e9; }
 .board-header, .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .board-header { margin-bottom: 24px; }
-.composer { grid-template-columns: 1fr auto; margin-bottom: 18px; }
+.composer { grid-template-columns: 1fr auto auto; margin-bottom: 18px; }
 .toolbar { padding-top: 18px; border-top: 1px solid #e1e5df; }
 .toolbar input { max-width: 320px; }
 .task-list { margin: 24px 0 0; padding: 0; list-style: none; border-top: 1px solid #e1e5df; }
 .task-list li { display: grid; grid-template-columns: 56px 1fr auto; align-items: center; gap: 12px; border-bottom: 1px solid #e1e5df; padding: 16px 2px; }
 .task-id, small { color: #718077; }
+.status-badge { border-radius: 999px; padding: 4px 8px; font-size: 0.75rem; font-weight: 700; }
+.status-draft { background: #eef1ed; color: #5e6d63; }
+.status-in_progress { background: #fff1cf; color: #8a5c00; }
+.status-done { background: #dff1e3; color: #24623b; }
 .empty { display: block !important; color: #718077; text-align: center; }
 .error { color: #a72f2f; font-weight: 600; }
 

@@ -25,6 +25,6 @@ pub use module::{AppModule, InstalledApps, ModuleContext, Server};
 pub use project::{StartProjectOptions, startproject};
 pub use rest::{
     AllowAny, CrudViewSet, Filter, FilterError, FilterSet, FilterSetSpec, FilterValue, Lookup,
-    Permission, RestQuerySet, ViewAction, ViewSet, openapi_json_for, router,
+    Permission, RestQuerySet, ViewAction, ViewSet, openapi_column_schema, openapi_json_for, router,
 };
 pub use state::AppState;

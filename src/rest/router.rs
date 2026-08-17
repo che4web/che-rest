@@ -178,6 +178,9 @@ impl<M: Model> Filter<M> {
     pub const fn exact<T: FilterValue>(field: ModelField<M, T>) -> Self {
         Self::typed(field, Lookup::Exact, apply_exact::<M, T>)
     }
+    pub const fn exact_enum<T: che_orm2::DbEnum>(field: ModelField<M, T>) -> Self {
+        Self::typed_enum(field, apply_enum_exact::<M, T>)
+    }
     pub const fn contains(field: ModelField<M, String>) -> Self {
         Self::typed(field, Lookup::Contains, apply_contains::<M>)
     }
@@ -203,6 +206,16 @@ impl<M: Model> Filter<M> {
             name: field.column().name,
             source: field.column().name,
             lookup,
+            apply,
+            order: apply_order::<M, T>,
+            _marker: PhantomData,
+        }
+    }
+    const fn typed_enum<T: che_orm2::DbEnum>(field: ModelField<M, T>, apply: Apply) -> Self {
+        Self {
+            name: field.column().name,
+            source: field.column().name,
+            lookup: Lookup::Exact,
             apply,
             order: apply_order::<M, T>,
             _marker: PhantomData,
@@ -306,6 +319,16 @@ fn apply_exact<M: Model, T: FilterValue>(
     value: &str,
 ) -> Result<che_orm2::Expr, FilterError> {
     Ok(ModelField::<M, T>::new(M::table_name(), field).eq(T::parse(value)?))
+}
+fn apply_enum_exact<M: Model, T: che_orm2::DbEnum>(
+    field: &'static str,
+    value: &str,
+) -> Result<che_orm2::Expr, FilterError> {
+    let parsed = T::from_str(value).ok_or(FilterError::InvalidValue {
+        field: String::new(),
+        expected: "enum value",
+    })?;
+    Ok(ModelField::<M, T>::new(M::table_name(), field).eq(parsed))
 }
 fn apply_contains<M: Model>(
     field: &'static str,
@@ -657,23 +680,127 @@ where
     M: Model,
     S: ModelSerializer<Model = M> + ModelWriteSerializer<Model = M> + Serialize,
 {
-    let response = format!(
-        "{}Response",
-        std::any::type_name::<S>()
-            .rsplit("::")
-            .next()
-            .unwrap_or("Model")
-    );
-    let mut properties = serde_json::Map::new();
+    let serializer_name = std::any::type_name::<S>()
+        .rsplit("::")
+        .next()
+        .unwrap_or("Serializer");
+    let response = format!("{serializer_name}Response");
+    let create = format!("{serializer_name}Create");
+    let update = format!("{serializer_name}Update");
+    let patch = format!("{serializer_name}Patch");
+    let list = format!("{serializer_name}List");
+    let schema = M::schema();
+    let mut response_properties = serde_json::Map::new();
+    let mut create_properties = serde_json::Map::new();
+    let mut update_properties = serde_json::Map::new();
+    let mut patch_properties = serde_json::Map::new();
+    let mut response_required = Vec::new();
+    let mut create_required = Vec::new();
+    let mut update_required = Vec::new();
     for field in S::fields() {
-        properties.insert(field.name.to_owned(), json!({"type": "string"}));
+        let column = schema
+            .columns
+            .iter()
+            .find(|column| column.name == field.source);
+        let property = column
+            .map(openapi_column_schema)
+            .unwrap_or_else(|| json!({"type": "object"}));
+        let property = if field.related_model.is_some() {
+            json!({"type": "object"})
+        } else {
+            property
+        };
+        if !field.write_only {
+            response_properties.insert(field.name.to_owned(), property.clone());
+            if column.is_some_and(|column| !column.nullable) {
+                response_required.push(field.name.to_owned());
+            }
+        }
+        if !field.read_only && field.related_model.is_none() {
+            create_properties.insert(field.name.to_owned(), property.clone());
+            update_properties.insert(field.name.to_owned(), property.clone());
+            patch_properties.insert(field.name.to_owned(), property);
+            if column.is_some_and(|column| {
+                !column.nullable
+                    && column.default.is_none()
+                    && !column.auto_now
+                    && !column.auto_now_add
+            }) {
+                create_required.push(field.name.to_owned());
+                update_required.push(field.name.to_owned());
+            }
+        }
     }
-    let schema = json!({"type":"object", "properties": properties});
-    let path = path.trim_end_matches('/');
-    json!({"openapi":"3.0.3", "info":{"title":"che-rest API","version":"0.1.0"}, "paths": {
-        format!("{path}/"): {"get":{"responses":{"200":{"description":"OK"}}}, "post":{"responses":{"201":{"description":"Created"}}}},
-        format!("{path}/{{id}}/"): {"get":{"responses":{"200":{"description":"OK"}}}, "patch":{"responses":{"200":{"description":"OK"}}}, "delete":{"responses":{"204":{"description":"No Content"}}}}
-    }, "components":{"schemas":{response:schema}}})
+    let response_schema = object_schema(response_properties, response_required);
+    let create_schema = object_schema(create_properties, create_required);
+    let update_schema = object_schema(update_properties, update_required);
+    let patch_schema = object_schema(patch_properties, Vec::new());
+    let error = schema_ref("Error");
+    let collection = format!("{}/", path.trim_end_matches('/'));
+    let detail = format!("{collection}{{id}}/");
+    json!({
+        "openapi": "3.0.3",
+        "info": {"title": "che-rest API", "version": "0.1.0"},
+        "paths": {
+            collection: {
+                "get": {"responses": {"200": {"description": "OK", "content": {"application/json": {"schema": schema_ref(&list)}}}}},
+                "post": {"security": [{"TokenAuth": []}, {"SessionCookie": [], "CsrfToken": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": schema_ref(&create)}}}, "responses": {"201": response_with_ref(&response), "400": response_with_ref_value(&error), "401": response_with_ref_value(&error), "403": response_with_ref_value(&error)}}
+            },
+            detail: {
+                "get": {"responses": {"200": response_with_ref(&response), "401": response_with_ref_value(&error), "403": response_with_ref_value(&error), "404": response_with_ref_value(&error)}},
+                "put": {"security": [{"TokenAuth": []}, {"SessionCookie": [], "CsrfToken": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": schema_ref(&update)}}}, "responses": {"200": response_with_ref(&response), "400": response_with_ref_value(&error), "401": response_with_ref_value(&error), "403": response_with_ref_value(&error), "404": response_with_ref_value(&error)}},
+                "patch": {"security": [{"TokenAuth": []}, {"SessionCookie": [], "CsrfToken": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": schema_ref(&patch)}}}, "responses": {"200": response_with_ref(&response), "400": response_with_ref_value(&error), "401": response_with_ref_value(&error), "403": response_with_ref_value(&error), "404": response_with_ref_value(&error)}},
+                "delete": {"security": [{"TokenAuth": []}, {"SessionCookie": [], "CsrfToken": []}], "responses": {"204": {"description": "No Content"}, "401": response_with_ref_value(&error), "403": response_with_ref_value(&error), "404": response_with_ref_value(&error)}}
+            }
+        },
+        "components": {"schemas": {
+            response.clone(): response_schema,
+            create: create_schema,
+            update: update_schema,
+            patch: patch_schema,
+            list: {"type": "object", "required": ["count", "results"], "properties": {"count": {"type": "integer"}, "results": {"type": "array", "items": schema_ref(&response)}}},
+            "Error": {"type": "object", "required": ["detail"], "properties": {"detail": {"type": "string"}}}
+        }}
+    })
+}
+
+fn response_with_ref(name: &str) -> serde_json::Value {
+    json!({"description": "OK", "content": {"application/json": {"schema": schema_ref(name)}}})
+}
+
+fn response_with_ref_value(reference: &serde_json::Value) -> serde_json::Value {
+    json!({"description": "Error", "content": {"application/json": {"schema": reference}}})
+}
+
+fn object_schema(
+    properties: serde_json::Map<String, serde_json::Value>,
+    required: Vec<String>,
+) -> serde_json::Value {
+    let mut schema = json!({"type": "object", "properties": properties});
+    if !required.is_empty() {
+        schema["required"] = json!(required);
+    }
+    schema
+}
+
+fn schema_ref(name: &str) -> serde_json::Value {
+    json!({"$ref": format!("#/components/schemas/{name}")})
+}
+
+pub fn openapi_column_schema(column: &che_orm2::ColumnSchema) -> serde_json::Value {
+    let mut schema = match column.column_type {
+        che_orm2::ColumnType::Integer => json!({"type": "integer", "format": "int64"}),
+        che_orm2::ColumnType::Text => json!({"type": "string"}),
+        che_orm2::ColumnType::Boolean => json!({"type": "boolean"}),
+        che_orm2::ColumnType::DateTime => json!({"type": "string", "format": "date-time"}),
+    };
+    if let Some(choices) = &column.choices {
+        schema["enum"] = json!(choices);
+    }
+    if column.nullable {
+        schema["nullable"] = json!(true);
+    }
+    schema
 }
 
 fn user(ext: &Option<Extension<CurrentUser>>) -> Option<&CurrentUser> {

@@ -99,7 +99,7 @@ fn models(endpoints: &[ApiEndpoint]) -> String {
                 "  {}{}?: {};\n",
                 filter.name,
                 suffix,
-                filter_ts_type(filter.source)
+                filter_ts_type(endpoint, filter.source)
             ));
         }
         out.push_str("}\n\n");
@@ -173,11 +173,23 @@ fn field_ts_type(endpoint: &ApiEndpoint, field: &che_orm2::SerializerField) -> S
     }
 }
 
-fn filter_ts_type(source: &str) -> &'static str {
+fn filter_ts_type(endpoint: &ApiEndpoint, source: &str) -> String {
+    if let Some(choices) = endpoint
+        .columns
+        .iter()
+        .find(|column| column.name == source)
+        .and_then(|column| column.choices.as_ref())
+    {
+        return choices
+            .iter()
+            .map(|choice| serde_json::to_string(choice).unwrap())
+            .collect::<Vec<_>>()
+            .join(" | ");
+    }
     if source.ends_with("id") || source == "id" {
-        "number"
+        "number".into()
     } else {
-        "string"
+        "string".into()
     }
 }
 
@@ -437,11 +449,18 @@ mod tests {
                 has_default: false,
                 choices: Some(vec!["draft", "in_progress", "done"]),
             }],
-            filters: vec![crate::module::ApiFilter {
-                name: "name",
-                source: "name",
-                lookup: Lookup::Contains,
-            }],
+            filters: vec![
+                crate::module::ApiFilter {
+                    name: "name",
+                    source: "name",
+                    lookup: Lookup::Contains,
+                },
+                crate::module::ApiFilter {
+                    name: "status",
+                    source: "status",
+                    lookup: Lookup::Exact,
+                },
+            ],
         };
 
         let generated = models(&[endpoint]);
@@ -449,6 +468,7 @@ mod tests {
         assert!(generated.contains("name: string;"));
         assert!(generated.contains("status: \"draft\" | \"in_progress\" | \"done\";"));
         assert!(generated.contains("name__contains?: string;"));
+        assert!(generated.contains("status?: \"draft\" | \"in_progress\" | \"done\";"));
         assert!(!generated.contains("id: number;\n}\n\nexport interface TaskCreate"));
     }
 

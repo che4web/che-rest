@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use axum::{Json, Router, routing::get};
+use axum::{Json, Router, response::Html, routing::get};
 use che_orm2::SchemaSet;
 use serde_json::{Map, Value, json};
 
 use crate::{
     AppError, AppResult, AppState, CrudViewSet, FilterSetSpec, Model, ModelSerializer, ViewSet,
-    openapi_json_for, router,
+    openapi_column_schema, openapi_json_for, router,
 };
 
 pub trait AppModule: Send + Sync + 'static {
@@ -17,6 +17,9 @@ pub trait AppModule: Send + Sync + 'static {
     fn start(&self, _state: &AppState) {}
     fn middleware(&self, router: Router, _state: &AppState) -> Router {
         router
+    }
+    fn openapi(&self, _state: &AppState) -> Value {
+        json!({})
     }
 }
 
@@ -167,6 +170,7 @@ impl ModuleContext {
             .expect("module context is not initialized");
         let document = openapi_json_for::<V::Model, V::Serializer>(path);
         let mut document = document;
+        add_filter_parameters::<V>(&mut document, &viewset);
         if let Some(action_paths) = viewset
             .openapi_actions()
             .get("paths")
@@ -282,11 +286,40 @@ impl Server {
             root = root.merge(route);
         }
 
+        let mut openapi_paths = context.openapi_paths;
+        let mut openapi_components = Map::new();
+        openapi_components.insert(
+            "schemas".to_owned(),
+            Value::Object(context.openapi_components),
+        );
+        for module in self.apps.iter() {
+            let metadata = module.openapi(&self.state);
+            if let Some(paths) = metadata.get("paths").and_then(Value::as_object) {
+                openapi_paths.extend(paths.clone());
+            }
+            if let Some(components) = metadata.get("components").and_then(Value::as_object) {
+                for (name, values) in components {
+                    if name == "schemas" {
+                        if let Some(target) = openapi_components
+                            .get_mut("schemas")
+                            .and_then(Value::as_object_mut)
+                        {
+                            if let Some(values) = values.as_object() {
+                                target.extend(values.clone());
+                            }
+                        }
+                    } else {
+                        openapi_components.insert(name.clone(), values.clone());
+                    }
+                }
+            }
+        }
         let openapi = json!({
             "openapi": "3.0.3",
             "info": { "title": "che-rest API", "version": "0.1.0" },
-            "paths": context.openapi_paths,
-            "components": { "schemas": context.openapi_components },
+            "servers": [{"url": self.api_prefix.clone()}],
+            "paths": openapi_paths,
+            "components": openapi_components,
         });
         api = api.route(
             "/openapi.json",
@@ -301,10 +334,100 @@ impl Server {
         }
 
         root = root.nest(&self.api_prefix, api);
+        let swagger_html = swagger_html(&self.state.config.auth.session.csrf_cookie_name);
+        root = root.route(
+            &format!("{}/", self.api_prefix.trim_end_matches('/')),
+            get(move || {
+                let html = swagger_html.clone();
+                async move { Html(html) }
+            }),
+        );
         for module in self.apps.iter() {
             root = module.middleware(root, &self.state);
         }
 
         Ok(root.layer(axum::Extension(self.state)))
     }
+}
+
+fn swagger_html(csrf_cookie_name: &str) -> String {
+    format!(
+        r##"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>che-rest API</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>
+    window.ui = SwaggerUIBundle({{
+      url: "./openapi.json",
+      dom_id: "#swagger-ui",
+      withCredentials: true,
+      requestInterceptor: (request) => {{
+        if (["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) {{
+          const token = document.cookie.split("; ").find((cookie) => cookie.startsWith("{csrf_cookie_name}="));
+          if (token) request.headers["X-CSRF-Token"] = token.split("=").slice(1).join("=");
+        }}
+        return request;
+      }}
+    }});
+  </script>
+</body>
+</html>"##
+    )
+}
+
+fn add_filter_parameters<V: ViewSet>(document: &mut Value, viewset: &V) {
+    let Some(parameters) = document
+        .get_mut("paths")
+        .and_then(Value::as_object_mut)
+        .and_then(|paths| paths.values_mut().next())
+        .and_then(Value::as_object_mut)
+        .and_then(|path| path.get_mut("get"))
+        .and_then(Value::as_object_mut)
+        .map(|get| get.entry("parameters").or_insert_with(|| json!([])))
+    else {
+        return;
+    };
+    let Some(parameters) = parameters.as_array_mut() else {
+        return;
+    };
+    for filter in viewset.filterset().filters().iter() {
+        let name = match filter.lookup() {
+            crate::Lookup::Exact => filter.name.to_owned(),
+            crate::Lookup::Contains => return_filter_name(filter.name, "__contains"),
+            crate::Lookup::Gt => return_filter_name(filter.name, "__gt"),
+            crate::Lookup::Gte => return_filter_name(filter.name, "__gte"),
+            crate::Lookup::Lt => return_filter_name(filter.name, "__lt"),
+            crate::Lookup::Lte => return_filter_name(filter.name, "__lte"),
+        };
+        let model_schema = V::Model::schema();
+        let column = model_schema
+            .columns
+            .iter()
+            .find(|column| column.name == filter.source());
+        let mut schema = column
+            .map(openapi_column_schema)
+            .unwrap_or_else(|| json!({"type": "string"}));
+        schema["nullable"] = json!(false);
+        parameters.push(json!({"name": name, "in": "query", "required": false, "schema": schema}));
+    }
+    parameters.push(
+        json!({"name": "limit", "in": "query", "required": false, "schema": {"type": "integer"}}),
+    );
+    parameters.push(
+        json!({"name": "offset", "in": "query", "required": false, "schema": {"type": "integer"}}),
+    );
+    parameters.push(
+        json!({"name": "ordering", "in": "query", "required": false, "schema": {"type": "string"}}),
+    );
+}
+
+fn return_filter_name(name: &'static str, suffix: &str) -> String {
+    format!("{name}{suffix}")
 }

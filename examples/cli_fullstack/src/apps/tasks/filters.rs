@@ -8,6 +8,7 @@ pub struct TaskFilterSet;
 static TASK_FILTERS: &[Filter<Task>] = &[
     Filter::exact(Task::ID),
     Filter::contains(Task::NAME),
+    Filter::exact_enum(Task::STATUS),
     Filter::exact(Task::CREATED_AT),
     Filter::exact(Task::UPDATED_AT),
 ];
