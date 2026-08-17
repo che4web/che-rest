@@ -133,6 +133,9 @@ Generate the TypeScript client:
 cargo run --bin manage -- generate-ts --out frontend/client/src/generated
 ```
 
+The command reads installed app and viewset metadata, including nested `Task.author` fields and the
+task list filter/order keys.
+
 Use the generated WebSocket client:
 
 ```typescript

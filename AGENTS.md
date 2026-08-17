@@ -20,7 +20,7 @@
 - Nested serializer fields must name the generated relation marker, for example `#[serializer(one = User, relation = TaskAuthorRelation)]`; the viewset queryset must use the matching `select_related`/`prefetch_related` query type.
 - In `examples/cli_fullstack`, `Task.author` is a read-only nested `User`; `Task::AUTHOR_ID` is assigned in `prepare_create` from `CurrentUser`, so clients must submit only task fields.
 - Installing `che_rest::auth::module()` enables token auth middleware for all routes under the API prefix and separately adds `/api-token-auth/` outside the prefix.
-- Management migrations default to project app files under `src/apps/<app>/migrations`; for app `auth`, migration application falls back to this crate's `src/auth/migrations` if the downstream project has no auth migration dir.
+- Management migrations use the project-level Atlas directory `migrations/`; `makemigrations` derives it from all installed app schemas and `migrate` applies it.
 - Config loading only reads TOML shape `[database] url = "..."`; management commands can override with `--database-url`.
 - `generate-ts` writes `api_client.ts`, `channels.ts`, `models.ts`, `api.ts`, `useModelList.ts`, and `useModelItem.ts`; `generate-admin` writes Vue admin files and the same generated client files under `src/generated/`. These outputs are produced from installed app metadata, not by scanning source files.
 - `generate-admin` now creates a standalone Vite/Vue/Bootstrap project under `frontend/admin` by default. Re-running without `--force` updates only generated files and creates missing `src/admin/pages/<Model>{List,Form}.vue` wrappers; existing Vue/CSS/config/page files are preserved for user customization. Use `--force` to overwrite static templates and model pages.

@@ -218,6 +218,14 @@ impl<M: Model> Filter<M> {
             Lookup::Lte => name == format!("{}__lte", self.name),
         }
     }
+
+    pub const fn source(&self) -> &'static str {
+        self.source
+    }
+
+    pub const fn lookup(&self) -> Lookup {
+        self.lookup
+    }
 }
 
 pub trait FilterSetSpec: Clone + Send + Sync + 'static {

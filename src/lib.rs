@@ -3,6 +3,7 @@ pub mod auth;
 pub mod channels;
 pub mod config;
 pub mod error;
+pub mod generate_ts;
 pub mod management;
 pub mod module;
 pub mod project;

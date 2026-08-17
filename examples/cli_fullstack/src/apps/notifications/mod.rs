@@ -17,8 +17,7 @@ impl AppModule for NotificationsModule {
         che_orm2::SchemaSet::new().model::<models::Notification>()
     }
 
-    fn init(&self, _context: &mut ModuleContext) {
-    }
+    fn init(&self, _context: &mut ModuleContext) {}
 
     fn subscribe(&self, state: &AppState) {
         let mut events = state.app_channels().subscribe("tasks.created");

@@ -5,8 +5,8 @@ use che_orm2::SchemaSet;
 use serde_json::{Map, Value, json};
 
 use crate::{
-    AppError, AppResult, AppState, CrudViewSet, Model, ModelSerializer, ViewSet, openapi_json_for,
-    router,
+    AppError, AppResult, AppState, CrudViewSet, FilterSetSpec, Model, ModelSerializer, ViewSet,
+    openapi_json_for, router,
 };
 
 pub trait AppModule: Send + Sync + 'static {
@@ -18,6 +18,22 @@ pub trait AppModule: Send + Sync + 'static {
     fn middleware(&self, router: Router, _state: &AppState) -> Router {
         router
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct ApiEndpoint {
+    pub app_name: &'static str,
+    pub model_name: String,
+    pub resource: String,
+    pub fields: Vec<che_orm2::SerializerField>,
+    pub filters: Vec<ApiFilter>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ApiFilter {
+    pub name: &'static str,
+    pub source: &'static str,
+    pub lookup: crate::Lookup,
 }
 
 #[derive(Default)]
@@ -46,6 +62,15 @@ impl InstalledApps {
     pub fn names(&self) -> impl Iterator<Item = &'static str> + '_ {
         self.iter().map(AppModule::name)
     }
+
+    pub fn api_endpoints(&self, state: AppState) -> Vec<ApiEndpoint> {
+        let mut context = ModuleContext::new(state);
+        for module in self.iter() {
+            context.current_app = module.name();
+            module.init(&mut context);
+        }
+        context.api_endpoints
+    }
 }
 
 #[derive(Default)]
@@ -56,6 +81,8 @@ pub struct ModuleContext {
     schemas: Vec<SchemaSet>,
     openapi_paths: Map<String, Value>,
     openapi_components: Map<String, Value>,
+    api_endpoints: Vec<ApiEndpoint>,
+    current_app: &'static str,
 }
 
 impl ModuleContext {
@@ -96,6 +123,25 @@ impl ModuleContext {
         V: ViewSet,
         V::Serializer: serde::Serialize,
     {
+        self.api_endpoints.push(ApiEndpoint {
+            app_name: self.current_app,
+            model_name: std::any::type_name::<V::Model>()
+                .rsplit("::")
+                .next()
+                .unwrap_or("Model")
+                .to_owned(),
+            resource: path.trim_matches('/').to_owned(),
+            fields: V::Serializer::fields().to_vec(),
+            filters: V::FilterSet::default()
+                .filters()
+                .iter()
+                .map(|filter| ApiFilter {
+                    name: filter.name,
+                    source: filter.source(),
+                    lookup: filter.lookup(),
+                })
+                .collect(),
+        });
         let state = self
             .state
             .as_ref()
@@ -125,6 +171,10 @@ impl ModuleContext {
             .iter()
             .cloned()
             .fold(SchemaSet::new(), SchemaSet::merge)
+    }
+
+    pub fn api_endpoints(&self) -> &[ApiEndpoint] {
+        &self.api_endpoints
     }
 }
 
@@ -196,6 +246,7 @@ impl Server {
         let mut context = ModuleContext::new(self.state.clone());
         for module in self.apps.iter() {
             context.schemas.push(module.schema());
+            context.current_app = module.name();
             module.init(&mut context);
         }
 

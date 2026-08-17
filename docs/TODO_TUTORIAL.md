@@ -77,8 +77,8 @@ cargo run --bin manage -- makemigrations
 cargo run --bin manage -- migrate
 ```
 
-Migrations are stored in `src/apps/tasks/migrations/`. Run these commands after every model schema
-change; starting the server does not create tables.
+Migrations are stored in the project-level `migrations/` directory. Run these commands after every
+model schema change; starting the server does not create tables.
 
 ## 4. Start The API
 

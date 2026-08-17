@@ -322,6 +322,16 @@ Authentication is optional at the middleware level. Protect a typed viewset by s
 `type Permission = IsAuthenticated`; unauthenticated requests then receive `401`. Use
 `AllowAny` for public viewsets and `IsAdminUser` for administrator-only viewsets.
 
+Generate the typed TypeScript client from installed app metadata:
+
+```bash
+cargo run --bin manage -- generate-ts --out frontend/client/src/generated
+```
+
+The generator writes `api_client.ts`, `channels.ts`, `models.ts`, `api.ts`, `useModelList.ts`, and
+`useModelItem.ts`; it also writes `auth.ts` when the auth app is installed. It does not scan Rust
+source files or require the HTTP server to be running.
+
 Generated TypeScript clients expose `setAuthToken(token)` in `api_client.ts`.
 
 ## WebSocket Channels
@@ -703,39 +713,24 @@ Defaults:
 --name auto
 ```
 
-`makemigrations` without an app argument processes all installed apps. Pass an app name to limit
-generation to one app:
+`makemigrations` processes the schemas of all installed apps and writes one Atlas migration to the
+project-level `migrations/` directory:
 
 ```bash
 cargo run --bin manage -- makemigrations
-cargo run --bin manage -- makemigrations users
 ```
 
 Generated migrations are stored under:
 
 ```text
-src/apps/users/migrations/
+migrations/
 ```
 
-Migration versions are local to each app, so every app can begin at `0001`.
-`migrate` applies them with the installed app name as a stable namespace; do
-not rename an installed app after its migrations have been deployed.
-
-Apply migrations for one app. The database URL is read from `[database].url` in `app.toml`:
-
-```bash
-cargo run --bin manage -- migrate users
-```
-
-Apply migrations for all installed apps:
+The database URL is read from `[database].url` in `app.toml`. Apply all project migrations with:
 
 ```bash
 cargo run --bin manage -- migrate
 ```
 
-You can override the config database URL:
-
-```bash
-cargo run --bin manage -- migrate users \
-  --database-url sqlite://db.sqlite?mode=rwc
-```
+Do not create model tables from application startup; production servers only apply already-created
+Atlas migrations.

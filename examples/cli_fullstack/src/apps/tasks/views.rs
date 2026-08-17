@@ -17,8 +17,7 @@ impl ViewSet for TaskViewSet {
     type Permission = AllowAny;
 
     fn get_queryset(&self) -> Self::QuerySet {
-        che_orm2::DatabaseQuery::new(Task::query())
-            .select_related(Task::AUTHOR)
+        che_orm2::DatabaseQuery::new(Task::query()).select_related(Task::AUTHOR)
     }
 
     fn prepare_create(
@@ -27,7 +26,8 @@ impl ViewSet for TaskViewSet {
         user: Option<&CurrentUser>,
         write: che_rest::ValidatedWrite<Self::Model>,
     ) -> che_rest::AppResult<che_rest::ValidatedWrite<Self::Model>> {
-        let user = user.ok_or_else(|| che_rest::AppError::Unauthorized("authentication required".into()))?;
+        let user =
+            user.ok_or_else(|| che_rest::AppError::Unauthorized("authentication required".into()))?;
         Ok(write.set(Task::AUTHOR_ID, user.id))
     }
 

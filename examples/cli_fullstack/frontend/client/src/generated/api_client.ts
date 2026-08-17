@@ -3,91 +3,27 @@
 
 import axios from "axios";
 
-export interface BaseEntity {
-  id?: number;
-}
-
-export interface ListParams {
-  ordering?: string;
-  limit?: number;
-  offset?: number;
-  [key: string]: string | number | boolean | null | undefined;
-}
-
-export interface PaginatedResponse<T> {
-  count: number;
-  results: T[];
-}
-
-export interface ModelApi<
-  T extends BaseEntity,
-  CreateDTO = Partial<T>,
-  UpdateDTO = Partial<T>,
-  Params extends ListParams = ListParams,
-> {
+export interface BaseEntity { id?: number; }
+export interface ListParams { ordering?: string; limit?: number; offset?: number; [key: string]: string | number | boolean | null | undefined; }
+export interface PaginatedResponse<T> { count: number; results: T[]; }
+export interface ModelApi<T extends BaseEntity, CreateDTO = Partial<T>, UpdateDTO = Partial<T>, Params extends ListParams = ListParams> {
   list: (params?: Params) => Promise<PaginatedResponse<T>>;
   retrieve: (id: number) => Promise<T>;
   create: (payload: CreateDTO) => Promise<T>;
   update: (id: number, payload: UpdateDTO) => Promise<T>;
   remove: (id: number) => Promise<void>;
 }
-
-export const apiClient = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL ?? "/api",
-  withCredentials: true,
-  xsrfCookieName: "csrf_token",
-  xsrfHeaderName: "X-CSRF-Token",
-  headers: {
-    "Content-Type": "application/json",
-  },
-});
-
+ export const apiClient = axios.create({ baseURL: import.meta.env.VITE_API_BASE_URL ?? "/api", withCredentials: true, xsrfCookieName: "csrf_token", xsrfHeaderName: "X-CSRF-Token", headers: { "Content-Type": "application/json" } });
 let authToken: string | null = null;
-
-export function setAuthToken(token: string | null) {
-  authToken = token;
-}
-
-apiClient.interceptors.request.use((config) => {
-  if (authToken) {
-    config.headers.Authorization = `Token ${authToken}`;
-  } else {
-    delete config.headers.Authorization;
-  }
-  return config;
-});
-
-export function createModelApi<
-  T extends BaseEntity,
-  CreateDTO = Partial<T>,
-  UpdateDTO = Partial<T>,
-  Params extends ListParams = ListParams,
->(resource: string): ModelApi<T, CreateDTO, UpdateDTO, Params> {
+export function setAuthToken(token: string | null) { authToken = token; }
+apiClient.interceptors.request.use((config) => { if (authToken) config.headers.Authorization = `Token ${authToken}`; else delete config.headers.Authorization; return config; });
+export function createModelApi<T extends BaseEntity, CreateDTO = Partial<T>, UpdateDTO = Partial<T>, Params extends ListParams = ListParams>(resource: string): ModelApi<T, CreateDTO, UpdateDTO, Params> {
   const normalized = resource.endsWith("/") ? resource : `${resource}/`;
-
   return {
-    async list(params) {
-      const response = await apiClient.get<PaginatedResponse<T>>(normalized, { params });
-      return response.data;
-    },
-
-    async retrieve(id) {
-      const response = await apiClient.get<T>(`${normalized}${id}/`);
-      return response.data;
-    },
-
-    async create(payload) {
-      const response = await apiClient.post<T>(normalized, payload);
-      return response.data;
-    },
-
-    async update(id, payload) {
-      const response = await apiClient.patch<T>(`${normalized}${id}/`, payload);
-      return response.data;
-    },
-
-    async remove(id) {
-      await apiClient.delete(`${normalized}${id}/`);
-    },
+    async list(params) { return (await apiClient.get<PaginatedResponse<T>>(normalized, { params })).data; },
+    async retrieve(id) { return (await apiClient.get<T>(`${normalized}${id}/`)).data; },
+    async create(payload) { return (await apiClient.post<T>(normalized, payload)).data; },
+    async update(id, payload) { return (await apiClient.patch<T>(`${normalized}${id}/`, payload)).data; },
+    async remove(id) { await apiClient.delete(`${normalized}${id}/`); },
   };
 }

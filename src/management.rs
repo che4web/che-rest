@@ -5,7 +5,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use che_orm2::{Model, SchemaSet, SqliteDialect};
+use che_orm2::{Database, Model, SchemaSet, SqliteDialect};
 use clap::{Parser, Subcommand};
 
 use crate::auth::{User, hash_password};
@@ -41,6 +41,12 @@ enum CommandKind {
         username: String,
         #[arg(long)]
         password: String,
+        #[arg(long, default_value = "app.toml")]
+        config: PathBuf,
+    },
+    GenerateTs {
+        #[arg(long, default_value = "frontend/client/src/generated")]
+        out: PathBuf,
         #[arg(long, default_value = "app.toml")]
         config: PathBuf,
     },
@@ -119,6 +125,17 @@ impl Management {
                 password,
                 config,
             } => create_superuser(username, password, config).await?,
+            CommandKind::GenerateTs { out, config } => {
+                AppConfig::from_file(config)?;
+                let state = AppState::from_database(Database::connect_in_memory()?);
+                let endpoints = self.apps.api_endpoints(state);
+                let files = crate::generate_ts::generate(
+                    &out,
+                    &endpoints,
+                    self.apps.find("auth").is_some(),
+                )?;
+                println!("generated {} files in {}", files.len(), out.display());
+            }
         }
         Ok(())
     }

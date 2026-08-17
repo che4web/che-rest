@@ -3,11 +3,6 @@
 
 import type { ListParams } from "./api_client";
 
-export interface User {
-  id: number;
-  [key: string]: unknown;
-}
-
 export interface Task {
   id: number;
   author: User;
@@ -25,7 +20,13 @@ export interface TaskUpdate {
 }
 
 export interface TaskListParams extends ListParams {
-  name?: string;
+  id?: number;
   name__contains?: string;
   created_at?: string;
+  updated_at?: string;
+}
+
+export interface User {
+  id: number;
+  [key: string]: unknown;
 }

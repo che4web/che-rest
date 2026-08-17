@@ -3,61 +3,32 @@
 
 import axios from "axios";
 
-export interface LoginRequest {
-  username: string;
-  password: string;
-}
-
-export interface AuthUser {
-  id: number;
-  username: string;
-  is_staff: boolean;
-  is_admin: boolean;
-  is_superuser: boolean;
-}
-
-export interface SessionLoginResponse {
-  user: AuthUser;
-}
-
-export interface SessionMeResponse {
-  user: AuthUser;
-  data: unknown;
-}
-
-export interface TokenLoginResponse {
-  token: string;
-}
+export interface LoginRequest { username: string; password: string; }
+export interface AuthUser { id: number; username: string; is_staff: boolean; is_admin: boolean; is_superuser: boolean; }
+export interface SessionLoginResponse { user: AuthUser; }
+export interface SessionMeResponse { user: AuthUser; data: unknown; }
+export interface TokenLoginResponse { token: string; }
 
 const authClient = axios.create({
   baseURL: import.meta.env.VITE_AUTH_BASE_URL ?? "",
   withCredentials: true,
   xsrfCookieName: "csrf_token",
   xsrfHeaderName: "X-CSRF-Token",
-  headers: {
-    "Content-Type": "application/json",
-  },
+  headers: { "Content-Type": "application/json" },
 });
 
 export const sessionAuth = {
   async login(payload: LoginRequest): Promise<SessionLoginResponse> {
-    const response = await authClient.post<SessionLoginResponse>("/api-session-auth/login/", payload);
-    return response.data;
+    return (await authClient.post<SessionLoginResponse>("/api-session-auth/login/", payload)).data;
   },
-
-  async logout(): Promise<void> {
-    await authClient.post("/api-session-auth/logout/");
-  },
-
+  async logout(): Promise<void> { await authClient.post("/api-session-auth/logout/"); },
   async me(): Promise<SessionMeResponse> {
-    const response = await authClient.get<SessionMeResponse>("/api-session-auth/me/");
-    return response.data;
+    return (await authClient.get<SessionMeResponse>("/api-session-auth/me/")).data;
   },
 };
 
 export const tokenAuth = {
   async login(payload: LoginRequest): Promise<TokenLoginResponse> {
-    const response = await authClient.post<TokenLoginResponse>("/api-token-auth/", payload);
-    return response.data;
+    return (await authClient.post<TokenLoginResponse>("/api-token-auth/", payload)).data;
   },
 };

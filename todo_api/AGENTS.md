@@ -6,8 +6,8 @@ This example uses the ORM2 module and typed CRUD APIs.
 cargo run
 ```
 
-The application registers `Tasks` through `InstalledApps`, creates the local
-example table, and serves CRUD plus OpenAPI routes under `/api`.
+The application registers `Tasks` through `InstalledApps` and serves CRUD plus
+OpenAPI routes under `/api`. Apply the project Atlas migrations before startup.
 
 Important files:
 
@@ -20,5 +20,4 @@ Important files:
 - `src/main.rs`: config, server construction and listener.
 - `app.toml`: SQLite path and server settings.
 
-The example intentionally does not include authentication or management
-commands yet; those belong to later migration phases.
+The example intentionally does not include authentication.
