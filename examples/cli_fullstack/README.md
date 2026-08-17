@@ -86,7 +86,7 @@ curl -X POST http://127.0.0.1:3001/api/tasks/ \
   -b cookies.txt \
   -H "X-CSRF-Token: $CSRF_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"name":"Read the documentation"}'
+  -d '{"name":"Read the documentation","status":"draft"}'
 ```
 
 Every task creation path, including REST, admin, and the WebSocket command below, emits the
