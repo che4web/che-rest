@@ -107,19 +107,20 @@ async fn fullstack_session_rest_smoke() {
     let task = client
         .post(format!("{base_url}/api/tasks/"))
         .header("X-CSRF-Token", &csrf)
-        .json(&json!({"name": "REST task"}))
+        .json(&json!({"name": "REST task", "status": "draft"}))
         .send()
         .await
         .unwrap();
     assert_eq!(task.status(), reqwest::StatusCode::CREATED);
     let task_payload = task.json::<serde_json::Value>().await.unwrap();
     assert_eq!(task_payload["author"]["username"], "admin");
+    assert_eq!(task_payload["status"], "draft");
     let task_id = task_payload["id"].as_i64().unwrap();
 
     let second_task = client
         .post(format!("{base_url}/api/tasks/"))
         .header("X-CSRF-Token", &csrf)
-        .json(&json!({"name": "A first task"}))
+        .json(&json!({"name": "A first task", "status": "in_progress"}))
         .send()
         .await
         .unwrap();
@@ -136,7 +137,7 @@ async fn fullstack_session_rest_smoke() {
     let updated = client
         .put(format!("{base_url}/api/tasks/{task_id}/"))
         .header("X-CSRF-Token", &csrf)
-        .json(&json!({"name": "Updated task"}))
+        .json(&json!({"name": "Updated task", "status": "done"}))
         .send()
         .await
         .unwrap();
@@ -149,7 +150,7 @@ async fn fullstack_session_rest_smoke() {
     let patched = client
         .patch(format!("{base_url}/api/tasks/{task_id}/"))
         .header("X-CSRF-Token", &csrf)
-        .json(&json!({"name": "Patched task"}))
+        .json(&json!({"name": "Patched task", "status": "done"}))
         .send()
         .await
         .unwrap();

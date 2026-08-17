@@ -1,4 +1,4 @@
-use super::models::{Task, TaskAuthorRelation};
+use super::models::{Task, TaskAuthorRelation, TaskStatus};
 
 #[derive(che_orm2::ModelSerializer)]
 #[serializer(model = che_rest::auth::models::User)]
@@ -16,6 +16,7 @@ pub struct TaskSerializer {
     #[serializer(one = che_rest::auth::models::User, relation = TaskAuthorRelation)]
     pub author: AuthorSerializer,
     pub name: String,
+    pub status: TaskStatus,
     #[serializer(read_only)]
     pub created_at: time::OffsetDateTime,
     #[serializer(read_only)]

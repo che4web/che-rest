@@ -1,0 +1,8 @@
+[database]
+url = "sqlite://benchmark.sqlite?mode=rwc"
+max_connections = 4
+
+[server]
+host = "127.0.0.1"
+port = 3101
+api_prefix = "/api"

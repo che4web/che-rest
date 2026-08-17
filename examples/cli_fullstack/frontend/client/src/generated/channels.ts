@@ -7,11 +7,20 @@ export interface ChannelMessage<T = unknown> {
   payload: T;
 }
 export interface ChannelError { type: "error"; code: string; detail: string; }
-export type ChannelEvent<T = unknown> = ChannelMessage<T> | ChannelError;
-export interface ChannelClientOptions { url?: string; onMessage?: (event: ChannelMessage) => void; onError?: (event: ChannelError) => void; }
+export interface ChannelSubscriptionEvent { type: "subscribed" | "unsubscribed"; channel: string; }
+export interface ChannelPublishedEvent { type: "published"; event: string; }
+export type ChannelEvent<T = unknown> = ChannelMessage<T> | ChannelError | ChannelSubscriptionEvent | ChannelPublishedEvent;
+export interface ChannelClientOptions { url?: string; onEvent?: (event: ChannelEvent) => void; onMessage?: (event: ChannelMessage) => void; onError?: (event: ChannelError) => void; onClose?: (event: CloseEvent) => void; }
 export class ChannelClient {
   private socket: WebSocket | null = null;
-  constructor(private readonly options: ChannelClientOptions = {}) {}
+  private readonly eventListeners = new Set<(event: ChannelEvent) => void>();
+  private readonly messageListeners = new Set<(event: ChannelMessage) => void>();
+  private readonly errorListeners = new Set<(event: ChannelError) => void>();
+  constructor(private readonly options: ChannelClientOptions = {}) {
+    if (options.onEvent) this.eventListeners.add(options.onEvent);
+    if (options.onMessage) this.messageListeners.add(options.onMessage);
+    if (options.onError) this.errorListeners.add(options.onError);
+  }
   connect(): Promise<void> {
     if (this.socket?.readyState === WebSocket.OPEN) return Promise.resolve();
     const socket = new WebSocket(this.options.url ?? defaultChannelUrl());
@@ -20,12 +29,16 @@ export class ChannelClient {
     return new Promise((resolve, reject) => {
       socket.addEventListener("open", () => resolve(), { once: true });
       socket.addEventListener("error", () => reject(new Error("Unable to connect to WebSocket channels")), { once: true });
+      socket.addEventListener("close", (event) => this.options.onClose?.(event));
     });
   }
   subscribe(channel: string) { this.send({ action: "subscribe", channel }); }
   unsubscribe(channel: string) { this.send({ action: "unsubscribe", channel }); }
   publish(event: string, payload: unknown) { this.send({ action: "publish", event, payload }); }
-  close() { this.socket?.close(); this.socket = null; }
+  onEvent(listener: (event: ChannelEvent) => void) { this.eventListeners.add(listener); return () => this.eventListeners.delete(listener); }
+  onMessage(listener: (event: ChannelMessage) => void) { this.messageListeners.add(listener); return () => this.messageListeners.delete(listener); }
+  onError(listener: (event: ChannelError) => void) { this.errorListeners.add(listener); return () => this.errorListeners.delete(listener); }
+  close(code?: number, reason?: string) { this.socket?.close(code, reason); this.socket = null; }
   private send(payload: unknown) {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) throw new Error("WebSocket channel client is not connected");
     this.socket.send(JSON.stringify(payload));
@@ -33,8 +46,9 @@ export class ChannelClient {
   private handleMessage(message: MessageEvent<string>) {
     try {
       const event = JSON.parse(message.data) as ChannelEvent;
-      if (event.type === "message") this.options.onMessage?.(event);
-      if (event.type === "error") this.options.onError?.(event);
+      for (const listener of this.eventListeners) listener(event);
+      if (event.type === "message") for (const listener of this.messageListeners) listener(event);
+      if (event.type === "error") for (const listener of this.errorListeners) listener(event);
     } catch {}
   }
 }

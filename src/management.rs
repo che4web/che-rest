@@ -50,6 +50,14 @@ enum CommandKind {
         #[arg(long, default_value = "app.toml")]
         config: PathBuf,
     },
+    GenerateAdmin {
+        #[arg(long, default_value = "frontend/admin")]
+        out: PathBuf,
+        #[arg(long, default_value = "app.toml")]
+        config: PathBuf,
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -135,6 +143,22 @@ impl Management {
                     self.apps.find("auth").is_some(),
                 )?;
                 println!("generated {} files in {}", files.len(), out.display());
+            }
+            CommandKind::GenerateAdmin { out, config, force } => {
+                AppConfig::from_file(config)?;
+                let state = AppState::from_database(Database::connect_in_memory()?);
+                let endpoints = self.apps.api_endpoints(state);
+                let generated = crate::generate_ts::generate(
+                    &out.join("src/generated"),
+                    &endpoints,
+                    self.apps.find("auth").is_some(),
+                )?;
+                let admin = crate::generate_admin::generate(&out, &endpoints, force)?;
+                println!(
+                    "generated {} files in {}",
+                    generated.len() + admin.len(),
+                    out.display()
+                );
             }
         }
         Ok(())
@@ -281,5 +305,34 @@ mod tests {
 
         let _ = fs::remove_file(database_path);
         let _ = fs::remove_file(config_path);
+    }
+
+    #[tokio::test]
+    async fn generate_admin_cli_creates_project_files() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let output = std::env::temp_dir().join(format!("che_rest_admin_{suffix}"));
+        let config = output.join("app.toml");
+        fs::create_dir_all(&output).unwrap();
+        fs::write(&config, "[database]\nurl = 'sqlite://unused.sqlite'\n").unwrap();
+        let cli = Cli::try_parse_from([
+            "manage",
+            "generate-admin",
+            "--out",
+            output.to_str().unwrap(),
+            "--config",
+            config.to_str().unwrap(),
+        ])
+        .unwrap();
+        Management::new(InstalledApps::new())
+            .run_from(cli)
+            .await
+            .unwrap();
+        assert!(output.join("package.json").exists());
+        assert!(output.join("src/admin/generated/adminSchema.ts").exists());
+        assert!(output.join("src/router.ts").exists());
+        let _ = fs::remove_dir_all(output);
     }
 }

@@ -3,10 +3,12 @@ import { onMounted, ref } from "vue";
 
 import { taskApi } from "./generated/api";
 import { sessionAuth, type AuthUser } from "./generated/auth";
+import type { TaskCreate } from "./generated/models";
 import { useModelList } from "./generated/useModelList";
 
 const user = ref<AuthUser | null>(null);
 const newTask = ref("");
+const newTaskStatus = ref<TaskCreate["status"]>("draft");
 const username = ref("admin");
 const password = ref("secret");
 const loginError = ref("");
@@ -38,7 +40,7 @@ async function createTask() {
   if (!name) return;
 
   try {
-    await taskApi.create({ name });
+    await taskApi.create({ name, status: newTaskStatus.value });
     await load();
     newTask.value = "";
   } catch {
@@ -92,6 +94,11 @@ onMounted(async () => {
 
       <form class="composer" @submit.prevent="createTask">
         <input v-model="newTask" placeholder="What needs doing?" aria-label="New task" />
+        <select v-model="newTaskStatus" aria-label="New task status">
+          <option value="draft">Draft</option>
+          <option value="in_progress">In progress</option>
+          <option value="done">Done</option>
+        </select>
         <button type="submit">Add task</button>
       </form>
 

@@ -40,7 +40,11 @@ fn models(endpoints: &[ApiEndpoint]) -> String {
     for endpoint in endpoints {
         out.push_str(&format!("export interface {} {{\n", endpoint.model_name));
         for field in endpoint.fields.iter().filter(|field| !field.write_only) {
-            out.push_str(&format!("  {}: {};\n", field.name, field_ts_type(field)));
+            out.push_str(&format!(
+                "  {}: {};\n",
+                field.name,
+                field_ts_type(endpoint, field)
+            ));
             if let Some(model) = field.related_model {
                 related.insert(last_path_part(model), (field.many, field.rust_type));
             }
@@ -55,7 +59,11 @@ fn models(endpoints: &[ApiEndpoint]) -> String {
             .iter()
             .filter(|field| !field.read_only && field.related_model.is_none())
         {
-            out.push_str(&format!("  {}: {};\n", field.name, field_ts_type(field)));
+            out.push_str(&format!(
+                "  {}: {};\n",
+                field.name,
+                field_ts_type(endpoint, field)
+            ));
         }
         out.push_str("}\n\n");
         out.push_str(&format!(
@@ -67,7 +75,11 @@ fn models(endpoints: &[ApiEndpoint]) -> String {
             .iter()
             .filter(|field| !field.read_only && field.related_model.is_none())
         {
-            out.push_str(&format!("  {}?: {};\n", field.name, field_ts_type(field)));
+            out.push_str(&format!(
+                "  {}?: {};\n",
+                field.name,
+                field_ts_type(endpoint, field)
+            ));
         }
         out.push_str("}\n\n");
         out.push_str(&format!(
@@ -131,7 +143,7 @@ fn api(endpoints: &[ApiEndpoint]) -> String {
     out
 }
 
-fn field_ts_type(field: &che_orm2::SerializerField) -> String {
+fn field_ts_type(endpoint: &ApiEndpoint, field: &che_orm2::SerializerField) -> String {
     if let Some(model) = field.related_model {
         let ty = last_path_part(model);
         return if field.many {
@@ -139,6 +151,18 @@ fn field_ts_type(field: &che_orm2::SerializerField) -> String {
         } else {
             ty.to_owned()
         };
+    }
+    if let Some(choices) = endpoint
+        .columns
+        .iter()
+        .find(|column| column.name == field.source)
+        .and_then(|column| column.choices.as_ref())
+    {
+        return choices
+            .iter()
+            .map(|choice| serde_json::to_string(choice).unwrap())
+            .collect::<Vec<_>>()
+            .join(" | ");
     }
     match field.rust_type {
         "i64" | "i32" | "u64" | "usize" => "number".into(),
@@ -215,11 +239,20 @@ fn channels() -> String {
   payload: T;
 }}
 export interface ChannelError {{ type: "error"; code: string; detail: string; }}
-export type ChannelEvent<T = unknown> = ChannelMessage<T> | ChannelError;
-export interface ChannelClientOptions {{ url?: string; onMessage?: (event: ChannelMessage) => void; onError?: (event: ChannelError) => void; }}
+export interface ChannelSubscriptionEvent {{ type: "subscribed" | "unsubscribed"; channel: string; }}
+export interface ChannelPublishedEvent {{ type: "published"; event: string; }}
+export type ChannelEvent<T = unknown> = ChannelMessage<T> | ChannelError | ChannelSubscriptionEvent | ChannelPublishedEvent;
+export interface ChannelClientOptions {{ url?: string; onEvent?: (event: ChannelEvent) => void; onMessage?: (event: ChannelMessage) => void; onError?: (event: ChannelError) => void; onClose?: (event: CloseEvent) => void; }}
 export class ChannelClient {{
   private socket: WebSocket | null = null;
-  constructor(private readonly options: ChannelClientOptions = {{}}) {{}}
+  private readonly eventListeners = new Set<(event: ChannelEvent) => void>();
+  private readonly messageListeners = new Set<(event: ChannelMessage) => void>();
+  private readonly errorListeners = new Set<(event: ChannelError) => void>();
+  constructor(private readonly options: ChannelClientOptions = {{}}) {{
+    if (options.onEvent) this.eventListeners.add(options.onEvent);
+    if (options.onMessage) this.messageListeners.add(options.onMessage);
+    if (options.onError) this.errorListeners.add(options.onError);
+  }}
   connect(): Promise<void> {{
     if (this.socket?.readyState === WebSocket.OPEN) return Promise.resolve();
     const socket = new WebSocket(this.options.url ?? defaultChannelUrl());
@@ -228,12 +261,16 @@ export class ChannelClient {{
     return new Promise((resolve, reject) => {{
       socket.addEventListener("open", () => resolve(), {{ once: true }});
       socket.addEventListener("error", () => reject(new Error("Unable to connect to WebSocket channels")), {{ once: true }});
+      socket.addEventListener("close", (event) => this.options.onClose?.(event));
     }});
   }}
   subscribe(channel: string) {{ this.send({{ action: "subscribe", channel }}); }}
   unsubscribe(channel: string) {{ this.send({{ action: "unsubscribe", channel }}); }}
   publish(event: string, payload: unknown) {{ this.send({{ action: "publish", event, payload }}); }}
-  close() {{ this.socket?.close(); this.socket = null; }}
+  onEvent(listener: (event: ChannelEvent) => void) {{ this.eventListeners.add(listener); return () => this.eventListeners.delete(listener); }}
+  onMessage(listener: (event: ChannelMessage) => void) {{ this.messageListeners.add(listener); return () => this.messageListeners.delete(listener); }}
+  onError(listener: (event: ChannelError) => void) {{ this.errorListeners.add(listener); return () => this.errorListeners.delete(listener); }}
+  close(code?: number, reason?: string) {{ this.socket?.close(code, reason); this.socket = null; }}
   private send(payload: unknown) {{
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) throw new Error("WebSocket channel client is not connected");
     this.socket.send(JSON.stringify(payload));
@@ -241,8 +278,9 @@ export class ChannelClient {{
   private handleMessage(message: MessageEvent<string>) {{
     try {{
       const event = JSON.parse(message.data) as ChannelEvent;
-      if (event.type === "message") this.options.onMessage?.(event);
-      if (event.type === "error") this.options.onError?.(event);
+      for (const listener of this.eventListeners) listener(event);
+      if (event.type === "message") for (const listener of this.messageListeners) listener(event);
+      if (event.type === "error") for (const listener of this.errorListeners) listener(event);
     }} catch {{}}
   }}
 }}
@@ -257,27 +295,52 @@ function defaultChannelUrl() {{
 }
 fn use_model_list() -> String {
     format!(
-        r#"{HEADER}import {{ onMounted, reactive, ref, watch }} from "vue";
-export function useModelList(api: any, options: any = {{}}) {{
-  const items = ref<any[]>([]); const filters = reactive(options.defaultFilters ?? {{}}); const count = ref(0); const loading = ref(false); const error = ref("");
-  async function load(params?: any) {{ loading.value = true; error.value = ""; try {{ const response = await api.list(params ?? filters); items.value = response.results; count.value = response.count; return response; }} catch (err) {{ error.value = err instanceof Error ? err.message : "Unable to load objects"; return null; }} finally {{ loading.value = false; }} }}
-  async function remove(id: number) {{ await api.remove(id); await load(); }}
-  if (options.reloadOnFilterChange) watch(filters, () => load());
-  if (options.autoLoad) onMounted(load);
+        r#"{HEADER}import {{ onMounted, reactive, ref, shallowRef, watch }} from "vue";
+import type {{ BaseEntity, ListParams, ModelApi }} from "./api_client";
+
+export interface UseModelListOptions<Params extends ListParams> {{
+  defaultFilters?: Partial<Params>;
+  autoLoad?: boolean;
+  reloadOnFilterChange?: boolean;
+  debounceMs?: number;
+  onError?: (message: string, error: unknown) => void;
+}}
+
+export function useModelList<T extends BaseEntity, CreateDTO = Partial<T>, UpdateDTO = Partial<T>, Params extends ListParams = ListParams>(api: ModelApi<T, CreateDTO, UpdateDTO, Params>, options: UseModelListOptions<Params> = {{}}) {{
+  const items = shallowRef<T[]>([]);
+  const filters = reactive({{ ...(options.defaultFilters ?? {{}}) }} as Params) as Params;
+  const count = ref(0); const loading = ref(false); const error = ref("");
+  let loadTimer: ReturnType<typeof setTimeout> | undefined; let skipNextFilterReload = false;
+  async function load(params?: Partial<Params>) {{
+    if (params) {{ skipNextFilterReload = true; Object.assign(filters, params); }}
+    loading.value = true; error.value = "";
+    try {{ const response = await api.list(cleanParams(filters) as Params); items.value = response.results; count.value = response.count; return response; }}
+    catch (err) {{ handleError(err, "Unable to load objects"); return null; }} finally {{ loading.value = false; }}
+  }}
+  async function remove(id: number) {{ loading.value = true; try {{ await api.remove(id); await load(); return true; }} catch (err) {{ handleError(err, "Unable to delete object"); return false; }} finally {{ loading.value = false; }} }}
+  if (options.reloadOnFilterChange) watch(filters, () => {{ if (skipNextFilterReload) {{ skipNextFilterReload = false; return; }} clearTimeout(loadTimer); loadTimer = setTimeout(() => load(), options.debounceMs ?? 250); }});
+  if (options.autoLoad) onMounted(() => load());
+  function handleError(err: unknown, fallback: string) {{ const message = errorMessage(err, fallback); error.value = message; options.onError?.(message, err); }}
   return {{ items, filters, count, loading, error, load, remove }};
 }}
+function cleanParams(params: ListParams) {{ const clean: ListParams = {{}}; for (const [key, value] of Object.entries(params)) if (value !== "" && value !== null && value !== undefined) clean[key] = value; return clean; }}
+function errorMessage(err: unknown, fallback: string) {{ if (typeof err === "object" && err && "detail" in err) return String((err as {{ detail: unknown }}).detail); return err instanceof Error ? err.message : fallback; }}
 "#
     )
 }
 fn use_model_item() -> String {
     format!(
-        r#"{HEADER}import {{ ref }} from "vue";
-export function useModelItem(api: any) {{
-  const item = ref<any>(null); const loading = ref(false); const error = ref("");
-  async function retrieve(id: number) {{ loading.value = true; try {{ item.value = await api.retrieve(id); return item.value; }} catch (err) {{ error.value = err instanceof Error ? err.message : "Unable to load object"; return null; }} finally {{ loading.value = false; }} }}
-  async function create(payload: any) {{ item.value = await api.create(payload); return item.value; }}
-  async function update(id: number, payload: any) {{ item.value = await api.update(id, payload); return item.value; }}
-  return {{ item, loading, error, retrieve, create, update }};
+        r#"{HEADER}import {{ shallowRef, ref }} from "vue";
+import type {{ BaseEntity, ListParams, ModelApi }} from "./api_client";
+export interface UseModelItemOptions {{ onError?: (message: string, error: unknown) => void; }}
+export function useModelItem<T extends BaseEntity, CreateDTO = Partial<T>, UpdateDTO = Partial<T>, Params extends ListParams = ListParams>(api: ModelApi<T, CreateDTO, UpdateDTO, Params>, options: UseModelItemOptions = {{}}) {{
+  const item = shallowRef<T | null>(null); const loading = ref(false); const error = ref("");
+  async function retrieve(id: number) {{ return run(() => api.retrieve(id), "Unable to load object"); }}
+  async function create(payload: CreateDTO) {{ return run(() => api.create(payload), "Unable to create object"); }}
+  async function update(id: number, payload: UpdateDTO) {{ return run(() => api.update(id, payload), "Unable to update object"); }}
+  async function remove(id: number) {{ return run(async () => {{ await api.remove(id); item.value = null; return true; }}, "Unable to delete object"); }}
+  async function run<R>(operation: () => Promise<R>, fallback: string): Promise<R | null> {{ loading.value = true; error.value = ""; try {{ const value = await operation(); if (typeof value === "object" && value !== null) item.value = value as T; return value; }} catch (err) {{ error.value = err instanceof Error ? err.message : fallback; options.onError?.(error.value, err); return null; }} finally {{ loading.value = false; }} }}
+  return {{ item, loading, error, retrieve, create, update, remove }};
 }}
 "#
     )
@@ -333,6 +396,7 @@ mod tests {
             fields: vec![
                 che_orm2::SerializerField {
                     name: "id",
+                    source: "id",
                     read_only: true,
                     write_only: false,
                     rust_type: "i64",
@@ -341,6 +405,7 @@ mod tests {
                 },
                 che_orm2::SerializerField {
                     name: "author",
+                    source: "author_id",
                     read_only: true,
                     write_only: false,
                     rust_type: "AuthorSerializer",
@@ -349,13 +414,29 @@ mod tests {
                 },
                 che_orm2::SerializerField {
                     name: "name",
+                    source: "name",
                     read_only: false,
                     write_only: false,
                     rust_type: "String",
                     related_model: None,
                     many: false,
                 },
+                che_orm2::SerializerField {
+                    name: "status",
+                    source: "status",
+                    read_only: false,
+                    write_only: false,
+                    rust_type: "TaskStatus",
+                    related_model: None,
+                    many: false,
+                },
             ],
+            columns: vec![crate::module::ApiColumn {
+                name: "status",
+                nullable: false,
+                has_default: false,
+                choices: Some(vec!["draft", "in_progress", "done"]),
+            }],
             filters: vec![crate::module::ApiFilter {
                 name: "name",
                 source: "name",
@@ -366,7 +447,17 @@ mod tests {
         let generated = models(&[endpoint]);
         assert!(generated.contains("author: User;"));
         assert!(generated.contains("name: string;"));
+        assert!(generated.contains("status: \"draft\" | \"in_progress\" | \"done\";"));
         assert!(generated.contains("name__contains?: string;"));
         assert!(!generated.contains("id: number;\n}\n\nexport interface TaskCreate"));
+    }
+
+    #[test]
+    fn generated_helpers_keep_typed_and_eventful_apis() {
+        assert!(use_model_list().contains("UseModelListOptions"));
+        assert!(use_model_list().contains("ModelApi<T"));
+        assert!(use_model_item().contains("UseModelItemOptions"));
+        assert!(channels().contains("onEvent"));
+        assert!(channels().contains("onClose"));
     }
 }

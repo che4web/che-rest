@@ -7,16 +7,19 @@ export interface Task {
   id: number;
   author: User;
   name: string;
+  status: "draft" | "in_progress" | "done";
   created_at: string;
   updated_at: string;
 }
 
 export interface TaskCreate {
   name: string;
+  status: "draft" | "in_progress" | "done";
 }
 
 export interface TaskUpdate {
   name?: string;
+  status?: "draft" | "in_progress" | "done";
 }
 
 export interface TaskListParams extends ListParams {

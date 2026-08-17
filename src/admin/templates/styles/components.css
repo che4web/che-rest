@@ -1,0 +1,324 @@
+.che-admin-layout {
+  display: grid;
+  grid-template-columns: 252px minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.che-admin-sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  padding: 1.5rem 1rem;
+  background: var(--che-sidebar) !important;
+  color: var(--che-sidebar-text);
+}
+
+.che-admin-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.65rem;
+  color: var(--che-sidebar-text) !important;
+  font-size: 1.2rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.che-admin-brand::before {
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 50%;
+  background: #7892ff;
+  box-shadow: 0 0 0 0.28rem rgba(120, 146, 255, 0.16);
+  content: "";
+}
+
+.che-admin-nav {
+  display: grid;
+  gap: 1.5rem;
+}
+
+.che-admin-nav-title {
+  margin: 0 0 0.5rem;
+  color: var(--che-sidebar-muted) !important;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.che-admin-nav-link {
+  display: flex;
+  align-items: center;
+  min-height: 2.5rem;
+  margin-bottom: 0.18rem;
+  padding: 0.6rem 0.75rem;
+  border: 0 !important;
+  border-radius: var(--che-radius-sm) !important;
+  background: transparent !important;
+  color: var(--che-sidebar-muted) !important;
+  font-size: 0.9rem;
+  transition: background 0.16s ease, color 0.16s ease, transform 0.16s ease;
+}
+
+.che-admin-nav-link:hover,
+.che-admin-nav-link.router-link-active {
+  background: var(--che-sidebar-soft) !important;
+  color: var(--che-sidebar-text) !important;
+  transform: translateX(2px);
+}
+
+.che-admin-sidebar .btn-outline-light {
+  border-color: #3a475c;
+  color: var(--che-sidebar-muted);
+}
+
+.che-admin-sidebar .btn-outline-light:hover {
+  border-color: #60718e;
+  background: var(--che-sidebar-soft);
+  color: var(--che-sidebar-text);
+}
+
+.che-admin-main h1,
+.che-admin-main h2,
+.che-admin-main h3 {
+  letter-spacing: -0.035em;
+}
+
+.che-admin-main .display-6 {
+  font-size: clamp(1.8rem, 3vw, 2.45rem);
+}
+
+.che-admin-main .row.g-3 {
+  --bs-gutter-x: 0.75rem;
+  --bs-gutter-y: 0.75rem;
+}
+
+.che-admin-data-layout {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 0.9rem;
+  align-items: start;
+}
+
+.che-admin-filter-panel {
+  position: sticky;
+  top: 1rem;
+}
+
+.che-admin-filter-panel .card-body {
+  padding: 0.9rem;
+}
+
+.che-admin-filter-panel .form-label {
+  margin-bottom: 0.3rem;
+}
+
+.che-admin-table-column {
+  min-width: 0;
+}
+
+.che-admin-table-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.65rem 0.78rem;
+  border-top: 1px solid var(--che-border);
+  font-size: 0.82rem;
+}
+
+.che-admin-table-footer .btn {
+  min-width: 4.8rem;
+}
+
+.che-admin-data-layout > .che-admin-table-column:only-child {
+  grid-column: 1 / -1;
+}
+
+.che-admin-main .btn {
+  border-radius: var(--che-radius-sm);
+  font-weight: 650;
+}
+
+.che-admin-main .btn-primary {
+  border-color: var(--che-accent);
+  background: var(--che-accent);
+}
+
+.che-admin-main .btn-primary:hover {
+  border-color: var(--che-accent-dark);
+  background: var(--che-accent-dark);
+}
+
+.che-admin-main .btn-outline-secondary {
+  border-color: var(--che-border-strong);
+  color: var(--che-muted);
+}
+
+.che-admin-main .btn-outline-secondary:hover {
+  border-color: var(--che-accent);
+  background: var(--che-accent-soft);
+  color: var(--che-accent-dark);
+}
+
+.che-admin-main .btn-outline-danger {
+  border-color: #f0c8cf;
+  color: var(--che-danger);
+}
+
+.che-admin-main .btn-outline-danger:hover {
+  border-color: var(--che-danger);
+  background: var(--che-danger-soft);
+  color: var(--che-danger);
+}
+
+.che-admin-main .card,
+.che-admin-main .che-admin-model-card {
+  border: 1px solid var(--che-border);
+  border-radius: var(--che-radius);
+  background: var(--che-surface);
+  box-shadow: var(--che-shadow);
+}
+
+.che-admin-model-card {
+  transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+}
+
+.che-admin-model-card:hover {
+  border-color: #cbd5f5;
+  box-shadow: var(--che-shadow-hover);
+  transform: translateY(-3px);
+}
+
+.che-admin-main .card-header,
+.che-admin-main .card-footer {
+  border-color: var(--che-border);
+  background: var(--che-surface) !important;
+}
+
+.che-admin-main .table {
+  margin-bottom: 0;
+  color: var(--che-ink);
+}
+
+.che-admin-main .table > :not(caption) > * > * {
+  padding: 0.62rem 0.78rem;
+  border-bottom-color: var(--che-border);
+}
+
+.che-admin-main .table thead th {
+  color: var(--che-muted);
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.che-admin-main .table-hover > tbody > tr:hover > * {
+  background: #fafbfe;
+  color: var(--che-ink);
+}
+
+.che-admin-main .form-label {
+  color: var(--che-ink);
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.che-admin-main .form-control,
+.che-admin-main .form-select {
+  min-height: 2.7rem;
+  border-color: var(--che-border-strong);
+  border-radius: var(--che-radius-sm);
+  color: var(--che-ink);
+}
+
+.che-admin-main .form-control:focus,
+.che-admin-main .form-select:focus {
+  border-color: var(--che-accent);
+  box-shadow: 0 0 0 0.22rem rgba(61, 99, 221, 0.13);
+}
+
+.che-admin-main .form-text {
+  color: var(--che-subtle);
+  font-size: 0.78rem;
+}
+
+.che-admin-form-card {
+  max-width: 760px;
+}
+
+.che-admin-actions-column {
+  width: 150px;
+}
+
+.che-admin-login {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 1rem;
+  background: radial-gradient(circle at top left, #e7edff 0, transparent 32rem), var(--che-page) !important;
+}
+
+.che-admin-login-card {
+  max-width: 430px;
+  width: 100%;
+  border: 1px solid var(--che-border) !important;
+  border-radius: 1rem !important;
+  box-shadow: 0 1.25rem 3.5rem rgba(31, 43, 68, 0.12) !important;
+}
+
+.che-admin-login-card h1 {
+  letter-spacing: -0.04em;
+}
+
+@media (max-width: 991.98px) {
+  .che-admin-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .che-admin-sidebar {
+    min-height: auto;
+  }
+
+  .che-admin-main {
+    min-height: calc(100vh - 15rem);
+  }
+
+  .che-admin-data-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .che-admin-filter-panel {
+    position: static;
+  }
+}
+
+@media (max-width: 575.98px) {
+  .che-admin-sidebar {
+    padding: 1rem;
+  }
+
+  .che-admin-main .container-fluid {
+    padding-right: 1rem;
+    padding-left: 1rem;
+  }
+
+  .che-admin-main .table > :not(caption) > * > * {
+    padding: 0.55rem 0.65rem;
+  }
+
+  .che-admin-table-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .che-admin-table-footer .btn-group {
+    width: 100%;
+  }
+
+  .che-admin-table-footer .btn {
+    flex: 1;
+  }
+}

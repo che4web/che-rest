@@ -26,7 +26,16 @@ pub struct ApiEndpoint {
     pub model_name: String,
     pub resource: String,
     pub fields: Vec<che_orm2::SerializerField>,
+    pub columns: Vec<ApiColumn>,
     pub filters: Vec<ApiFilter>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ApiColumn {
+    pub name: &'static str,
+    pub nullable: bool,
+    pub has_default: bool,
+    pub choices: Option<Vec<&'static str>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -132,6 +141,16 @@ impl ModuleContext {
                 .to_owned(),
             resource: path.trim_matches('/').to_owned(),
             fields: V::Serializer::fields().to_vec(),
+            columns: V::Model::schema()
+                .columns
+                .iter()
+                .map(|column| ApiColumn {
+                    name: column.name,
+                    nullable: column.nullable,
+                    has_default: column.default.is_some() || column.auto_now || column.auto_now_add,
+                    choices: column.choices.clone(),
+                })
+                .collect(),
             filters: V::FilterSet::default()
                 .filters()
                 .iter()

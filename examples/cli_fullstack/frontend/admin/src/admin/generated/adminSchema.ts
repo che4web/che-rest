@@ -7,143 +7,31 @@ import {
 
 export type AdminFieldType = "integer" | "text" | "boolean" | "real" | "datetime";
 
-export interface AdminField {
-  name: string;
-  source: string;
-  type: AdminFieldType;
-  label: string;
-  readOnly: boolean;
-  writeOnly: boolean;
-  required: boolean;
-  nullable: boolean;
-  hasDefault: boolean;
-  choices?: string[];
-  relatedModel?: string;
-  relationField?: string;
-}
+export interface AdminField { name: string; source: string; type: AdminFieldType; label: string; readOnly: boolean; writeOnly: boolean; required: boolean; nullable: boolean; hasDefault: boolean; choices?: string[]; relatedModel?: string; relationField?: string; }
 
-export interface AdminFilter {
-  name: string;
-  source: string;
-  type: AdminFieldType;
-  label: string;
-  nullable: boolean;
-}
+export interface AdminFilter { name: string; source: string; type: AdminFieldType; label: string; nullable: boolean; }
 
-export interface AdminModelApi {
-  list: (params?: any) => Promise<{ count: number; results: any[] }>;
-  retrieve: (id: number) => Promise<any>;
-  create: (payload: any) => Promise<any>;
-  update: (id: number, payload: any) => Promise<any>;
-  remove: (id: number) => Promise<void>;
-}
+export interface AdminModelApi { list: (params?: any) => Promise<{ count: number; results: any[] }>; retrieve: (id: number) => Promise<any>; create: (payload: any) => Promise<any>; update: (id: number, payload: any) => Promise<any>; remove: (id: number) => Promise<void>; }
 
-export interface AdminModel {
-  appName: string;
-  name: string;
-  resource: string;
-  api: AdminModelApi;
-  fields: AdminField[];
-  filters: AdminFilter[];
-}
-
-export interface AdminApp {
-  name: string;
-  models: AdminModel[];
-}
+export interface AdminModel { appName: string; name: string; resource: string; api: AdminModelApi; fields: AdminField[]; filters: AdminFilter[]; }
+export interface AdminApp { name: string; models: AdminModel[]; }
 
 export const adminModels: AdminModel[] = [
   {
-    appName: "tasks",
-    name: "Task",
-    resource: "tasks",
-    api: taskApi,
+    appName: "tasks", name: "Task", resource: "tasks", api: taskApi,
     fields: [
-      {
-        name: "id",
-        source: "id",
-        type: "integer",
-        label: "Id",
-        readOnly: true,
-        writeOnly: false,
-        required: false,
-        nullable: false,
-        hasDefault: false,
-      },
-      {
-        name: "author",
-        source: "author_id",
-        type: "integer",
-        label: "Author",
-        readOnly: true,
-        writeOnly: false,
-        required: false,
-        nullable: false,
-        hasDefault: false,
-        relatedModel: "User",
-      },
-      {
-        name: "author_id",
-        source: "author_id",
-        type: "integer",
-        label: "Author Id",
-        readOnly: true,
-        writeOnly: true,
-        required: false,
-        nullable: false,
-        hasDefault: false,
-        relatedModel: "User",
-        relationField: "author",
-      },
-      {
-        name: "name",
-        source: "name",
-        type: "text",
-        label: "Name",
-        readOnly: false,
-        writeOnly: false,
-        required: true,
-        nullable: false,
-        hasDefault: false,
-      },
-      {
-        name: "created_at",
-        source: "created_at",
-        type: "datetime",
-        label: "Created At",
-        readOnly: true,
-        writeOnly: false,
-        required: false,
-        nullable: false,
-        hasDefault: false,
-      },
-      {
-        name: "updated_at",
-        source: "updated_at",
-        type: "datetime",
-        label: "Updated At",
-        readOnly: true,
-        writeOnly: false,
-        required: false,
-        nullable: false,
-        hasDefault: false,
-      },
+      { name: "id", source: "id", type: "integer", label: "Id", readOnly: true, writeOnly: false, required: false, nullable: false, hasDefault: false },
+      { name: "author", source: "author_id", type: "integer", label: "Author", readOnly: true, writeOnly: false, required: false, nullable: false, hasDefault: false, relatedModel: "User", relationField: "author" },
+      { name: "name", source: "name", type: "text", label: "Name", readOnly: false, writeOnly: false, required: true, nullable: false, hasDefault: false },
+      { name: "status", source: "status", type: "text", label: "Status", readOnly: false, writeOnly: false, required: true, nullable: false, hasDefault: false, choices: ["draft","in_progress","done"] },
+      { name: "created_at", source: "created_at", type: "datetime", label: "Created At", readOnly: true, writeOnly: false, required: false, nullable: false, hasDefault: true },
+      { name: "updated_at", source: "updated_at", type: "datetime", label: "Updated At", readOnly: true, writeOnly: false, required: false, nullable: false, hasDefault: true },
     ],
     filters: [
-      {
-        name: "name",
-        source: "name",
-        type: "text",
-        label: "Name",
-        nullable: false,
-      },
-      {
-        name: "name__contains",
-        source: "name",
-        type: "text",
-        label: "Name Contains",
-        nullable: false,
-      },
+      { name: "id", source: "id", type: "integer", label: "Id", nullable: false },
+      { name: "name__contains", source: "name", type: "text", label: "Name Contains", nullable: false },
+      { name: "created_at", source: "created_at", type: "datetime", label: "Created At", nullable: false },
+      { name: "updated_at", source: "updated_at", type: "datetime", label: "Updated At", nullable: false },
     ],
   },
 ];
@@ -151,8 +39,5 @@ export const adminModels: AdminModel[] = [
 export const taskAdminModel = adminModels.find((model) => model.appName === "tasks" && model.resource === "tasks") as AdminModel;
 
 export const adminApps: AdminApp[] = [
-  {
-    name: "tasks",
-    models: adminModels.filter((model) => model.appName === "tasks"),
-  },
+  { name: "tasks", models: adminModels.filter((model) => model.appName === "tasks") },
 ];

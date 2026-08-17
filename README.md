@@ -683,23 +683,12 @@ VITE_AUTH_URL=/api-session-auth/login/
 VITE_LOGOUT_URL=/api-session-auth/logout/
 ```
 
-Override static admin templates by mirroring output paths in a templates directory:
+Static files are copied from the framework's canonical admin templates. Dynamic files are regenerated
+from installed app metadata:
 
-```bash
-cargo run --bin manage -- generate-admin \
-  --out frontend/admin \
-  --templates-dir admin_templates
-```
-
-Example overrides:
-
-```text
-admin_templates/
-  src/admin/components/GenericModelTable.vue
-  src/admin/admin.css
-```
-
-Dynamic files are always regenerated from installed app metadata and are not read from `--templates-dir`:
+Canonical templates are stored in the repository under `src/admin/templates/`. Change those files
+when changing the framework default admin UI; `examples/cli_fullstack/frontend/admin/` is generated
+output and is not the template source.
 `src/admin/generated/adminSchema.ts`, `src/admin/generated/adminRoutes.ts`, the compatibility shim
 `src/admin/adminSchema.ts`, and `src/generated/*`.
 
