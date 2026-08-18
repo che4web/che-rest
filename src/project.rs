@@ -13,7 +13,7 @@ pub struct StartProjectOptions {
     pub name: String,
     pub out: PathBuf,
     pub che_rest_path: String,
-    pub che_orm2_path: String,
+    pub che_orm_path: String,
     pub with_auth: bool,
     pub force: bool,
 }
@@ -36,11 +36,7 @@ pub fn startproject(options: StartProjectOptions) -> ProjectResult<()> {
 
     write_file(
         &project_dir.join("Cargo.toml"),
-        &cargo_toml_template(
-            &options.name,
-            &options.che_rest_path,
-            &options.che_orm2_path,
-        ),
+        &cargo_toml_template(&options.name, &options.che_rest_path, &options.che_orm_path),
     )?;
     write_file(&project_dir.join("app.toml"), app_toml_template())?;
     write_file(
@@ -224,8 +220,8 @@ fn validate_model_name(name: &str) -> ProjectResult<()> {
     Ok(())
 }
 
-fn cargo_toml_template(name: &str, che_rest_path: &str, che_orm2_path: &str) -> String {
-    let che_orm2 = dependency("che-orm2", "0.1.0", che_orm2_path);
+fn cargo_toml_template(name: &str, che_rest_path: &str, che_orm_path: &str) -> String {
+    let che_orm = dependency("che-orm", "0.1.0", che_orm_path);
     let che_rest = dependency("che-rest", "0.1.0", che_rest_path);
     format!(
         r#"[package]
@@ -236,7 +232,7 @@ default-run = "{name}"
 
 [dependencies]
 axum = "0.8"
-{che_orm2}
+{che_orm}
 {che_rest}
 serde = {{ version = "1", features = ["derive"] }}
 time = "0.3"
@@ -295,7 +291,7 @@ not alter the schema.
 ## App Structure
 
 - `src/apps/mod.rs`: installed app registry used by both the server and management commands.
-- `src/apps/<app>/models.rs`: `che-orm2` models and database fields.
+- `src/apps/<app>/models.rs`: `che-orm` models and database fields.
 - `src/apps/<app>/serializers.rs`: generated ORM2 input/output DTOs.
 - `src/apps/<app>/filters.rs`: list query filters.
 - `src/apps/<app>/views.rs`: typed CRUD viewsets and permissions.
@@ -479,7 +475,7 @@ fn model_blocks(app_name: &str, models: &[String]) -> String {
         .map(|model| {
             let table = format!("{app_name}_{}", to_snake_case(model));
             format!(
-                r#"#[derive(Debug, che_orm2::Model)]
+                r#"#[derive(Debug, che_orm::Model)]
 #[orm(table = "{table}")]
 pub struct {model} {{
     #[orm(primary_key)]
@@ -510,7 +506,7 @@ fn serializers_rs_template(models: &[String]) -> String {
         .iter()
         .map(|model| {
             format!(
-                r#"#[derive(che_orm2::ModelSerializer)]
+                r#"#[derive(che_orm::ModelSerializer)]
 #[serializer(model = {model})]
 pub struct {model}Serializer {{
     #[serializer(read_only)]
@@ -586,12 +582,12 @@ pub struct {model}ViewSet;
 impl ViewSet for {model}ViewSet {{
     type Model = {model};
     type Serializer = {model}Serializer;
-    type QuerySet = che_orm2::DatabaseQuery<{model}>;
+    type QuerySet = che_orm::DatabaseQuery<{model}>;
     type FilterSet = {model}FilterSet;
     type Permission = AllowAny;
 
     fn get_queryset(&self) -> Self::QuerySet {{
-        che_orm2::DatabaseQuery::new({model}::query())
+        che_orm::DatabaseQuery::new({model}::query())
     }}
 
     fn path(&self) -> &'static str {{
@@ -642,8 +638,8 @@ impl AppModule for {module_type} {{
         "{app_name}"
     }}
 
-    fn schema(&self) -> che_orm2::SchemaSet {{
-        che_orm2::SchemaSet::new(){schema_models}
+    fn schema(&self) -> che_orm::SchemaSet {{
+        che_orm::SchemaSet::new(){schema_models}
     }}
 
     fn init(&self, context: &mut ModuleContext) {{
@@ -675,7 +671,7 @@ mod tests {
             name: "todo_api".into(),
             out: out.clone(),
             che_rest_path: "../che-rest".into(),
-            che_orm2_path: "../che-orm2".into(),
+            che_orm_path: "../che-orm".into(),
             with_auth: true,
             force: false,
         })
@@ -698,7 +694,7 @@ mod tests {
             name: "todo_api".into(),
             out: out.clone(),
             che_rest_path: "../che-rest".into(),
-            che_orm2_path: "../che-orm2".into(),
+            che_orm_path: "../che-orm".into(),
             with_auth: false,
             force: false,
         })
@@ -731,7 +727,7 @@ mod tests {
             name: "todo_api".into(),
             out: out.clone(),
             che_rest_path: "../che-rest".into(),
-            che_orm2_path: "../che-orm2".into(),
+            che_orm_path: "../che-orm".into(),
             with_auth: false,
             force: false,
         })

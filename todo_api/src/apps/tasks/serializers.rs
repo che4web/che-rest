@@ -1,6 +1,6 @@
 use super::models::Task;
 
-#[derive(che_orm2::ModelSerializer)]
+#[derive(che_orm::ModelSerializer)]
 #[serializer(model = Task)]
 pub struct TaskSerializer {
     #[serializer(read_only)]

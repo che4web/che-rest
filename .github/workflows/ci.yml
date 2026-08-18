@@ -14,8 +14,8 @@ jobs:
           path: che-rest
       - uses: actions/checkout@v4
         with:
-          repository: che4web/che-orm2
-          path: che-orm2
+          repository: che4web/che-orm
+          path: che-orm
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v4
         with:

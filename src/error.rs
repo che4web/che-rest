@@ -1,7 +1,7 @@
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     #[error(transparent)]
-    Orm(#[from] che_orm2::OrmError),
+    Orm(#[from] che_orm::OrmError),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]

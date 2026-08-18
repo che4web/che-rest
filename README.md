@@ -1,6 +1,6 @@
 # che-rest
 
-Breaking v2 REST layer for `che-orm2` applications.
+Breaking v2 REST layer for `che-orm` applications.
 
 The current v2 surface is the typed ORM2 CRUD router. A viewset builds its
 database-independent queryset in `get_queryset`; database access happens only
@@ -39,7 +39,7 @@ When developing against local checkouts, point the generated project at them:
 ```bash
 cargo run --bin manage -- startproject my_project \
   --che-rest-path ../che-rest \
-  --che-orm2-path ../che-orm2
+  --che-orm-path ../che-orm
 cd my_project
 cargo run
 ```
@@ -55,7 +55,7 @@ Path overrides are useful for this repo layout:
 
 ```text
 ../che-rest
-../che-orm2
+../che-orm
 ```
 
 Include the built-in auth module in the generated app registry:
@@ -154,7 +154,7 @@ permissions:
 ```rust
 use che_rest::{AllowAny, Filter, FilterSetSpec, Model, ViewSet};
 
-#[derive(che_orm2::ModelSerializer, serde::Serialize)]
+#[derive(che_orm::ModelSerializer, serde::Serialize)]
 #[serializer(model = Task)]
 pub struct TaskSerializer {
     pub id: i64,
@@ -180,12 +180,12 @@ pub struct TaskViewSet;
 impl ViewSet for TaskViewSet {
     type Model = Task;
     type Serializer = TaskSerializer;
-    type QuerySet = che_orm2::DatabaseQuery<Task>;
+    type QuerySet = che_orm::DatabaseQuery<Task>;
     type FilterSet = TaskFilterSet;
     type Permission = AllowAny;
 
     fn get_queryset(&self) -> Self::QuerySet {
-        che_orm2::DatabaseQuery::new(Task::query())
+        che_orm::DatabaseQuery::new(Task::query())
     }
 
     fn path(&self) -> &'static str {
@@ -240,7 +240,7 @@ write preparation hook:
 impl ViewSet for TaskViewSet {
     type Model = Task;
     type Serializer = TaskSerializer;
-    type QuerySet = che_orm2::DatabaseQuery<Task>;
+    type QuerySet = che_orm::DatabaseQuery<Task>;
     type FilterSet = che_rest::FilterSet<Task>;
     type Permission = IsAuthenticated;
 

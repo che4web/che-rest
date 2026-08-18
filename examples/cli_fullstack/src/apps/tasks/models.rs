@@ -1,7 +1,7 @@
 use che_rest::auth::models::User as AuthUser;
 use time::OffsetDateTime;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, che_orm2::DbEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, che_orm::DbEnum)]
 pub enum TaskStatus {
     Draft,
     #[db_enum(rename = "in_progress")]
@@ -9,7 +9,7 @@ pub enum TaskStatus {
     Done,
 }
 
-#[derive(Debug, che_orm2::Model)]
+#[derive(Debug, che_orm::Model)]
 #[orm(table = "tasks_task", index("author_id"), index("assignee_id"))]
 pub struct Task {
     #[orm(primary_key)]

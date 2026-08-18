@@ -7,7 +7,7 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
-use che_orm2::{
+use che_orm::{
     Database, DatabaseQuery, Loaded, Model, ModelField, ModelSerializer, ModelWriteSerializer,
     PrefetchRelatedQuery, QueryValue, SelectRelatedQuery, ValidatedWrite, WithOne, WithOptionalOne,
     WriteMode,
@@ -124,21 +124,21 @@ pub trait RestQuerySet: Sized + Send {
 
     fn item_model(item: &Self::Item) -> &Self::Model;
 
-    fn filter(self, expr: che_orm2::Expr) -> Self;
-    fn order_by(self, order: che_orm2::OrderBy) -> Self;
+    fn filter(self, expr: che_orm::Expr) -> Self;
+    fn order_by(self, order: che_orm::OrderBy) -> Self;
     fn limit(self, limit: u64) -> Self;
     fn offset(self, offset: u64) -> Self;
     fn all<'a>(
         self,
         database: &'a Database,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Self::Item>, che_orm2::OrmError>> + Send + 'a>>
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<Self::Item>, che_orm::OrmError>> + Send + 'a>>
     where
         Self: 'a;
 
     fn count<'a>(
         self,
         database: &'a Database,
-    ) -> Pin<Box<dyn Future<Output = Result<usize, che_orm2::OrmError>> + Send + 'a>>
+    ) -> Pin<Box<dyn Future<Output = Result<usize, che_orm::OrmError>> + Send + 'a>>
     where
         Self: 'a,
     {
@@ -148,7 +148,7 @@ pub trait RestQuerySet: Sized + Send {
     fn first<'a>(
         self,
         database: &'a Database,
-    ) -> Pin<Box<dyn Future<Output = Result<Option<Self::Item>, che_orm2::OrmError>> + Send + 'a>>
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Self::Item>, che_orm::OrmError>> + Send + 'a>>
     where
         Self: 'a,
     {
@@ -161,8 +161,8 @@ pub trait RestQuerySet: Sized + Send {
     }
 }
 
-type Apply = fn(&'static str, &str) -> Result<che_orm2::Expr, FilterError>;
-type Order = fn(&'static str, bool) -> che_orm2::OrderBy;
+type Apply = fn(&'static str, &str) -> Result<che_orm::Expr, FilterError>;
+type Order = fn(&'static str, bool) -> che_orm::OrderBy;
 
 #[derive(Clone, Copy)]
 pub struct Filter<M: Model> {
@@ -178,7 +178,7 @@ impl<M: Model> Filter<M> {
     pub const fn exact<T: FilterValue>(field: ModelField<M, T>) -> Self {
         Self::typed(field, Lookup::Exact, apply_exact::<M, T>)
     }
-    pub const fn exact_enum<T: che_orm2::DbEnum>(field: ModelField<M, T>) -> Self {
+    pub const fn exact_enum<T: che_orm::DbEnum>(field: ModelField<M, T>) -> Self {
         Self::typed_enum(field, apply_enum_exact::<M, T>)
     }
     pub const fn contains(field: ModelField<M, String>) -> Self {
@@ -211,7 +211,7 @@ impl<M: Model> Filter<M> {
             _marker: PhantomData,
         }
     }
-    const fn typed_enum<T: che_orm2::DbEnum>(field: ModelField<M, T>, apply: Apply) -> Self {
+    const fn typed_enum<T: che_orm::DbEnum>(field: ModelField<M, T>, apply: Apply) -> Self {
         Self {
             name: field.column().name,
             source: field.column().name,
@@ -317,13 +317,13 @@ impl<M: Model + 'static> FilterSetSpec for FilterSet<M> {
 fn apply_exact<M: Model, T: FilterValue>(
     field: &'static str,
     value: &str,
-) -> Result<che_orm2::Expr, FilterError> {
+) -> Result<che_orm::Expr, FilterError> {
     Ok(ModelField::<M, T>::new(M::table_name(), field).eq(T::parse(value)?))
 }
-fn apply_enum_exact<M: Model, T: che_orm2::DbEnum>(
+fn apply_enum_exact<M: Model, T: che_orm::DbEnum>(
     field: &'static str,
     value: &str,
-) -> Result<che_orm2::Expr, FilterError> {
+) -> Result<che_orm::Expr, FilterError> {
     let parsed = T::from_str(value).ok_or(FilterError::InvalidValue {
         field: String::new(),
         expected: "enum value",
@@ -333,7 +333,7 @@ fn apply_enum_exact<M: Model, T: che_orm2::DbEnum>(
 fn apply_contains<M: Model>(
     field: &'static str,
     value: &str,
-) -> Result<che_orm2::Expr, FilterError> {
+) -> Result<che_orm::Expr, FilterError> {
     Ok(ModelField::<M, String>::new(M::table_name(), field).contains(value))
 }
 macro_rules! range {
@@ -341,7 +341,7 @@ macro_rules! range {
         fn $fn<M: Model, T: FilterValue>(
             field: &'static str,
             value: &str,
-        ) -> Result<che_orm2::Expr, FilterError> {
+        ) -> Result<che_orm::Expr, FilterError> {
             Ok(ModelField::<M, T>::new(M::table_name(), field).$method(T::parse(value)?))
         }
     };
@@ -350,7 +350,7 @@ range!(apply_gt, gt);
 range!(apply_gte, gte);
 range!(apply_lt, lt);
 range!(apply_lte, lte);
-fn apply_order<M: Model, T>(field: &'static str, desc: bool) -> che_orm2::OrderBy {
+fn apply_order<M: Model, T>(field: &'static str, desc: bool) -> che_orm::OrderBy {
     let f = ModelField::<M, T>::new(M::table_name(), field);
     if desc { f.desc() } else { f.asc() }
 }
@@ -366,11 +366,11 @@ where
         item
     }
 
-    fn filter(self, expr: che_orm2::Expr) -> Self {
+    fn filter(self, expr: che_orm::Expr) -> Self {
         DatabaseQuery::filter(self, expr)
     }
 
-    fn order_by(self, order: che_orm2::OrderBy) -> Self {
+    fn order_by(self, order: che_orm::OrderBy) -> Self {
         DatabaseQuery::order_by(self, order)
     }
 
@@ -385,7 +385,7 @@ where
     fn all<'a>(
         self,
         database: &'a Database,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Self::Item>, che_orm2::OrmError>> + Send + 'a>>
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<Self::Item>, che_orm::OrmError>> + Send + 'a>>
     where
         Self: 'a,
     {
@@ -395,7 +395,7 @@ where
     fn count<'a>(
         self,
         database: &'a Database,
-    ) -> Pin<Box<dyn Future<Output = Result<usize, che_orm2::OrmError>> + Send + 'a>>
+    ) -> Pin<Box<dyn Future<Output = Result<usize, che_orm::OrmError>> + Send + 'a>>
     where
         Self: 'a,
     {
@@ -416,11 +416,11 @@ where
         &item.model
     }
 
-    fn filter(self, expr: che_orm2::Expr) -> Self {
+    fn filter(self, expr: che_orm::Expr) -> Self {
         SelectRelatedQuery::<M, R, Relation, i64>::filter(self, expr)
     }
 
-    fn order_by(self, order: che_orm2::OrderBy) -> Self {
+    fn order_by(self, order: che_orm::OrderBy) -> Self {
         SelectRelatedQuery::<M, R, Relation, i64>::order_by(self, order)
     }
 
@@ -435,7 +435,7 @@ where
     fn all<'a>(
         self,
         database: &'a Database,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Self::Item>, che_orm2::OrmError>> + Send + 'a>>
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<Self::Item>, che_orm::OrmError>> + Send + 'a>>
     where
         Self: 'a,
     {
@@ -447,7 +447,7 @@ where
     fn count<'a>(
         self,
         database: &'a Database,
-    ) -> Pin<Box<dyn Future<Output = Result<usize, che_orm2::OrmError>> + Send + 'a>>
+    ) -> Pin<Box<dyn Future<Output = Result<usize, che_orm::OrmError>> + Send + 'a>>
     where
         Self: 'a,
     {
@@ -470,11 +470,11 @@ where
         &item.model
     }
 
-    fn filter(self, expr: che_orm2::Expr) -> Self {
+    fn filter(self, expr: che_orm::Expr) -> Self {
         SelectRelatedQuery::<M, R, Relation, Option<i64>>::filter(self, expr)
     }
 
-    fn order_by(self, order: che_orm2::OrderBy) -> Self {
+    fn order_by(self, order: che_orm::OrderBy) -> Self {
         SelectRelatedQuery::<M, R, Relation, Option<i64>>::order_by(self, order)
     }
 
@@ -489,7 +489,7 @@ where
     fn all<'a>(
         self,
         database: &'a Database,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Self::Item>, che_orm2::OrmError>> + Send + 'a>>
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<Self::Item>, che_orm::OrmError>> + Send + 'a>>
     where
         Self: 'a,
     {
@@ -501,7 +501,7 @@ where
     fn count<'a>(
         self,
         database: &'a Database,
-    ) -> Pin<Box<dyn Future<Output = Result<usize, che_orm2::OrmError>> + Send + 'a>>
+    ) -> Pin<Box<dyn Future<Output = Result<usize, che_orm::OrmError>> + Send + 'a>>
     where
         Self: 'a,
     {
@@ -518,17 +518,17 @@ where
     Relation: Send + Sync + 'static,
 {
     type Model = M;
-    type Item = Loaded<M, (che_orm2::LoadedMany<R, Relation>,)>;
+    type Item = Loaded<M, (che_orm::LoadedMany<R, Relation>,)>;
 
     fn item_model(item: &Self::Item) -> &Self::Model {
         &item.model
     }
 
-    fn filter(self, expr: che_orm2::Expr) -> Self {
+    fn filter(self, expr: che_orm::Expr) -> Self {
         PrefetchRelatedQuery::filter(self, expr)
     }
 
-    fn order_by(self, order: che_orm2::OrderBy) -> Self {
+    fn order_by(self, order: che_orm::OrderBy) -> Self {
         PrefetchRelatedQuery::order_by(self, order)
     }
 
@@ -543,7 +543,7 @@ where
     fn all<'a>(
         self,
         database: &'a Database,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Self::Item>, che_orm2::OrmError>> + Send + 'a>>
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<Self::Item>, che_orm::OrmError>> + Send + 'a>>
     where
         Self: 'a,
     {
@@ -553,7 +553,7 @@ where
     fn count<'a>(
         self,
         database: &'a Database,
-    ) -> Pin<Box<dyn Future<Output = Result<usize, che_orm2::OrmError>> + Send + 'a>>
+    ) -> Pin<Box<dyn Future<Output = Result<usize, che_orm::OrmError>> + Send + 'a>>
     where
         Self: 'a,
     {
@@ -823,12 +823,12 @@ fn schema_ref(name: &str) -> serde_json::Value {
     json!({"$ref": format!("#/components/schemas/{name}")})
 }
 
-pub fn openapi_column_schema(column: &che_orm2::ColumnSchema) -> serde_json::Value {
+pub fn openapi_column_schema(column: &che_orm::ColumnSchema) -> serde_json::Value {
     let mut schema = match column.column_type {
-        che_orm2::ColumnType::Integer => json!({"type": "integer", "format": "int64"}),
-        che_orm2::ColumnType::Text => json!({"type": "string"}),
-        che_orm2::ColumnType::Boolean => json!({"type": "boolean"}),
-        che_orm2::ColumnType::DateTime => json!({"type": "string", "format": "date-time"}),
+        che_orm::ColumnType::Integer => json!({"type": "integer", "format": "int64"}),
+        che_orm::ColumnType::Text => json!({"type": "string"}),
+        che_orm::ColumnType::Boolean => json!({"type": "boolean"}),
+        che_orm::ColumnType::DateTime => json!({"type": "string", "format": "date-time"}),
     };
     if let Some(choices) = &column.choices {
         schema["enum"] = json!(choices);
@@ -845,12 +845,12 @@ fn user(ext: &Option<Extension<CurrentUser>>) -> Option<&CurrentUser> {
 fn error_filter(e: FilterError) -> AppError {
     AppError::BadRequest(e.to_string())
 }
-fn error_validation(e: che_orm2::ValidationErrors) -> AppError {
+fn error_validation(e: che_orm::ValidationErrors) -> AppError {
     AppError::BadRequest(e.detail)
 }
-fn error_write(e: che_orm2::OrmError) -> AppError {
+fn error_write(e: che_orm::OrmError) -> AppError {
     match e {
-        che_orm2::OrmError::QueryBuild(error) => AppError::BadRequest(format!("{error:?}")),
+        che_orm::OrmError::QueryBuild(error) => AppError::BadRequest(format!("{error:?}")),
         other => AppError::Orm(other),
     }
 }

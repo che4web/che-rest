@@ -227,10 +227,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "che-orm2"
+name = "che-orm"
 version = "0.1.0"
 dependencies = [
- "che-orm2-macros",
+ "che-orm-macros",
  "deadpool-sqlite",
  "rusqlite",
  "serde",
@@ -241,7 +241,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "che-orm2-macros"
+name = "che-orm-macros"
 version = "0.1.0"
 dependencies = [
  "proc-macro-crate",
@@ -256,7 +256,7 @@ version = "0.1.0"
 dependencies = [
  "argon2",
  "axum",
- "che-orm2",
+ "che-orm",
  "clap",
  "futures-util",
  "hex",
@@ -316,7 +316,7 @@ name = "cli_fullstack"
 version = "0.1.0"
 dependencies = [
  "axum",
- "che-orm2",
+ "che-orm",
  "che-rest",
  "futures-util",
  "reqwest",

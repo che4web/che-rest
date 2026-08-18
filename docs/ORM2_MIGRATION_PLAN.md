@@ -1,7 +1,7 @@
-# che-orm2 Migration Plan
+# che-orm Migration Plan
 
 This document describes the breaking migration of `che-rest` from the legacy
-`che-orm` API to `che-orm2`. The ORM2 REST implementation is owned by this
+`che-orm` API to `che-orm`. The ORM2 REST implementation is owned by this
 crate under `src/rest`; no separate experimental REST crate is part of the
 architecture or dependency graph.
 
@@ -12,7 +12,7 @@ not need to be preserved or converted.
 
 The following work is already present:
 
-- `che-orm2::Database` is stored in `AppState`.
+- `che-orm::Database` is stored in `AppState`.
 - Typed ORM2 CRUD, filters, pagination, count queries and permissions exist.
 - Auth models and auth queries use ORM2 models and builders.
 - Management has an initial Atlas `schema`, `makemigrations` and `migrate`
@@ -21,7 +21,7 @@ The following work is already present:
 
 ## Phase 0: Stabilize ORM2 Contracts
 
-Complete these changes in `che-orm2` and the local REST implementation:
+Complete these changes in `che-orm` and the local REST implementation:
 
 - Make serializer `is_valid` accept JSON and return a typed `ValidatedWrite`;
   serializers must not execute database operations.
@@ -83,7 +83,7 @@ Migrate and verify applications in this order:
 
 Generated projects must use:
 
-- `che-orm2` model attributes;
+- `che-orm` model attributes;
 - generated serializer DTOs;
 - typed viewsets and filters;
 - Atlas migrations from an empty database;

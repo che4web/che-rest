@@ -17,7 +17,7 @@ pub mod state;
 pub use app_channels::AppChannels;
 pub use auth::{CurrentUser, IsAdminUser, IsAuthenticated};
 pub use channels::Channels;
-pub use che_orm2::{
+pub use che_orm::{
     Database, Model, ModelSerializer, ModelWriteSerializer, PatchField, ValidatedWrite,
     ValidationErrors, WriteMode,
 };

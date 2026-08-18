@@ -8,7 +8,7 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use che_orm2::Model;
+use che_orm::Model;
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
@@ -18,7 +18,7 @@ use crate::{
 
 pub use models::{AuthSession, AuthToken, User, hash_password, verify_password};
 
-#[derive(che_orm2::ModelSerializer)]
+#[derive(che_orm::ModelSerializer)]
 #[serializer(model = User)]
 pub struct AdminUserSerializer {
     #[serializer(read_only)]
@@ -46,12 +46,12 @@ impl FilterSetSpec for AdminUserFilterSet {
 impl ViewSet for AdminUserViewSet {
     type Model = User;
     type Serializer = AdminUserSerializer;
-    type QuerySet = che_orm2::DatabaseQuery<User>;
+    type QuerySet = che_orm::DatabaseQuery<User>;
     type FilterSet = AdminUserFilterSet;
     type Permission = ReadOnlyAdminUser;
 
     fn get_queryset(&self) -> Self::QuerySet {
-        che_orm2::DatabaseQuery::new(User::query())
+        che_orm::DatabaseQuery::new(User::query())
     }
 
     fn path(&self) -> &'static str {
@@ -71,7 +71,7 @@ pub struct CurrentUser {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct IsAuthenticated;
 
-impl<M: che_orm2::Model> Permission<M> for IsAuthenticated {
+impl<M: che_orm::Model> Permission<M> for IsAuthenticated {
     fn check(
         &self,
         _state: &AppState,
@@ -87,7 +87,7 @@ impl<M: che_orm2::Model> Permission<M> for IsAuthenticated {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct IsAdminUser;
 
-impl<M: che_orm2::Model> Permission<M> for IsAdminUser {
+impl<M: che_orm::Model> Permission<M> for IsAdminUser {
     fn check(
         &self,
         _state: &AppState,
@@ -107,7 +107,7 @@ impl<M: che_orm2::Model> Permission<M> for IsAdminUser {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ReadOnlyAdminUser;
 
-impl<M: che_orm2::Model> Permission<M> for ReadOnlyAdminUser {
+impl<M: che_orm::Model> Permission<M> for ReadOnlyAdminUser {
     fn check(
         &self,
         state: &AppState,
@@ -145,8 +145,8 @@ impl AppModule for AuthModule {
         "auth"
     }
 
-    fn schema(&self) -> che_orm2::SchemaSet {
-        che_orm2::SchemaSet::new()
+    fn schema(&self) -> che_orm::SchemaSet {
+        che_orm::SchemaSet::new()
             .model::<User>()
             .model::<AuthToken>()
             .model::<AuthSession>()
@@ -379,7 +379,7 @@ mod tests {
 
     #[test]
     fn admin_permission_requires_admin_or_superuser() {
-        let state = AppState::from_database(che_orm2::Database::connect(":memory:").unwrap());
+        let state = AppState::from_database(che_orm::Database::connect(":memory:").unwrap());
         let regular = CurrentUser {
             id: 1,
             username: "regular".into(),

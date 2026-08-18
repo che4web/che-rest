@@ -1,6 +1,6 @@
 use super::models::{Task, TaskAssigneeRelation, TaskAuthorRelation, TaskStatus};
 
-#[derive(che_orm2::ModelSerializer)]
+#[derive(che_orm::ModelSerializer)]
 #[serializer(model = che_rest::auth::models::User)]
 pub struct AuthorSerializer {
     #[serializer(read_only)]
@@ -8,7 +8,7 @@ pub struct AuthorSerializer {
     pub username: String,
 }
 
-#[derive(che_orm2::ModelSerializer)]
+#[derive(che_orm::ModelSerializer)]
 #[serializer(model = Task)]
 pub struct TaskSerializer {
     #[serializer(read_only)]

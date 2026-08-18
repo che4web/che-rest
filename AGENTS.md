@@ -1,7 +1,7 @@
 # AGENTS.md
 
 ## Repo Shape
-- This is a single Rust library crate, not a Cargo workspace; it depends on the sibling path `../che-orm2`.
+- This is a single Rust library crate, not a Cargo workspace; it depends on the sibling path `../che-orm`.
 - The ORM2 state/error and typed CRUD REST surface are implemented in this crate. Legacy ORM integrations are not part of the public build.
 - Public API is re-exported from `src/lib.rs`; the REST implementation lives under `src/rest`.
 

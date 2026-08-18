@@ -145,7 +145,7 @@ fn api(endpoints: &[ApiEndpoint]) -> String {
     out
 }
 
-fn field_ts_type(endpoint: &ApiEndpoint, field: &che_orm2::SerializerField) -> String {
+fn field_ts_type(endpoint: &ApiEndpoint, field: &che_orm::SerializerField) -> String {
     if let Some(model) = field.related_model {
         if field.name == field.source {
             let nullable = endpoint
@@ -187,7 +187,7 @@ fn field_ts_type(endpoint: &ApiEndpoint, field: &che_orm2::SerializerField) -> S
     }
 }
 
-fn field_required(endpoint: &ApiEndpoint, field: &che_orm2::SerializerField) -> bool {
+fn field_required(endpoint: &ApiEndpoint, field: &che_orm::SerializerField) -> bool {
     endpoint
         .columns
         .iter()
@@ -436,7 +436,7 @@ mod tests {
             model_name: "Task".into(),
             resource: "tasks".into(),
             fields: vec![
-                che_orm2::SerializerField {
+                che_orm::SerializerField {
                     name: "id",
                     source: "id",
                     read_only: true,
@@ -445,7 +445,7 @@ mod tests {
                     related_model: None,
                     many: false,
                 },
-                che_orm2::SerializerField {
+                che_orm::SerializerField {
                     name: "author",
                     source: "author_id",
                     read_only: true,
@@ -454,7 +454,7 @@ mod tests {
                     related_model: Some("che_rest::auth::models::User"),
                     many: false,
                 },
-                che_orm2::SerializerField {
+                che_orm::SerializerField {
                     name: "name",
                     source: "name",
                     read_only: false,
@@ -463,7 +463,7 @@ mod tests {
                     related_model: None,
                     many: false,
                 },
-                che_orm2::SerializerField {
+                che_orm::SerializerField {
                     name: "status",
                     source: "status",
                     read_only: false,

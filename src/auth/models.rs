@@ -4,7 +4,7 @@ use argon2::{
 };
 use time::OffsetDateTime;
 
-#[derive(Debug, che_orm2::Model)]
+#[derive(Debug, che_orm::Model)]
 #[orm(table = "auth_users")]
 pub struct User {
     #[orm(primary_key)]
@@ -22,7 +22,7 @@ pub struct User {
     pub is_superuser: bool,
 }
 
-#[derive(Debug, che_orm2::Model)]
+#[derive(Debug, che_orm::Model)]
 #[orm(table = "auth_tokens", index("user_id"))]
 pub struct AuthToken {
     #[orm(primary_key)]
@@ -33,7 +33,7 @@ pub struct AuthToken {
     pub key_hash: String,
 }
 
-#[derive(Debug, che_orm2::Model)]
+#[derive(Debug, che_orm::Model)]
 #[orm(table = "auth_sessions", index("user_id"))]
 pub struct AuthSession {
     #[orm(primary_key)]

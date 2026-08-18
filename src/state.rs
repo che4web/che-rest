@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use che_orm2::Database;
+use che_orm::Database;
 
 use crate::{AppConfig, AppResult};
 use crate::{app_channels::AppChannels, channels::Channels, signals::SignalBus};

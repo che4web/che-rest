@@ -204,10 +204,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
-name = "che-orm2"
+name = "che-orm"
 version = "0.1.0"
 dependencies = [
- "che-orm2-macros",
+ "che-orm-macros",
  "deadpool-sqlite",
  "rusqlite",
  "serde",
@@ -218,7 +218,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "che-orm2-macros"
+name = "che-orm-macros"
 version = "0.1.0"
 dependencies = [
  "proc-macro-crate",
@@ -233,7 +233,7 @@ version = "0.1.0"
 dependencies = [
  "argon2",
  "axum",
- "che-orm2",
+ "che-orm",
  "clap",
  "futures-util",
  "hex",

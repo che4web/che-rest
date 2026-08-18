@@ -32,8 +32,8 @@ impl AppModule for ChannelsModule {
         "channels"
     }
 
-    fn schema(&self) -> che_orm2::SchemaSet {
-        che_orm2::SchemaSet::new()
+    fn schema(&self) -> che_orm::SchemaSet {
+        che_orm::SchemaSet::new()
     }
 
     fn init(&self, context: &mut ModuleContext) {

@@ -1,6 +1,6 @@
 use time::OffsetDateTime;
 
-#[derive(Debug, che_orm2::Model)]
+#[derive(Debug, che_orm::Model)]
 #[orm(table = "notifications_notification")]
 pub struct Notification {
     #[orm(primary_key)]

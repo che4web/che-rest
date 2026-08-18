@@ -2,7 +2,7 @@
 name = "che-rest"
 version = "0.1.0"
 edition = "2024"
-description = "Typed REST framework and project tooling for che-orm2 applications"
+description = "Typed REST framework and project tooling for che-orm applications"
 license = "MIT"
 repository = "https://github.com/che4web/che-rest"
 homepage = "https://github.com/che4web/che-rest"
@@ -16,7 +16,7 @@ exclude = ["benchmarks/**"]
 axum = { version = "0.8", features = ["ws"] }
 argon2 = "0.5"
 clap = { version = "4", features = ["derive"] }
-che-orm2 = { version = "0.1.0", path = "../che-orm2" }
+che-orm = { version = "0.1.0", path = "../che-orm" }
 hex = "0.4"
 futures-util = "0.3"
 rand = "0.8"

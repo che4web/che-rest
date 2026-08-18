@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use che_orm2::{Database, Model, SchemaSet, SqliteDialect, rusqlite::OptionalExtension};
+use che_orm::{Database, Model, SchemaSet, SqliteDialect, rusqlite::OptionalExtension};
 use clap::{Parser, Subcommand};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
@@ -31,7 +31,7 @@ enum CommandKind {
         #[arg(long, default_value = "")]
         che_rest_path: String,
         #[arg(long, default_value = "")]
-        che_orm2_path: String,
+        che_orm_path: String,
         #[arg(long, default_value_t = false)]
         with_auth: bool,
         #[arg(long, default_value_t = false)]
@@ -120,14 +120,14 @@ impl Management {
                 name,
                 out,
                 che_rest_path,
-                che_orm2_path,
+                che_orm_path,
                 with_auth,
                 force,
             } => crate::startproject(StartProjectOptions {
                 name,
                 out,
                 che_rest_path,
-                che_orm2_path,
+                che_orm_path,
                 with_auth,
                 force,
             })?,
@@ -283,7 +283,7 @@ async fn run_sqlite_migrations(
 }
 
 fn apply_sqlite_migrations(
-    connection: &mut che_orm2::rusqlite::Connection,
+    connection: &mut che_orm::rusqlite::Connection,
     migrations: Vec<refinery::Migration>,
 ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
     let applied = applied_migrations(connection)?;
@@ -339,7 +339,7 @@ fn apply_sqlite_migrations(
             )?;
             connection.execute(
                 "INSERT INTO refinery_schema_history (version, name, applied_on, checksum) VALUES (?1, ?2, ?3, ?4)",
-                che_orm2::rusqlite::params![
+                che_orm::rusqlite::params![
                     migration.version(),
                     migration.name(),
                     OffsetDateTime::now_utc().format(&Rfc3339)?,
@@ -368,7 +368,7 @@ fn apply_sqlite_migrations(
 const MIGRATION_HISTORY_SQL: &str = "CREATE TABLE IF NOT EXISTS refinery_schema_history(\n             version int8 PRIMARY KEY,\n             name VARCHAR(255),\n             applied_on VARCHAR(255),\n             checksum VARCHAR(255));";
 
 fn applied_migrations(
-    connection: &che_orm2::rusqlite::Connection,
+    connection: &che_orm::rusqlite::Connection,
 ) -> Result<Vec<refinery::Migration>, Box<dyn std::error::Error + Send + Sync>> {
     let has_history = connection
         .query_row(
@@ -470,7 +470,7 @@ where
     T: Send + 'static,
     F: FnOnce(
             refinery::Runner,
-            &mut che_orm2::rusqlite::Connection,
+            &mut che_orm::rusqlite::Connection,
         ) -> Result<T, Box<dyn std::error::Error + Send + Sync>>
         + Send
         + 'static,
@@ -495,7 +495,7 @@ where
 }
 
 fn assert_foreign_keys_valid(
-    connection: &che_orm2::rusqlite::Connection,
+    connection: &che_orm::rusqlite::Connection,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut statement = connection
         .prepare("PRAGMA foreign_key_check;")
@@ -617,7 +617,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use che_orm2::{Database, Model, rusqlite::OptionalExtension};
+    use che_orm::{Database, Model, rusqlite::OptionalExtension};
     use clap::Parser;
 
     use super::{Cli, Management, apply_migrations, migration_status};
@@ -756,7 +756,7 @@ mod tests {
         apply_migrations(&config, migrations.clone()).await.unwrap();
         apply_migrations(&config, migrations.clone()).await.unwrap();
 
-        let connection = che_orm2::rusqlite::Connection::open(&database_path).unwrap();
+        let connection = che_orm::rusqlite::Connection::open(&database_path).unwrap();
         let count: i64 = connection
             .query_row("SELECT COUNT(*) FROM items", [], |row| row.get(0))
             .unwrap();
@@ -831,7 +831,7 @@ mod tests {
             .to_string();
         assert!(error.contains("foreign key violations"));
 
-        let connection = che_orm2::rusqlite::Connection::open(&database_path).unwrap();
+        let connection = che_orm::rusqlite::Connection::open(&database_path).unwrap();
         let children_table: Option<String> = connection
             .query_row(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'children'",
@@ -864,7 +864,7 @@ mod tests {
 
         apply_migrations(&config, migrations).await.unwrap();
 
-        let connection = che_orm2::rusqlite::Connection::open(&database_path).unwrap();
+        let connection = che_orm::rusqlite::Connection::open(&database_path).unwrap();
         let task_table: String = connection
             .query_row(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tasks_task'",

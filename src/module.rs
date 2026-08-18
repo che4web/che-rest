@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::{Json, Router, response::Html, routing::get};
-use che_orm2::SchemaSet;
+use che_orm::SchemaSet;
 use serde_json::{Map, Value, json};
 
 use crate::{
@@ -28,7 +28,7 @@ pub struct ApiEndpoint {
     pub app_name: &'static str,
     pub model_name: String,
     pub resource: String,
-    pub fields: Vec<che_orm2::SerializerField>,
+    pub fields: Vec<che_orm::SerializerField>,
     pub columns: Vec<ApiColumn>,
     pub filters: Vec<ApiFilter>,
 }
@@ -150,7 +150,7 @@ impl ModuleContext {
     where
         M: Model + Send + Sync + 'static,
         S: ModelSerializer<Model = M, Input = M>
-            + che_orm2::ModelWriteSerializer<Model = M>
+            + che_orm::ModelWriteSerializer<Model = M>
             + serde::Serialize
             + Send
             + Sync
@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn lifecycle_signals_are_opt_in() {
-        let state = AppState::from_database(che_orm2::Database::connect_in_memory().unwrap());
+        let state = AppState::from_database(che_orm::Database::connect_in_memory().unwrap());
         let mut context = ModuleContext::new(state.clone());
 
         context.viewset_with("/auth/users", crate::auth::AdminUserViewSet);

@@ -8,7 +8,7 @@ pub struct TaskViewSet;
 impl ViewSet for TaskViewSet {
     type Model = Task;
     type Serializer = TaskSerializer;
-    type QuerySet = che_orm2::SelectRelatedQuery<
+    type QuerySet = che_orm::SelectRelatedQuery<
         Task,
         che_rest::auth::models::User,
         super::models::TaskAuthorRelation,
@@ -17,7 +17,7 @@ impl ViewSet for TaskViewSet {
     type Permission = AllowAny;
 
     fn get_queryset(&self) -> Self::QuerySet {
-        che_orm2::DatabaseQuery::new(Task::query()).select_related(Task::AUTHOR)
+        che_orm::DatabaseQuery::new(Task::query()).select_related(Task::AUTHOR)
     }
 
     fn prepare_create(

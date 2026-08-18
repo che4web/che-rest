@@ -16,8 +16,8 @@ impl AppModule for TasksModule {
         "tasks"
     }
 
-    fn schema(&self) -> che_orm2::SchemaSet {
-        che_orm2::SchemaSet::new().model::<models::Task>()
+    fn schema(&self) -> che_orm::SchemaSet {
+        che_orm::SchemaSet::new().model::<models::Task>()
     }
 
     fn init(&self, context: &mut ModuleContext) {

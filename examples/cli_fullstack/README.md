@@ -9,7 +9,7 @@ The repository layout expected by the default generator is:
 
 ```text
 ../che-rest
-../che-orm2
+../che-orm
 ```
 
 Create a fresh project with built-in authentication. The temporary output path keeps the checked-in
@@ -20,7 +20,7 @@ cargo run --bin manage -- startproject cli_fullstack \
   --out /tmp \
   --with-auth \
   --che-rest-path "$PWD" \
-  --che-orm2-path "$PWD/../che-orm2"
+  --che-orm-path "$PWD/../che-orm"
 
 cd /tmp/cli_fullstack
 ```

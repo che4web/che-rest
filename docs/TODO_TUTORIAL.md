@@ -5,7 +5,7 @@ development layout of this repository:
 
 ```text
 che-rest/
-che-orm2/
+che-orm/
 ```
 
 ## 1. Create A Project
@@ -16,7 +16,7 @@ From the `che-rest` repository root, create the project next to the two framewor
 cargo run --bin manage -- startproject todo_api \
   --out .. \
   --che-rest-path ../che-rest \
-  --che-orm2-path ../che-orm2
+  --che-orm-path ../che-orm
 cd ../todo_api
 ```
 
