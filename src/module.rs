@@ -146,7 +146,7 @@ impl ModuleContext {
         self.schemas.push(SchemaSet::new().model::<M>());
     }
 
-    pub fn viewset<M, S>(&mut self, path: &'static str, viewset: CrudViewSet<M, S>)
+    pub fn viewset<M, S>(&mut self, viewset: CrudViewSet<M, S>)
     where
         M: Model + Send + Sync + 'static,
         S: ModelSerializer<Model = M, Input = M>
@@ -156,14 +156,15 @@ impl ModuleContext {
             + Sync
             + 'static,
     {
-        self.viewset_with(path, viewset);
+        self.viewset_with(viewset);
     }
 
-    pub fn viewset_with<V>(&mut self, path: &'static str, viewset: V)
+    pub fn viewset_with<V>(&mut self, viewset: V)
     where
         V: ViewSet,
         V::Serializer: serde::Serialize,
     {
+        let path = viewset.path();
         self.api_endpoints.push(ApiEndpoint {
             app_name: self.current_app,
             model_name: std::any::type_name::<V::Model>()
@@ -297,9 +298,20 @@ mod tests {
         let state = AppState::from_database(che_orm::Database::connect_in_memory().unwrap());
         let mut context = ModuleContext::new(state.clone());
 
-        context.viewset_with("/auth/users", crate::auth::AdminUserViewSet);
+        context.viewset_with(crate::auth::AdminUserViewSet);
 
         assert!(state.signals().public_signals().is_empty());
+    }
+
+    #[test]
+    fn viewset_path_drives_metadata_and_openapi() {
+        let state = AppState::from_database(che_orm::Database::connect_in_memory().unwrap());
+        let mut context = ModuleContext::new(state);
+
+        context.viewset_with(crate::auth::AdminUserViewSet);
+
+        assert_eq!(context.api_endpoints()[0].resource, "auth/users");
+        assert!(context.openapi_paths.contains_key("/auth/users/"));
     }
 }
 

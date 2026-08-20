@@ -297,7 +297,7 @@ not alter the schema.
 - `src/apps/<app>/views.rs`: typed CRUD viewsets and permissions.
 - `src/bin/manage.rs`: management command entrypoint.
 
-Register CRUD with `ctx.viewset_with("/users", views::UserViewSet)`. This registers the model
+Register CRUD with `ctx.viewset_with(views::UserViewSet)`. This registers the model
 schema, API metadata, and router together. Do not use only `ctx.route(...)` for a model API.
 
 ## Conventions
@@ -612,10 +612,7 @@ fn app_mod_template(app_name: &str, models: &[String]) -> String {
         .collect::<String>();
     let viewsets = models
         .iter()
-        .map(|model| {
-            let path = to_snake_case(model);
-            format!("        context.viewset_with(\"/{path}\", views::{model}ViewSet);")
-        })
+        .map(|model| format!("        context.viewset_with(views::{model}ViewSet);"))
         .collect::<Vec<_>>()
         .join("\n");
 

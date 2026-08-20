@@ -61,7 +61,7 @@ The generated route is singular. Change it to a plural resource URL in `src/apps
 
 ```rust
 fn init(&self, ctx: &mut ModuleContext) {
-    ctx.viewset_with("/tasks", views::TaskViewSet);
+    ctx.viewset_with(views::TaskViewSet);
 }
 ```
 

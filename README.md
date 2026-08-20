@@ -34,7 +34,22 @@ cd my_project
 cargo run
 ```
 
-When developing against local checkouts, point the generated project at them:
+### cargo-generate Template
+
+Use the standalone [`che-rest-template`](https://github.com/che4web/che-rest-template) repository
+to generate a minimal project with [`cargo-generate`](https://github.com/cargo-generate/cargo-generate):
+
+```bash
+cargo install cargo-generate
+cargo generate --git https://github.com/che4web/che-rest-template.git --name my_api \
+  --define che_rest_path=/path/to/che-rest \
+  --define che_orm_path=/path/to/che-orm
+```
+
+See that repository for its requirements and complete setup instructions.
+
+When developing against local checkouts with the built-in project generator, point the generated
+project at them:
 
 ```bash
 cargo run --bin manage -- startproject my_project \
@@ -130,16 +145,6 @@ does not require editing Rust code.
 
 Installed app routes are served under `/api` by default. A viewset registered as `"/users"` is exposed as `/api/users`.
 Swagger UI is exposed at `/api/` and the OpenAPI JSON schema at `/api/openapi.json`.
-Customize the displayed API metadata during server setup:
-
-```rust
-let app = Server::new(state)
-    .install(apps::installed_apps())
-    .openapi_title("My API")
-    .openapi_version("0.1.0")
-    .build()
-    .await?;
-```
 
 Writable foreign-key fields can be exposed separately from nested read-only output. Use
 `#[serializer(foreign_key = User, relation = TaskAssigneeRelation)]` on a scalar `Option<i64>`
@@ -194,10 +199,11 @@ impl ViewSet for TaskViewSet {
 }
 ```
 
-Register a typed viewset with `viewset_with`; this also registers its model schema and API metadata:
+Register a typed viewset with `viewset_with`; it uses `ViewSet::path()` for the router, model schema,
+and API metadata:
 
 ```rust
-ctx.viewset_with("/tasks", TaskViewSet);
+ctx.viewset_with(TaskViewSet);
 ```
 
 `FilterSetSpec` types must implement `Default`. Built-in permissions include `AllowAny`,
@@ -261,16 +267,6 @@ impl ViewSet for TaskViewSet {
 ORM writes use generated field descriptors: use `.set(Task::NAME, value)` instead of string field
 names. Serializer validation returns `ValidatedWrite`; viewset `prepare_*` hooks can add server-owned
 fields before `ValidatedWrite::save(database)` persists the change.
-
-Disable the runtime Swagger UI if needed:
-
-```rust
-let app = Server::new(state)
-    .install(apps::installed_apps())
-    .swagger_ui(false)
-    .build()
-    .await?;
-```
 
 ## Auth
 
@@ -492,37 +488,6 @@ curl -i -c cookies.txt -X POST http://127.0.0.1:3000/api-session-auth/login/ \
 
 Unsafe requests made with a session must include the value from the `csrf_token` cookie in
 the `X-CSRF-Token` header. Token-authenticated requests do not require CSRF validation.
-
-Session data can be typed by a downstream application:
-
-```rust
-#[derive(Default, serde::Serialize, serde::Deserialize)]
-#[serde(default)]
-struct AppSession {
-    active_workspace_id: Option<i64>,
-}
-
-impl che_rest::auth::SessionData for AppSession {}
-
-InstalledApps::new()
-    .add(che_rest::auth::module_with_session::<AppSession>());
-```
-
-Handlers can extract and persist the typed data:
-
-```rust
-async fn select_workspace(
-    mut session: che_rest::auth::Session<AppSession>,
-) -> che_rest::AppResult<()> {
-    session.data.active_workspace_id = Some(42);
-    session.save().await
-}
-```
-
-Session data is JSON stored server-side. Use `#[serde(default)]` when adding fields so existing
-sessions remain readable. Sessions are protected by optimistic revision locking.
-
-Admin-only routers can use `che_rest::auth::admin_required_middleware`. It allows users with `is_admin` or `is_superuser`.
 
 Project-local `src/bin/manage.rs`:
 

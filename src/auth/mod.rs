@@ -154,7 +154,7 @@ impl AppModule for AuthModule {
 
     fn init(&self, context: &mut ModuleContext) {
         context.route_at_root(views::routes());
-        context.viewset_with("/auth/users", AdminUserViewSet);
+        context.viewset_with(AdminUserViewSet);
     }
 
     fn middleware(&self, router: axum::Router, _state: &AppState) -> axum::Router {

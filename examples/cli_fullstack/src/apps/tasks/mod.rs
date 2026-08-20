@@ -21,6 +21,6 @@ impl AppModule for TasksModule {
     }
 
     fn init(&self, context: &mut ModuleContext) {
-        context.viewset_with("/tasks", views::TaskViewSet);
+        context.viewset_with(views::TaskViewSet);
     }
 }

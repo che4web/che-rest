@@ -21,6 +21,6 @@ impl che_rest::AppModule for Tasks {
     }
 
     fn init(&self, context: &mut che_rest::ModuleContext) {
-        context.viewset_with("/tasks", views::TaskViewSet);
+        context.viewset_with(views::TaskViewSet);
     }
 }
