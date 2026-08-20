@@ -709,6 +709,21 @@ mod tests {
             Some("auth.users.deleted")
         );
     }
+
+    #[test]
+    fn count_params_exclude_ordering() {
+        let params = HashMap::from([
+            ("ordering".to_owned(), "-created_at".to_owned()),
+            ("name__contains".to_owned(), "task".to_owned()),
+            ("limit".to_owned(), "50".to_owned()),
+        ]);
+
+        let count_params = count_params(&params);
+
+        assert!(!count_params.contains_key("ordering"));
+        assert_eq!(count_params.get("name__contains"), Some(&"task".to_owned()));
+        assert_eq!(count_params.get("limit"), Some(&"50".to_owned()));
+    }
 }
 
 pub fn openapi_json_for<M, S>(path: &str) -> serde_json::Value
@@ -865,6 +880,12 @@ fn page(params: &HashMap<String, String>, name: &str) -> AppResult<u64> {
         .map(|v| v.unwrap_or(0))
 }
 
+fn count_params(params: &HashMap<String, String>) -> HashMap<String, String> {
+    let mut params = params.clone();
+    params.remove("ordering");
+    params
+}
+
 async fn list<V: ViewSet>(
     Extension(state): Extension<AppState>,
     Extension(viewset): Extension<V>,
@@ -877,8 +898,9 @@ where
     let u = user(&who);
     V::Permission::default().check(&state, u, ViewAction::List)?;
     let filter = viewset.filterset();
+    let count_params = count_params(&params);
     let count = filter
-        .apply(viewset.get_queryset(), &params)
+        .apply(viewset.get_queryset(), &count_params)
         .map_err(error_filter)?
         .count(state.database())
         .await?;
