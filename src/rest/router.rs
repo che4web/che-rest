@@ -842,6 +842,7 @@ pub fn openapi_column_schema(column: &che_orm::ColumnSchema) -> serde_json::Valu
     let mut schema = match column.column_type {
         che_orm::ColumnType::Integer => json!({"type": "integer", "format": "int64"}),
         che_orm::ColumnType::Text => json!({"type": "string"}),
+        che_orm::ColumnType::Binary => json!({"type": "string", "format": "byte"}),
         che_orm::ColumnType::Boolean => json!({"type": "boolean"}),
         che_orm::ColumnType::DateTime => json!({"type": "string", "format": "date-time"}),
     };
