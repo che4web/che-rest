@@ -118,6 +118,14 @@ impl FilterValue for time::OffsetDateTime {
     }
 }
 
+impl<T: FilterValue> FilterValue for Option<T> {
+    const EXPECTED: &'static str = T::EXPECTED;
+
+    fn parse(value: &str) -> Result<Self, FilterError> {
+        T::parse(value).map(Some)
+    }
+}
+
 pub trait RestQuerySet: Sized + Send {
     type Model: Model + Send + Sync + 'static;
     type Item: Send + Sync + 'static;

@@ -352,13 +352,14 @@ export function useModelList<T extends BaseEntity, CreateDTO = Partial<T>, Updat
   const items = shallowRef<T[]>([]);
   const filters = reactive({{ ...(options.defaultFilters ?? {{}}) }} as Params) as Params;
   const count = ref(0); const loading = ref(false); const error = ref("");
-  let loadTimer: ReturnType<typeof setTimeout> | undefined; let skipNextFilterReload = false;
-  async function load(params?: Partial<Params>) {{
-    if (params) {{ skipNextFilterReload = true; Object.assign(filters, params); }}
-    loading.value = true; error.value = "";
-    try {{ const response = await api.list(cleanParams(filters) as Params); items.value = response.results; count.value = response.count; return response; }}
-    catch (err) {{ handleError(err, "Unable to load objects"); return null; }} finally {{ loading.value = false; }}
-  }}
+   let loadTimer: ReturnType<typeof setTimeout> | undefined; let skipNextFilterReload = false; let requestSequence = 0;
+   async function load(params?: Partial<Params>) {{
+     const request = ++requestSequence;
+     if (params) {{ skipNextFilterReload = true; Object.assign(filters, params); }}
+     loading.value = true; error.value = "";
+     try {{ const response = await api.list(cleanParams(filters) as Params); if (request !== requestSequence) return null; items.value = response.results; count.value = response.count; return response; }}
+     catch (err) {{ if (request === requestSequence) handleError(err, "Unable to load objects"); return null; }} finally {{ if (request === requestSequence) loading.value = false; }}
+   }}
   async function remove(id: number) {{ loading.value = true; try {{ await api.remove(id); await load(); return true; }} catch (err) {{ handleError(err, "Unable to delete object"); return false; }} finally {{ loading.value = false; }} }}
   if (options.reloadOnFilterChange) watch(filters, () => {{ if (skipNextFilterReload) {{ skipNextFilterReload = false; return; }} clearTimeout(loadTimer); loadTimer = setTimeout(() => load(), options.debounceMs ?? 250); }});
   if (options.autoLoad) onMounted(() => load());
