@@ -1,4 +1,4 @@
-use std::{fs, path::Path};
+use std::{collections::BTreeSet, fs, path::Path};
 
 use crate::module::ApiEndpoint;
 
@@ -9,19 +9,27 @@ pub fn generate(
     endpoints: &[ApiEndpoint],
     force: bool,
 ) -> Result<Vec<String>, std::io::Error> {
+    // Auxiliary endpoints can expose the same model under a different resource.
+    // The admin UI manages each model once, through its primary endpoint.
+    let mut model_names = BTreeSet::new();
+    let endpoints = endpoints
+        .iter()
+        .filter(|endpoint| model_names.insert(endpoint.model_name.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
     let admin_generated = out.join("src/admin/generated");
     let admin_dir = out.join("src/admin");
     fs::create_dir_all(&admin_generated)?;
     fs::create_dir_all(&admin_dir)?;
     let schema_path = admin_generated.join("adminSchema.ts");
     let routes_path = admin_generated.join("adminRoutes.ts");
-    fs::write(&schema_path, admin_schema(endpoints))?;
-    fs::write(&routes_path, admin_routes(endpoints))?;
+    fs::write(&schema_path, admin_schema(&endpoints))?;
+    fs::write(&routes_path, admin_routes(&endpoints))?;
     fs::write(
         admin_dir.join("adminSchema.ts"),
         format!("{HEADER}export * from \"./generated/adminSchema\";\n"),
     )?;
-    for (relative, contents) in static_files(endpoints) {
+    for (relative, contents) in static_files(&endpoints) {
         let path = out.join(relative);
         if force || !path.exists() {
             if let Some(parent) = path.parent() {

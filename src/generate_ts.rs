@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::Path,
+};
 
 use crate::module::{ApiEndpoint, ApiSignal};
 use crate::rest::Lookup;
@@ -38,7 +42,11 @@ fn models(endpoints: &[ApiEndpoint]) -> String {
     let mut out = HEADER.to_owned();
     out.push_str("import type { ListParams } from \"./api_client\";\n\n");
     let mut related = BTreeMap::new();
+    let mut emitted_models = BTreeSet::new();
     for endpoint in endpoints {
+        if !emitted_models.insert(&endpoint.model_name) {
+            continue;
+        }
         out.push_str(&format!("export interface {} {{\n", endpoint.model_name));
         for field in endpoint.fields.iter().filter(|field| !field.write_only) {
             out.push_str(&format!(
@@ -124,17 +132,21 @@ fn models(endpoints: &[ApiEndpoint]) -> String {
 fn api(endpoints: &[ApiEndpoint]) -> String {
     let mut out = HEADER.to_owned();
     out.push_str("import { createModelApi } from \"./api_client\";\nimport type {\n");
+    let mut imported_models = BTreeSet::new();
     for endpoint in endpoints {
+        if !imported_models.insert(&endpoint.model_name) {
+            continue;
+        }
         out.push_str(&format!(
             "  {},\n  {}Create,\n  {}Update,\n  {}ListParams,\n",
             endpoint.model_name, endpoint.model_name, endpoint.model_name, endpoint.model_name
         ));
     }
     out.push_str("} from \"./models\";\n\n");
-    for endpoint in endpoints {
+    for (endpoint, api_name) in endpoints.iter().zip(api_names(endpoints)) {
         out.push_str(&format!(
             "export const {}Api = createModelApi<{}, {}Create, {}Update, {}ListParams>(\"{}\");\n",
-            lower_first(&endpoint.model_name),
+            api_name,
             endpoint.model_name,
             endpoint.model_name,
             endpoint.model_name,
@@ -143,6 +155,44 @@ fn api(endpoints: &[ApiEndpoint]) -> String {
         ));
     }
     out
+}
+
+fn api_names(endpoints: &[ApiEndpoint]) -> Vec<String> {
+    let mut used_names = BTreeSet::new();
+    endpoints
+        .iter()
+        .map(|endpoint| {
+            let model_name = lower_first(&endpoint.model_name);
+            if used_names.insert(model_name.clone()) {
+                model_name
+            } else {
+                resource_identifier(&endpoint.resource)
+            }
+        })
+        .collect()
+}
+
+fn resource_identifier(resource: &str) -> String {
+    let mut parts = resource
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if let Some(last) = parts.last_mut() {
+        *last = last.strip_suffix('s').unwrap_or(last);
+    }
+    let mut identifier = String::new();
+    for (index, part) in parts.into_iter().enumerate() {
+        if index == 0 {
+            identifier.push_str(part);
+        } else {
+            let mut chars = part.chars();
+            if let Some(first) = chars.next() {
+                identifier.extend(first.to_uppercase());
+                identifier.push_str(chars.as_str());
+            }
+        }
+    }
+    identifier
 }
 
 fn field_ts_type(endpoint: &ApiEndpoint, field: &che_orm::SerializerField) -> String {
@@ -178,12 +228,22 @@ fn field_ts_type(endpoint: &ApiEndpoint, field: &che_orm::SerializerField) -> St
             .collect::<Vec<_>>()
             .join(" | ");
     }
-    match field.rust_type {
+    let ty = match field.rust_type {
         "i64" | "i32" | "u64" | "usize" => "number".into(),
         "bool" => "boolean".into(),
         "String" | "&str" => "string".into(),
         value if value.contains("OffsetDateTime") => "string".into(),
         _ => "unknown".into(),
+    };
+    if endpoint
+        .columns
+        .iter()
+        .find(|column| column.name == field.source)
+        .is_some_and(|column| column.nullable)
+    {
+        format!("{ty} | null")
+    } else {
+        ty
     }
 }
 
@@ -510,5 +570,26 @@ mod tests {
         assert!(use_model_item().contains("UseModelItemOptions"));
         assert!(channels(&[]).contains("onEvent"));
         assert!(channels(&[]).contains("onClose"));
+    }
+
+    #[test]
+    fn duplicate_model_endpoints_use_resource_api_names() {
+        let user = ApiEndpoint {
+            app_name: "auth",
+            model_name: "User".into(),
+            resource: "users".into(),
+            fields: vec![],
+            columns: vec![],
+            filters: vec![],
+        };
+        let assignees = ApiEndpoint {
+            app_name: "tasks",
+            resource: "task-assignees".into(),
+            ..user.clone()
+        };
+        let generated = api(&[user, assignees]);
+        assert_eq!(generated.matches("  UserCreate,\n").count(), 1);
+        assert!(generated.contains("export const userApi"));
+        assert!(generated.contains("export const taskAssigneeApi"));
     }
 }
