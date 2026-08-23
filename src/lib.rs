@@ -28,7 +28,8 @@ pub use module::{AppModule, InstalledApps, ModuleContext, Server};
 pub use project::{StartAppOptions, StartProjectOptions, startapp, startproject};
 pub use rest::{
     AllowAny, CrudViewSet, Filter, FilterError, FilterSet, FilterSetSpec, FilterValue, Lookup,
-    Permission, RestQuerySet, ViewAction, ViewSet, openapi_column_schema, openapi_json_for, router,
+    Permission, RestQuerySet, ViewAction, ViewSet, ViewSetActions, openapi_column_schema,
+    openapi_json_for, router,
 };
 pub use signals::{SignalAccess, SignalBus, SignalEvent};
 pub use state::AppState;

@@ -27,6 +27,24 @@ pub enum ViewAction {
     Delete,
 }
 
+pub struct ViewSetActions {
+    pub router: Router,
+    pub openapi: serde_json::Value,
+}
+
+impl ViewSetActions {
+    pub fn empty() -> Self {
+        Self {
+            router: Router::new(),
+            openapi: serde_json::json!({}),
+        }
+    }
+
+    pub fn new(router: Router, openapi: serde_json::Value) -> Self {
+        Self { router, openapi }
+    }
+}
+
 pub trait Permission<M: Model>: Clone + Send + Sync + Default + 'static {
     fn check(
         &self,
@@ -613,11 +631,8 @@ pub trait ViewSet: Clone + Send + Sync + 'static {
     ) -> AppResult<ValidatedWrite<Self::Model>> {
         Ok(write)
     }
-    fn actions(&self) -> Router {
-        Router::new()
-    }
-    fn openapi_actions(&self) -> serde_json::Value {
-        json!({})
+    fn actions(&self) -> ViewSetActions {
+        ViewSetActions::empty()
     }
     fn signal_name(&self, action: ViewAction) -> Option<String> {
         let resource = self.path().trim_matches('/').replace('/', ".");
@@ -676,7 +691,7 @@ where
     }
 }
 
-pub fn router<V: ViewSet>(state: AppState, viewset: V) -> Router
+pub fn router<V: ViewSet>(state: AppState, viewset: V, actions: ViewSetActions) -> Router
 where
     V::Serializer: Serialize,
 {
@@ -690,7 +705,7 @@ where
                 .patch(patch::<V>)
                 .delete(destroy::<V>),
         )
-        .merge(viewset.actions())
+        .merge(actions.router)
         .layer(Extension(state))
         .layer(Extension(viewset))
 }

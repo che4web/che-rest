@@ -219,11 +219,8 @@ impl ModuleContext {
         let document = openapi_json_for::<V::Model, V::Serializer>(path);
         let mut document = document;
         add_filter_parameters::<V>(&mut document, &viewset);
-        if let Some(action_paths) = viewset
-            .openapi_actions()
-            .get("paths")
-            .and_then(Value::as_object)
-        {
+        let actions = viewset.actions();
+        if let Some(action_paths) = actions.openapi.get("paths").and_then(Value::as_object) {
             if let Some(paths) = document["paths"].as_object_mut() {
                 paths.extend(action_paths.clone());
             }
@@ -234,7 +231,7 @@ impl ModuleContext {
         if let Some(schemas) = document["components"]["schemas"].as_object() {
             self.openapi_components.extend(schemas.clone());
         }
-        self.routers.push(router(state.clone(), viewset));
+        self.routers.push(router(state.clone(), viewset, actions));
     }
 
     fn schema(&self) -> SchemaSet {
