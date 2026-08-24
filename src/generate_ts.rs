@@ -641,4 +641,26 @@ mod tests {
         assert!(channels(&[]).contains("onEvent"));
         assert!(channels(&[]).contains("onClose"));
     }
+
+    #[test]
+    fn duplicate_model_endpoints_use_resource_api_names() {
+        let user = ApiEndpoint {
+            app_name: "auth",
+            model_name: "User".into(),
+            resource: "users".into(),
+            fields: vec![],
+            columns: vec![],
+            filters: vec![],
+            extensions: vec![],
+        };
+        let assignees = ApiEndpoint {
+            app_name: "tasks",
+            resource: "task-assignees".into(),
+            ..user.clone()
+        };
+        let generated = api(&[user, assignees]);
+        assert_eq!(generated.matches("  UserCreate,\n").count(), 1);
+        assert!(generated.contains("export const userApi"));
+        assert!(generated.contains("export const taskAssigneeApi"));
+    }
 }
