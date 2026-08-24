@@ -42,7 +42,7 @@ fn admin_schema(endpoints: &[ApiEndpoint]) -> String {
     out.push_str("import {\n");
     let mut apps = Vec::new();
     for endpoint in endpoints {
-        out.push_str(&format!("  {}Api,\n", lower_first(&endpoint.model_name)));
+        out.push_str(&format!("  {}Api,\n", api_name(endpoint, endpoints)));
     }
     out.push_str("} from \"../../generated/api\";\n\n");
     out.push_str("export type AdminFieldType = \"integer\" | \"text\" | \"boolean\" | \"real\" | \"datetime\";\n\n");
@@ -56,7 +56,7 @@ fn admin_schema(endpoints: &[ApiEndpoint]) -> String {
             js(endpoint.app_name),
             js(&endpoint.model_name),
             js(&endpoint.resource),
-            lower_first(&endpoint.model_name)
+            api_name(endpoint, endpoints)
         ));
         out.push_str("    fields: [\n");
         for field in &endpoint.fields {
@@ -113,7 +113,7 @@ fn admin_schema(endpoints: &[ApiEndpoint]) -> String {
     }
     out.push_str("];\n\n");
     for endpoint in endpoints {
-        out.push_str(&format!("export const {}AdminModel = adminModels.find((model) => model.appName === {} && model.resource === {}) as AdminModel;\n", lower_first(&endpoint.model_name), js(endpoint.app_name), js(&endpoint.resource)));
+        out.push_str(&format!("export const {}AdminModel = adminModels.find((model) => model.appName === {} && model.resource === {}) as AdminModel;\n", api_name(endpoint, endpoints), js(endpoint.app_name), js(&endpoint.resource)));
     }
     out.push_str("\nexport const adminApps: AdminApp[] = [\n");
     for endpoint in endpoints {
@@ -300,8 +300,10 @@ fn static_files(endpoints: &[ApiEndpoint]) -> Vec<(String, String)> {
         ),
     ]);
     for endpoint in endpoints {
-        files.push((format!("src/admin/pages/{}List.vue", endpoint.model_name), format!("<script setup lang=\"ts\">import {{ {}AdminModel }} from \"../generated/adminSchema\"; import GenericModelTable from \"../components/GenericModelTable.vue\";</script><template><GenericModelTable :model=\"{}AdminModel\" /></template>\n", lower_first(&endpoint.model_name), lower_first(&endpoint.model_name))));
-        files.push((format!("src/admin/pages/{}Form.vue", endpoint.model_name), format!("<script setup lang=\"ts\">import {{ {}AdminModel }} from \"../generated/adminSchema\"; import GenericModelForm from \"../components/GenericModelForm.vue\";</script><template><GenericModelForm :model=\"{}AdminModel\" /></template>\n", lower_first(&endpoint.model_name), lower_first(&endpoint.model_name))));
+        let page = page_name(endpoint, endpoints);
+        let api = api_name(endpoint, endpoints);
+        files.push((format!("src/admin/pages/{page}List.vue"), format!("<script setup lang=\"ts\">import {{ {api}AdminModel }} from \"../generated/adminSchema\"; import GenericModelTable from \"../components/GenericModelTable.vue\";</script><template><GenericModelTable :model=\"{api}AdminModel\" /></template>\n")));
+        files.push((format!("src/admin/pages/{page}Form.vue"), format!("<script setup lang=\"ts\">import {{ {api}AdminModel }} from \"../generated/adminSchema\"; import GenericModelForm from \"../components/GenericModelForm.vue\";</script><template><GenericModelForm :model=\"{api}AdminModel\" /></template>\n")));
     }
     files
 }
@@ -310,11 +312,13 @@ fn admin_routes(endpoints: &[ApiEndpoint]) -> String {
     let mut out = HEADER.to_owned();
     out.push_str("import type { RouteRecordRaw } from \"vue-router\";\nimport AdminModelList from \"../AdminModelList.vue\";\n");
     for endpoint in endpoints {
-        out.push_str(&format!("import {}List from \"../pages/{}List.vue\";\nimport {}Form from \"../pages/{}Form.vue\";\n", endpoint.model_name, endpoint.model_name, endpoint.model_name, endpoint.model_name));
+        let page = page_name(endpoint, endpoints);
+        out.push_str(&format!("import {page}List from \"../pages/{page}List.vue\";\nimport {page}Form from \"../pages/{page}Form.vue\";\n"));
     }
     out.push_str("\nexport const adminRoutes: RouteRecordRaw[] = [\n  { path: \"\", component: AdminModelList },\n");
     for endpoint in endpoints {
-        out.push_str(&format!("  {{ path: {}, component: {}List }},\n  {{ path: {}, component: {}Form }},\n  {{ path: {}, component: {}Form }},\n", js(&endpoint.resource), endpoint.model_name, js(&format!("{}/new", endpoint.resource)), endpoint.model_name, js(&format!("{}/:id/edit", endpoint.resource)), endpoint.model_name));
+        let page = page_name(endpoint, endpoints);
+        out.push_str(&format!("  {{ path: {}, component: {page}List }},\n  {{ path: {}, component: {page}Form }},\n  {{ path: {}, component: {page}Form }},\n", js(&endpoint.resource), js(&format!("{}/new", endpoint.resource)), js(&format!("{}/:id/edit", endpoint.resource))));
     }
     out.push_str("];\n");
     out
@@ -342,6 +346,67 @@ fn lower_first(value: &str) -> String {
         .into_iter()
         .chain(chars)
         .collect()
+}
+fn api_name(endpoint: &ApiEndpoint, endpoints: &[ApiEndpoint]) -> String {
+    if endpoints
+        .iter()
+        .filter(|item| item.model_name == endpoint.model_name)
+        .count()
+        == 1
+    {
+        return lower_first(&endpoint.model_name);
+    }
+    endpoint
+        .resource
+        .split('/')
+        .next_back()
+        .unwrap_or(&endpoint.resource)
+        .trim_end_matches('s')
+        .split('-')
+        .enumerate()
+        .map(|(index, part)| {
+            if index == 0 {
+                part.to_owned()
+            } else {
+                let mut chars = part.chars();
+                chars
+                    .next()
+                    .map(|first| first.to_ascii_uppercase())
+                    .into_iter()
+                    .chain(chars)
+                    .collect()
+            }
+        })
+        .collect()
+}
+fn page_name(endpoint: &ApiEndpoint, endpoints: &[ApiEndpoint]) -> String {
+    let name = if endpoints
+        .iter()
+        .filter(|item| item.model_name == endpoint.model_name)
+        .count()
+        == 1
+    {
+        endpoint.model_name.clone()
+    } else {
+        endpoint
+            .resource
+            .split('/')
+            .next_back()
+            .unwrap_or(&endpoint.resource)
+            .trim_end_matches('s')
+            .split('-')
+            .map(|part| {
+                let mut chars = part.chars();
+                chars
+                    .next()
+                    .map(|first| first.to_ascii_uppercase())
+                    .into_iter()
+                    .chain(chars)
+                    .collect::<String>()
+            })
+            .collect()
+    };
+    name
 }
 fn label(value: &str) -> String {
     value
@@ -383,6 +448,7 @@ mod tests {
             fields: Vec::new(),
             columns: Vec::new(),
             filters: Vec::new(),
+            extensions: Vec::new(),
         }
     }
 

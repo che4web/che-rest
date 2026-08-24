@@ -1,6 +1,6 @@
 [package]
 name = "che-rest"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Typed REST framework and project tooling for che-orm applications"
 license = "MIT"

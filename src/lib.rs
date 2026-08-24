@@ -27,9 +27,10 @@ pub use management::Management;
 pub use module::{AppModule, InstalledApps, ModuleContext, Server};
 pub use project::{StartAppOptions, StartProjectOptions, startapp, startproject};
 pub use rest::{
-    AllowAny, CrudViewSet, Filter, FilterError, FilterSet, FilterSetSpec, FilterValue, Lookup,
-    Permission, RestQuerySet, ViewAction, ViewSet, ViewSetActions, openapi_column_schema,
-    openapi_json_for, router,
+    AllowAny, ApiExtension, ApiOperation, ApiSchema, ApiSchemaDefinition, ClientMethod,
+    CrudViewSet, ExtensionContext, Filter, FilterError, FilterSet, FilterSetSpec, FilterValue,
+    HttpMethod, Lookup, MutationHook, OperationSpec, Permission, RestQuerySet, ViewAction, ViewSet,
+    ViewSetConfig, ViewSetExtension, openapi_column_schema, openapi_json_for, router,
 };
 pub use signals::{SignalAccess, SignalBus, SignalEvent};
 pub use state::AppState;

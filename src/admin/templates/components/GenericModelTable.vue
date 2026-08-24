@@ -149,7 +149,7 @@ watch(() => props.model.resource, async () => {
           <div class="d-grid gap-2">
             <div v-for="filter in model.filters" :key="filter.name">
               <label class="form-label">{{ filter.label }}</label>
-              <select v-else-if="filter.choices" v-model="filterValues[filter.name]" class="form-select">
+              <select v-if="filter.choices" v-model="filterValues[filter.name]" class="form-select">
                 <option value="">Any</option>
                 <option v-for="choice in filter.choices" :key="choice" :value="choice">{{ choice }}</option>
               </select>

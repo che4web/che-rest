@@ -567,9 +567,9 @@ This writes:
 
 The OpenAPI document describes CRUD routes registered with `ModuleContext::viewset` and
 `viewset_with`, including list filters, `limit`, `offset`, and `ordering` query
-parameters. It is available from the running server at `/api/openapi.json` by default. Custom routes
-registered only with `ViewSet::actions()` are not included automatically; add OpenAPI metadata with
-`ViewSet::openapi_actions()`.
+parameters. A ViewSet can add reusable behavior through `ViewSetExtension` instances in
+`ViewSet::configure()`. Extension routes, OpenAPI operations, and generated TypeScript methods
+are registered from the same operation descriptors.
 The same schema is also served by running applications at `/api/openapi.json`, with
 Swagger UI available at `/api/` by default.
 

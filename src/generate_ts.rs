@@ -38,7 +38,7 @@ fn models(endpoints: &[ApiEndpoint]) -> String {
     let mut out = HEADER.to_owned();
     out.push_str("import type { ListParams } from \"./api_client\";\n\n");
     let mut related = BTreeMap::new();
-    for endpoint in endpoints {
+    for endpoint in unique_models(endpoints) {
         out.push_str(&format!("export interface {} {{\n", endpoint.model_name));
         for field in endpoint.fields.iter().filter(|field| !field.write_only) {
             out.push_str(&format!(
@@ -118,29 +118,102 @@ fn models(endpoints: &[ApiEndpoint]) -> String {
             model
         ));
     }
+    let mut extension_schemas = BTreeMap::new();
+    for endpoint in endpoints {
+        for extension in &endpoint.extensions {
+            for operation in &extension.operations {
+                if let Some(schema) = &operation.request {
+                    extension_schemas.insert(schema.name, schema.typescript);
+                }
+                if let Some((_, schema)) = &operation.response {
+                    extension_schemas.insert(schema.name, schema.typescript);
+                }
+            }
+        }
+    }
+    for definition in extension_schemas.into_values() {
+        out.push_str(definition);
+        out.push_str("\n\n");
+    }
     out
 }
 
 fn api(endpoints: &[ApiEndpoint]) -> String {
     let mut out = HEADER.to_owned();
-    out.push_str("import { createModelApi } from \"./api_client\";\nimport type {\n");
-    for endpoint in endpoints {
+    out.push_str("import { apiClient, createModelApi } from \"./api_client\";\nimport type {\n");
+    for endpoint in unique_models(endpoints) {
         out.push_str(&format!(
             "  {},\n  {}Create,\n  {}Update,\n  {}ListParams,\n",
             endpoint.model_name, endpoint.model_name, endpoint.model_name, endpoint.model_name
         ));
     }
+    let mut extension_types = BTreeMap::new();
+    for endpoint in endpoints {
+        for extension in &endpoint.extensions {
+            for operation in &extension.operations {
+                if let Some(schema) = &operation.request {
+                    extension_types.insert(schema.name, ());
+                }
+                if let Some((_, schema)) = &operation.response {
+                    extension_types.insert(schema.name, ());
+                }
+            }
+        }
+    }
+    for schema in extension_types.keys() {
+        out.push_str(&format!("  {schema},\n"));
+    }
     out.push_str("} from \"./models\";\n\n");
     for endpoint in endpoints {
+        let name = api_name(endpoint, endpoints);
+        if endpoint.extensions.is_empty() {
+            out.push_str(&format!(
+                "export const {name}Api = createModelApi<{}, {}Create, {}Update, {}ListParams>(\"{}\");\n",
+                endpoint.model_name, endpoint.model_name, endpoint.model_name, endpoint.model_name, endpoint.resource
+            ));
+            continue;
+        }
         out.push_str(&format!(
-            "export const {}Api = createModelApi<{}, {}Create, {}Update, {}ListParams>(\"{}\");\n",
-            lower_first(&endpoint.model_name),
-            endpoint.model_name,
-            endpoint.model_name,
-            endpoint.model_name,
-            endpoint.model_name,
-            endpoint.resource
+            "const {name}Crud = createModelApi<{}, {}Create, {}Update, {}ListParams>(\"{}\");\nexport const {name}Api = {{\n  ...{name}Crud,\n",
+            endpoint.model_name, endpoint.model_name, endpoint.model_name, endpoint.model_name, endpoint.resource
         ));
+        for extension in &endpoint.extensions {
+            let mut operations = extension
+                .operations
+                .iter()
+                .filter_map(|operation| operation.client.as_ref().map(|client| (operation, client)))
+                .collect::<Vec<_>>();
+            operations.sort_by_key(|(_, client)| client.name);
+            if operations.is_empty() {
+                continue;
+            }
+            let namespace = operations[0].1.namespace;
+            out.push_str(&format!("  {namespace}: {{\n"));
+            for (operation, client) in operations {
+                let path = operation
+                    .path
+                    .trim_start_matches('/')
+                    .replace("{id}", "${id}");
+                let response = operation
+                    .response
+                    .as_ref()
+                    .map(|(_, schema)| schema.name)
+                    .unwrap_or("void");
+                match (&operation.request, operation.method) {
+                    (Some(request), crate::HttpMethod::Post | crate::HttpMethod::Put | crate::HttpMethod::Patch) => out.push_str(&format!(
+                        "    async {}(id: number, payload: {}): Promise<{}> {{ return (await apiClient.{}<{}>(`{}`, payload)).data; }},\n",
+                        client.name, request.name, response, operation.method.openapi_key(), response, path
+                    )),
+                    (None, crate::HttpMethod::Get) => out.push_str(&format!(
+                        "    async {}(id: number): Promise<{}> {{ return (await apiClient.get<{}>(`{}`)).data; }},\n",
+                        client.name, response, response, path
+                    )),
+                    _ => {}
+                }
+            }
+            out.push_str("  },\n");
+        }
+        out.push_str("};\n");
     }
     out
 }
@@ -178,13 +251,26 @@ fn field_ts_type(endpoint: &ApiEndpoint, field: &che_orm::SerializerField) -> St
             .collect::<Vec<_>>()
             .join(" | ");
     }
-    match field.rust_type {
-        "i64" | "i32" | "u64" | "usize" => "number".into(),
+    let ty = match field.rust_type {
+        value
+            if value.contains("i64")
+                || value.contains("i32")
+                || value.contains("u64")
+                || value.contains("usize") =>
+        {
+            "number".into()
+        }
         "bool" => "boolean".into(),
-        "String" | "&str" => "string".into(),
+        "String" | "&str" | "Option<String>" => "string".into(),
         value if value.contains("OffsetDateTime") => "string".into(),
         _ => "unknown".into(),
-    }
+    };
+    let nullable = endpoint
+        .columns
+        .iter()
+        .find(|column| column.name == field.source)
+        .is_some_and(|column| column.nullable);
+    if nullable { format!("{ty} | null") } else { ty }
 }
 
 fn field_required(endpoint: &ApiEndpoint, field: &che_orm::SerializerField) -> bool {
@@ -226,6 +312,49 @@ fn lower_first(value: &str) -> String {
         .map(|c| c.to_ascii_lowercase())
         .into_iter()
         .chain(chars)
+        .collect()
+}
+
+fn unique_models(endpoints: &[ApiEndpoint]) -> Vec<&ApiEndpoint> {
+    let mut models = BTreeMap::new();
+    for endpoint in endpoints {
+        models
+            .entry(endpoint.model_name.as_str())
+            .or_insert(endpoint);
+    }
+    models.into_values().collect()
+}
+
+fn api_name(endpoint: &ApiEndpoint, endpoints: &[ApiEndpoint]) -> String {
+    if endpoints
+        .iter()
+        .filter(|item| item.model_name == endpoint.model_name)
+        .count()
+        == 1
+    {
+        return lower_first(&endpoint.model_name);
+    }
+    endpoint
+        .resource
+        .split('/')
+        .next_back()
+        .unwrap_or(&endpoint.resource)
+        .trim_end_matches('s')
+        .split('-')
+        .enumerate()
+        .map(|(index, part)| {
+            if index == 0 {
+                part.to_owned()
+            } else {
+                let mut chars = part.chars();
+                chars
+                    .next()
+                    .map(|first| first.to_ascii_uppercase())
+                    .into_iter()
+                    .chain(chars)
+                    .collect()
+            }
+        })
         .collect()
 }
 
@@ -492,6 +621,7 @@ mod tests {
                     lookup: Lookup::Exact,
                 },
             ],
+            extensions: vec![],
         };
 
         let generated = models(&[endpoint]);

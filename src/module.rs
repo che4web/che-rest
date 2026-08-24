@@ -6,7 +6,8 @@ use serde_json::{Map, Value, json};
 
 use crate::{
     AppError, AppResult, AppState, CrudViewSet, FilterSetSpec, Model, ModelSerializer,
-    SignalAccess, ViewAction, ViewSet, openapi_column_schema, openapi_json_for, router,
+    SignalAccess, ViewAction, ViewSet, ViewSetConfig, openapi_column_schema, openapi_json_for,
+    router,
 };
 
 pub trait AppModule: Send + Sync + 'static {
@@ -31,6 +32,7 @@ pub struct ApiEndpoint {
     pub fields: Vec<che_orm::SerializerField>,
     pub columns: Vec<ApiColumn>,
     pub filters: Vec<ApiFilter>,
+    pub extensions: Vec<crate::ApiExtension>,
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +117,7 @@ pub struct ModuleContext {
     openapi_paths: Map<String, Value>,
     openapi_components: Map<String, Value>,
     api_endpoints: Vec<ApiEndpoint>,
+    registration_errors: Vec<String>,
     current_app: &'static str,
 }
 
@@ -165,6 +168,11 @@ impl ModuleContext {
         V::Serializer: serde::Serialize,
     {
         let path = viewset.path();
+        let mut config = ViewSetConfig::<V>::new(path);
+        if let Err(error) = viewset.configure(&mut config) {
+            self.registration_errors.push(error.to_string());
+        }
+        let (extension_router, extensions, extension_schemas, _hooks) = config.into_parts();
         self.api_endpoints.push(ApiEndpoint {
             app_name: self.current_app,
             model_name: std::any::type_name::<V::Model>()
@@ -193,6 +201,7 @@ impl ModuleContext {
                     lookup: filter.lookup(),
                 })
                 .collect(),
+            extensions: extensions.clone(),
         });
         if let (Some(signal), Some(access)) = (
             viewset.signal_name(ViewAction::Create),
@@ -219,10 +228,32 @@ impl ModuleContext {
         let document = openapi_json_for::<V::Model, V::Serializer>(path);
         let mut document = document;
         add_filter_parameters::<V>(&mut document, &viewset);
-        let actions = viewset.actions();
-        if let Some(action_paths) = actions.openapi.get("paths").and_then(Value::as_object) {
+        let extension_openapi = crate::rest::extensions::extension_openapi(&extensions);
+        if let Some(action_paths) = extension_openapi.get("paths").and_then(Value::as_object) {
             if let Some(paths) = document["paths"].as_object_mut() {
-                paths.extend(action_paths.clone());
+                for (path, item) in action_paths {
+                    let target = paths.entry(path.clone()).or_insert_with(|| json!({}));
+                    target
+                        .as_object_mut()
+                        .expect("OpenAPI path items are objects")
+                        .extend(
+                            item.as_object()
+                                .expect("OpenAPI path item is an object")
+                                .clone(),
+                        );
+                }
+            }
+        }
+        if let Some(schemas) = document["components"]["schemas"].as_object_mut() {
+            for schema in extension_schemas {
+                if let Some(existing) = schemas.get(schema.name) {
+                    if existing != &schema.openapi {
+                        self.registration_errors
+                            .push(format!("conflicting OpenAPI schema `{}`", schema.name));
+                    }
+                } else {
+                    schemas.insert(schema.name.to_owned(), schema.openapi);
+                }
             }
         }
         if let Some(paths) = document["paths"].as_object() {
@@ -231,7 +262,8 @@ impl ModuleContext {
         if let Some(schemas) = document["components"]["schemas"].as_object() {
             self.openapi_components.extend(schemas.clone());
         }
-        self.routers.push(router(state.clone(), viewset, actions));
+        self.routers
+            .push(router(state.clone(), viewset, extension_router));
     }
 
     fn schema(&self) -> SchemaSet {
@@ -337,6 +369,10 @@ impl Server {
             context.schemas.push(module.schema());
             context.current_app = module.name();
             module.init(&mut context);
+        }
+
+        if !context.registration_errors.is_empty() {
+            return Err(AppError::BadRequest(context.registration_errors.join("; ")));
         }
 
         let schema = context.schema();
