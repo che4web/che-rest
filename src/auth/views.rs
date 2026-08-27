@@ -51,8 +51,13 @@ async fn session_login(
     let user = find_user(&state, payload).await?;
     let session_key = generate_token();
     let csrf_token = generate_token();
-    let expires_at =
-        OffsetDateTime::now_utc() + Duration::seconds(state.config.auth.session.ttl_seconds);
+    let config = &state.config.auth.session;
+    let session_ttl = if config.absolute_ttl_seconds > 0 {
+        config.ttl_seconds.min(config.absolute_ttl_seconds)
+    } else {
+        config.ttl_seconds
+    };
+    let expires_at = OffsetDateTime::now_utc() + Duration::seconds(session_ttl);
     state
         .database()
         .create::<AuthSession>()
@@ -65,7 +70,11 @@ async fn session_login(
         .execute()
         .await?;
 
-    let mut response = Json(json!({ "user": user_payload(&user) })).into_response();
+    let mut response = Json(json!({
+        "user": user_payload(&user),
+        "expires_at": expires_at,
+    }))
+    .into_response();
     set_cookie(
         &mut response,
         cookie_header(
@@ -125,6 +134,7 @@ async fn session_me(
             "id": session.0.id,
             "user_id": session.0.user_id,
             "revision": session.0.revision,
+            "expires_at": session.0.expires_at,
         }))
     })))
 }

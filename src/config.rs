@@ -42,6 +42,8 @@ pub struct SessionConfig {
     pub cookie_name: String,
     pub csrf_cookie_name: String,
     pub ttl_seconds: i64,
+    pub renewal_window_seconds: i64,
+    pub absolute_ttl_seconds: i64,
     pub secure: bool,
     pub same_site: String,
 }
@@ -52,6 +54,8 @@ impl Default for SessionConfig {
             cookie_name: "che_rest_session".to_string(),
             csrf_cookie_name: "csrf_token".to_string(),
             ttl_seconds: 604_800,
+            renewal_window_seconds: 86_400,
+            absolute_ttl_seconds: 2_592_000,
             secure: false,
             same_site: "Lax".to_string(),
         }

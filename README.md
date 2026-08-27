@@ -474,6 +474,8 @@ cookie and a readable CSRF cookie. For same-origin applications, add optional co
 cookie_name = "che_rest_session"
 csrf_cookie_name = "csrf_token"
 ttl_seconds = 604800
+renewal_window_seconds = 86400 # renew active sessions during their final day
+absolute_ttl_seconds = 2592000 # require login again after 30 days
 secure = false # set true when serving over HTTPS
 same_site = "Lax"
 ```

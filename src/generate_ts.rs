@@ -524,8 +524,9 @@ fn auth() -> String {
 
 export interface LoginRequest {{ username: string; password: string; }}
 export interface AuthUser {{ id: number; username: string; is_staff: boolean; is_admin: boolean; is_superuser: boolean; }}
-export interface SessionLoginResponse {{ user: AuthUser; }}
-export interface SessionMeResponse {{ user: AuthUser; data: unknown; }}
+export interface SessionLoginResponse {{ user: AuthUser; expires_at: string; }}
+export interface SessionInfo {{ id: number; user_id: number; revision: number; expires_at: string; }}
+export interface SessionMeResponse {{ user: AuthUser; session: SessionInfo | null; }}
 export interface TokenLoginResponse {{ token: string; }}
 
 const authClient = axios.create({{

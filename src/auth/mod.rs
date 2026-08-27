@@ -4,7 +4,7 @@ pub mod views;
 use axum::{
     body::Body,
     extract::State,
-    http::{Method, Request, header},
+    http::{HeaderValue, Method, Request, header},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -131,6 +131,8 @@ pub struct CurrentSession {
     pub user_id: i64,
     pub csrf_hash: String,
     pub revision: i64,
+    pub created_at: OffsetDateTime,
+    pub expires_at: OffsetDateTime,
 }
 
 #[derive(Clone, Copy)]
@@ -227,12 +229,23 @@ pub async fn auth_middleware(
     let Some((session, user)) = load_session(&state, &session_key).await else {
         return next.run(request).await;
     };
+    let csrf_token = cookie(&request, &state.config.auth.session.csrf_cookie_name)
+        .filter(|token| token_hash(token) == session.csrf_hash);
     if unsafe_method(request.method()) && !csrf_valid(&request, &session) {
         return crate::AppError::Forbidden("CSRF validation failed".into()).into_response();
     }
     request.extensions_mut().insert(current_user(&user));
-    request.extensions_mut().insert(session);
-    next.run(request).await
+    request.extensions_mut().insert(session.clone());
+    let mut response = next.run(request).await;
+    renew_session(
+        &state,
+        &session,
+        &session_key,
+        csrf_token.as_deref(),
+        &mut response,
+    )
+    .await;
+    response
 }
 
 fn current_user(user: &User) -> CurrentUser {
@@ -266,9 +279,83 @@ async fn load_session(state: &AppState, key: &str) -> Option<(CurrentSession, Us
             user_id: session.user_id,
             csrf_hash: session.csrf_hash,
             revision: session.revision,
+            created_at: session.created_at,
+            expires_at: session.expires_at,
         },
         user,
     ))
+}
+
+async fn renew_session(
+    state: &AppState,
+    session: &CurrentSession,
+    session_key: &str,
+    csrf_token: Option<&str>,
+    response: &mut Response,
+) {
+    let now = OffsetDateTime::now_utc();
+    let Some(csrf_token) = csrf_token else {
+        return;
+    };
+    let Some(expires_at) = renewed_expiry(state, session, now) else {
+        return;
+    };
+    let Ok(Some(_)) = state
+        .database()
+        .update::<AuthSession>(session.id)
+        .set(AuthSession::EXPIRES_AT, expires_at)
+        .execute()
+        .await
+    else {
+        return;
+    };
+
+    let max_age = (expires_at - now).whole_seconds();
+    append_cookie(
+        response,
+        cookie_header(
+            state,
+            &state.config.auth.session.cookie_name,
+            session_key,
+            max_age,
+            true,
+        ),
+    );
+    append_cookie(
+        response,
+        cookie_header(
+            state,
+            &state.config.auth.session.csrf_cookie_name,
+            csrf_token,
+            max_age,
+            false,
+        ),
+    );
+}
+
+fn renewed_expiry(
+    state: &AppState,
+    session: &CurrentSession,
+    now: OffsetDateTime,
+) -> Option<OffsetDateTime> {
+    let config = &state.config.auth.session;
+    if config.ttl_seconds <= 0
+        || config.renewal_window_seconds <= 0
+        || config.absolute_ttl_seconds <= 0
+        || session.expires_at > now + time::Duration::seconds(config.renewal_window_seconds)
+    {
+        return None;
+    }
+
+    let absolute_expiry = session.created_at + time::Duration::seconds(config.absolute_ttl_seconds);
+    let expires_at = (now + time::Duration::seconds(config.ttl_seconds)).min(absolute_expiry);
+    (expires_at > session.expires_at).then_some(expires_at)
+}
+
+fn append_cookie(response: &mut Response, value: String) {
+    if let Ok(value) = HeaderValue::from_str(&value) {
+        response.headers_mut().append(header::SET_COOKIE, value);
+    }
 }
 
 fn cookie(request: &Request<Body>, name: &str) -> Option<String> {
@@ -350,6 +437,8 @@ mod tests {
             user_id: 2,
             csrf_hash: token_hash(token),
             revision: 0,
+            created_at: OffsetDateTime::now_utc(),
+            expires_at: OffsetDateTime::now_utc(),
         };
         let request = Request::builder()
             .header("X-CSRF-Token", token)
@@ -362,6 +451,47 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         assert!(!csrf_valid(&request, &session));
+    }
+
+    #[test]
+    fn session_is_renewed_only_in_the_renewal_window() {
+        let state = AppState::from_database(che_orm::Database::connect(":memory:").unwrap());
+        let now = OffsetDateTime::now_utc();
+        let session = CurrentSession {
+            id: 1,
+            user_id: 2,
+            csrf_hash: String::new(),
+            revision: 0,
+            created_at: now - time::Duration::days(5),
+            expires_at: now + time::Duration::hours(1),
+        };
+        let renewed = renewed_expiry(&state, &session, now).unwrap();
+        assert!(renewed > now + time::Duration::days(6));
+
+        let session = CurrentSession {
+            expires_at: now + time::Duration::days(2),
+            ..session
+        };
+        assert!(renewed_expiry(&state, &session, now).is_none());
+    }
+
+    #[test]
+    fn session_renewal_does_not_exceed_absolute_ttl() {
+        let state = AppState::from_database(che_orm::Database::connect(":memory:").unwrap());
+        let now = OffsetDateTime::now_utc();
+        let created_at = now - time::Duration::days(29);
+        let session = CurrentSession {
+            id: 1,
+            user_id: 2,
+            csrf_hash: String::new(),
+            revision: 0,
+            created_at,
+            expires_at: now + time::Duration::hours(1),
+        };
+        assert_eq!(
+            renewed_expiry(&state, &session, now),
+            Some(created_at + time::Duration::days(30))
+        );
     }
 
     #[test]
