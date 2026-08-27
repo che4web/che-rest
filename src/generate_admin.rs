@@ -388,7 +388,7 @@ fn api_name(endpoint: &ApiEndpoint, endpoints: &[ApiEndpoint]) -> String {
         .collect()
 }
 fn page_name(endpoint: &ApiEndpoint, endpoints: &[ApiEndpoint]) -> String {
-    let name = if endpoints
+    if endpoints
         .iter()
         .filter(|item| item.model_name == endpoint.model_name)
         .count()
@@ -413,8 +413,7 @@ fn page_name(endpoint: &ApiEndpoint, endpoints: &[ApiEndpoint]) -> String {
                     .collect::<String>()
             })
             .collect()
-    };
-    name
+    }
 }
 fn label(value: &str) -> String {
     value
