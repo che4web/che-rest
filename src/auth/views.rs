@@ -20,12 +20,19 @@ struct LoginRequest {
     password: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct CreateUserRequest {
+    username: String,
+    password: String,
+}
+
 pub fn routes() -> Router {
     Router::new()
         .route("/api-token-auth/", post(login))
         .route("/api-session-auth/login/", post(session_login))
         .route("/api-session-auth/logout/", post(session_logout))
         .route("/api-session-auth/me/", get(session_me))
+        .route("/auth/users/create/", post(create_user))
 }
 
 async fn login(
@@ -137,6 +144,51 @@ async fn session_me(
             "expires_at": session.0.expires_at,
         }))
     })))
+}
+
+async fn create_user(
+    Extension(state): Extension<AppState>,
+    user: Option<Extension<CurrentUser>>,
+    Json(payload): Json<CreateUserRequest>,
+) -> AppResult<impl IntoResponse> {
+    let user = user.ok_or_else(|| AppError::Unauthorized("authentication required".into()))?;
+    if !user.0.is_admin && !user.0.is_superuser {
+        return Err(AppError::Forbidden("admin permissions are required".into()));
+    }
+
+    let username = payload.username.trim();
+    if username.is_empty() {
+        return Err(AppError::BadRequest("username is required".into()));
+    }
+    if payload.password.is_empty() {
+        return Err(AppError::BadRequest("password is required".into()));
+    }
+    if state
+        .database()
+        .query::<User>()
+        .filter(User::USERNAME.eq(username.to_owned()))
+        .first(state.database())
+        .await?
+        .is_some()
+    {
+        return Err(AppError::BadRequest("username is already taken".into()));
+    }
+
+    let password_hash = super::hash_password(&payload.password)
+        .map_err(|error| AppError::BadRequest(format!("could not hash password: {error}")))?;
+    let created = state
+        .database()
+        .create::<User>()
+        .set(User::USERNAME, username.to_owned())
+        .set(User::PASSWORD_HASH, password_hash)
+        .set(User::IS_ACTIVE, true)
+        .set(User::IS_STAFF, false)
+        .set(User::IS_ADMIN, false)
+        .set(User::IS_SUPERUSER, false)
+        .execute()
+        .await?;
+
+    Ok((StatusCode::CREATED, Json(user_payload(&created))))
 }
 
 async fn find_user(state: &AppState, payload: LoginRequest) -> AppResult<User> {
