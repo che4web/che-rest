@@ -9,8 +9,8 @@ use axum::{
 };
 use che_orm::{
     Database, DatabaseQuery, Loaded, Model, ModelField, ModelSerializer, ModelWriteSerializer,
-    PrefetchRelatedQuery, QueryValue, SelectRelatedQuery, ValidatedWrite, WithOne, WithOptionalOne,
-    WriteMode,
+    PrefetchRelatedQuery, QueryValue, SelectRelatedQuery, SerializerField, ValidatedWrite, WithOne,
+    WithOptionalOne, WriteMode,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -633,6 +633,43 @@ pub trait ViewSet: Clone + Send + Sync + 'static {
     }
 }
 
+/// Normalizes HTML date inputs for timestamp fields before serializer validation.
+///
+/// JSON responses remain RFC 3339. A date without a time is interpreted as UTC
+/// midnight, so clients can submit the value emitted by `input[type=date]`.
+fn normalize_datetime_fields(data: &mut serde_json::Value, fields: &[SerializerField]) {
+    let Some(object) = data.as_object_mut() else {
+        return;
+    };
+
+    for field in fields {
+        if !field.rust_type.contains("OffsetDateTime") {
+            continue;
+        }
+        let Some(value) = object.get_mut(field.name) else {
+            continue;
+        };
+        let Some(input) = value.as_str() else {
+            continue;
+        };
+        if input.len() != "YYYY-MM-DD".len() {
+            continue;
+        }
+        let Ok(date) =
+            time::Date::parse(input, &time::format_description::well_known::Iso8601::DATE)
+        else {
+            continue;
+        };
+        let timestamp = date
+            .with_hms(0, 0, 0)
+            .expect("midnight is always a valid time")
+            .assume_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .expect("UTC timestamps can always be formatted as RFC 3339");
+        *value = serde_json::Value::String(timestamp);
+    }
+}
+
 pub struct CrudViewSet<M, S> {
     path: &'static str,
     _marker: PhantomData<fn() -> (M, S)>,
@@ -731,6 +768,58 @@ mod tests {
         assert!(!count_params.contains_key("ordering"));
         assert_eq!(count_params.get("name__contains"), Some(&"task".to_owned()));
         assert_eq!(count_params.get("limit"), Some(&"50".to_owned()));
+    }
+
+    #[test]
+    fn datetime_fields_accept_iso_dates_as_utc_midnight() {
+        let fields = [SerializerField {
+            name: "work_date",
+            source: "work_date",
+            read_only: false,
+            write_only: false,
+            rust_type: "time::OffsetDateTime",
+            related_model: None,
+            many: false,
+        }];
+        let mut data = json!({"work_date": "2026-08-28", "title": "Entry"});
+
+        normalize_datetime_fields(&mut data, &fields);
+
+        assert_eq!(data["work_date"], "2026-08-28T00:00:00Z");
+        assert_eq!(data["title"], "Entry");
+    }
+
+    #[test]
+    fn datetime_fields_leave_rfc3339_and_other_fields_unchanged() {
+        let fields = [
+            SerializerField {
+                name: "due_at",
+                source: "due_at",
+                read_only: false,
+                write_only: false,
+                rust_type: "Option<time::OffsetDateTime>",
+                related_model: None,
+                many: false,
+            },
+            SerializerField {
+                name: "title",
+                source: "title",
+                read_only: false,
+                write_only: false,
+                rust_type: "String",
+                related_model: None,
+                many: false,
+            },
+        ];
+        let mut data = json!({
+            "due_at": "2026-08-28T13:45:00+03:00",
+            "title": "2026-08-28"
+        });
+
+        normalize_datetime_fields(&mut data, &fields);
+
+        assert_eq!(data["due_at"], "2026-08-28T13:45:00+03:00");
+        assert_eq!(data["title"], "2026-08-28");
     }
 }
 
@@ -852,7 +941,11 @@ pub fn openapi_column_schema(column: &che_orm::ColumnSchema) -> serde_json::Valu
         che_orm::ColumnType::Text => json!({"type": "string"}),
         che_orm::ColumnType::Binary => json!({"type": "string", "format": "byte"}),
         che_orm::ColumnType::Boolean => json!({"type": "boolean"}),
-        che_orm::ColumnType::DateTime => json!({"type": "string", "format": "date-time"}),
+        che_orm::ColumnType::DateTime => json!({
+            "type": "string",
+            "format": "date-time",
+            "description": "RFC 3339 datetime. ISO date (YYYY-MM-DD) is accepted and interpreted as midnight UTC."
+        }),
     };
     if let Some(choices) = &column.choices {
         schema["enum"] = json!(choices);
@@ -1001,6 +1094,8 @@ where
 {
     let u = user(&who);
     V::Permission::default().check(&state, u, ViewAction::Create)?;
+    let mut data = data;
+    normalize_datetime_fields(&mut data, V::Serializer::fields());
     let write = V::Serializer::is_valid(data, WriteMode::Create).map_err(error_validation)?;
     let model = viewset
         .prepare_create(&state, u, write)?
@@ -1050,6 +1145,8 @@ where
             ViewAction::Patch,
             V::QuerySet::item_model(&current),
         )?;
+        let mut data = data;
+        normalize_datetime_fields(&mut data, V::Serializer::fields());
         let write =
             V::Serializer::is_valid(data, WriteMode::Patch { id }).map_err(error_validation)?;
         viewset.prepare_patch(&state, u, V::QuerySet::item_model(&current), write)?
@@ -1101,6 +1198,8 @@ where
             ViewAction::Update,
             V::QuerySet::item_model(&current),
         )?;
+        let mut data = data;
+        normalize_datetime_fields(&mut data, V::Serializer::fields());
         let write =
             V::Serializer::is_valid(data, WriteMode::Update { id }).map_err(error_validation)?;
         viewset.prepare_update(&state, u, V::QuerySet::item_model(&current), write)?
