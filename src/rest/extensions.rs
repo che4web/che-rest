@@ -4,7 +4,7 @@ use axum::{Router, handler::Handler, http::StatusCode, routing};
 use serde_json::{Map, Value, json};
 
 use super::{ViewSet, router::ViewAction};
-use crate::{AppError, AppResult, AppState, CurrentUser};
+use crate::{AppError, AppResult, AppState, CurrentPrincipal};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum HttpMethod {
@@ -122,7 +122,7 @@ pub trait MutationHook<V: ViewSet>: Send + Sync + 'static {
     fn after_commit(
         &self,
         _state: &AppState,
-        _user: Option<&CurrentUser>,
+        _current: Option<&CurrentPrincipal>,
         _action: ViewAction,
         _model: &V::Model,
     ) -> AppResult<()> {

@@ -9,7 +9,7 @@ use serde_json::json;
 use time::{Duration, OffsetDateTime};
 
 use super::{
-    AuthSession, AuthToken, CurrentSession, CurrentUser, User, cookie_header, generate_token,
+    AuthSession, AuthToken, CurrentPrincipal, CurrentSession, User, cookie_header, generate_token,
     token_hash, verify_password,
 };
 use crate::{AppError, AppResult, AppState};
@@ -131,12 +131,12 @@ async fn session_logout(
 }
 
 async fn session_me(
-    user: Option<Extension<CurrentUser>>,
+    current: Option<Extension<CurrentPrincipal>>,
     session: Option<Extension<CurrentSession>>,
 ) -> AppResult<impl IntoResponse> {
-    let user = user.ok_or(AppError::Unauthorized("invalid credentials".into()))?;
+    let current = current.ok_or(AppError::Unauthorized("invalid credentials".into()))?;
     Ok(Json(json!({
-        "user": user.0,
+        "user": current.0.auth_user(),
         "session": session.map(|session| json!({
             "id": session.0.id,
             "user_id": session.0.user_id,
@@ -148,11 +148,13 @@ async fn session_me(
 
 async fn create_user(
     Extension(state): Extension<AppState>,
-    user: Option<Extension<CurrentUser>>,
+    current: Option<Extension<CurrentPrincipal>>,
     Json(payload): Json<CreateUserRequest>,
 ) -> AppResult<impl IntoResponse> {
-    let user = user.ok_or_else(|| AppError::Unauthorized("authentication required".into()))?;
-    if !user.0.is_admin && !user.0.is_superuser {
+    let current =
+        current.ok_or_else(|| AppError::Unauthorized("authentication required".into()))?;
+    let user = current.0.auth_user();
+    if !user.is_admin && !user.is_superuser {
         return Err(AppError::Forbidden("admin permissions are required".into()));
     }
 

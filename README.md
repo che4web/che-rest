@@ -253,10 +253,12 @@ impl ViewSet for TaskViewSet {
     fn prepare_create(
         &self,
         _state: &che_rest::AppState,
-        user: Option<&che_rest::CurrentUser>,
+        current: Option<&che_rest::CurrentPrincipal>,
         write: che_rest::ValidatedWrite<Self::Model>,
     ) -> che_rest::AppResult<che_rest::ValidatedWrite<Self::Model>> {
-        let user = user.ok_or_else(|| che_rest::AppError::Unauthorized("authentication required".into()))?;
+        let user = current
+            .map(che_rest::CurrentPrincipal::auth_user)
+            .ok_or_else(|| che_rest::AppError::Unauthorized("authentication required".into()))?;
         Ok(write.set(Task::AUTHOR_ID, user.id))
     }
 }
@@ -270,8 +272,9 @@ fields before `ValidatedWrite::save(database)` persists the change.
 
 ## Auth
 
-`che-rest` includes an optional auth app. Install it to resolve token credentials and add
-`CurrentUser` to request extensions:
+`che-rest` includes an optional auth app. Install it to resolve token credentials and add a
+request-scoped `CurrentPrincipal` to request extensions. Its `auth_user()` is always the built-in
+framework user:
 
 ```rust
 pub fn installed_apps() -> InstalledApps {
@@ -315,6 +318,61 @@ Authorization: Token <token>
 Authentication is optional at the middleware level. Protect a typed viewset by selecting
 `type Permission = IsAuthenticated`; unauthenticated requests then receive `401`. Use
 `AllowAny` for public viewsets and `IsAdminUser` for administrator-only viewsets.
+
+### Application User
+
+Applications can define one domain profile model related to `auth::User`. Configure an async
+resolver when the application state is created; the resolved model is stored only on the current
+request.
+
+```rust
+#[derive(Debug, Clone, che_orm::Model)]
+pub struct Profile {
+    #[orm(primary_key)]
+    pub id: i64,
+    #[orm(foreign_key = che_rest::auth::User, unique)]
+    pub user_id: i64,
+    pub organization_id: i64,
+}
+
+pub async fn resolve_profile(
+    state: &AppState,
+    user: &che_rest::auth::User,
+) -> AppResult<Option<Profile>> {
+    state
+        .database()
+        .query::<Profile>()
+        .filter(Profile::USER_ID.eq(user.id))
+        .first(state.database())
+        .await
+        .map_err(Into::into)
+}
+
+let state = AppState::from_config_file("app.toml")
+    .await?
+    .with_current_user_resolver(|state, user| Box::pin(resolve_profile(state, user)));
+```
+
+Keep the type recovery and the authorization error in one application function:
+
+```rust
+pub fn current_profile(current: Option<&CurrentPrincipal>) -> AppResult<&Profile> {
+    let current = current.ok_or_else(|| AppError::Unauthorized("authentication required".into()))?;
+    current
+        .app::<Profile>()
+        .ok_or_else(|| AppError::Forbidden("profile required".into()))
+}
+```
+
+Viewsets and permissions then only call that function:
+
+```rust
+let profile = profiles::current_profile(current)?;
+```
+
+`Profile` is never part of `che-rest`; it is defined and resolved by the application. If the
+resolver returns `None`, the request remains framework-authenticated; only application code that
+calls `current_profile` requires a profile.
 
 Generate the typed TypeScript client from installed app metadata:
 

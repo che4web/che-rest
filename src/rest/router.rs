@@ -15,7 +15,7 @@ use che_orm::{
 use serde::Serialize;
 use serde_json::json;
 
-use crate::{AppError, AppResult, AppState, auth::CurrentUser};
+use crate::{AppError, AppResult, AppState, auth::CurrentPrincipal};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewAction {
@@ -31,7 +31,7 @@ pub trait Permission<M: Model>: Clone + Send + Sync + Default + 'static {
     fn check(
         &self,
         _state: &AppState,
-        _user: Option<&CurrentUser>,
+        _current: Option<&CurrentPrincipal>,
         _action: ViewAction,
     ) -> AppResult<()> {
         Ok(())
@@ -39,7 +39,7 @@ pub trait Permission<M: Model>: Clone + Send + Sync + Default + 'static {
     fn check_object(
         &self,
         _state: &AppState,
-        _user: Option<&CurrentUser>,
+        _current: Option<&CurrentPrincipal>,
         _action: ViewAction,
         _model: &M,
     ) -> AppResult<()> {
@@ -590,7 +590,7 @@ pub trait ViewSet: Clone + Send + Sync + 'static {
     fn prepare_create(
         &self,
         _state: &AppState,
-        _user: Option<&CurrentUser>,
+        _current: Option<&CurrentPrincipal>,
         write: ValidatedWrite<Self::Model>,
     ) -> AppResult<ValidatedWrite<Self::Model>> {
         Ok(write)
@@ -598,7 +598,7 @@ pub trait ViewSet: Clone + Send + Sync + 'static {
     fn prepare_update(
         &self,
         _state: &AppState,
-        _user: Option<&CurrentUser>,
+        _principal: Option<&CurrentPrincipal>,
         _current: &Self::Model,
         write: ValidatedWrite<Self::Model>,
     ) -> AppResult<ValidatedWrite<Self::Model>> {
@@ -607,7 +607,7 @@ pub trait ViewSet: Clone + Send + Sync + 'static {
     fn prepare_patch(
         &self,
         _state: &AppState,
-        _user: Option<&CurrentUser>,
+        _principal: Option<&CurrentPrincipal>,
         _current: &Self::Model,
         write: ValidatedWrite<Self::Model>,
     ) -> AppResult<ValidatedWrite<Self::Model>> {
@@ -956,7 +956,7 @@ pub fn openapi_column_schema(column: &che_orm::ColumnSchema) -> serde_json::Valu
     schema
 }
 
-fn user(ext: &Option<Extension<CurrentUser>>) -> Option<&CurrentUser> {
+fn current(ext: &Option<Extension<CurrentPrincipal>>) -> Option<&CurrentPrincipal> {
     ext.as_ref().map(|e| &e.0)
 }
 fn error_filter(e: FilterError) -> AppError {
@@ -991,14 +991,14 @@ fn count_params(params: &HashMap<String, String>) -> HashMap<String, String> {
 async fn list<V: ViewSet>(
     Extension(state): Extension<AppState>,
     Extension(viewset): Extension<V>,
-    who: Option<Extension<CurrentUser>>,
+    who: Option<Extension<CurrentPrincipal>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> AppResult<impl IntoResponse>
 where
     V::Serializer: Serialize,
 {
-    let u = user(&who);
-    V::Permission::default().check(&state, u, ViewAction::List)?;
+    let principal = current(&who);
+    V::Permission::default().check(&state, principal, ViewAction::List)?;
     let filter = viewset.filterset();
     let count_params = count_params(&params);
     let count = filter
@@ -1029,14 +1029,14 @@ where
 async fn retrieve<V: ViewSet>(
     Extension(state): Extension<AppState>,
     Extension(viewset): Extension<V>,
-    who: Option<Extension<CurrentUser>>,
+    who: Option<Extension<CurrentPrincipal>>,
     Path(id): Path<i64>,
 ) -> AppResult<impl IntoResponse>
 where
     V::Serializer: Serialize,
 {
-    let u = user(&who);
-    V::Permission::default().check(&state, u, ViewAction::Retrieve)?;
+    let principal = current(&who);
+    V::Permission::default().check(&state, principal, ViewAction::Retrieve)?;
     let item = viewset
         .get_queryset()
         .filter(V::Model::primary_key().eq(id))
@@ -1045,7 +1045,7 @@ where
         .ok_or(AppError::NotFound)?;
     V::Permission::default().check_object(
         &state,
-        u,
+        principal,
         ViewAction::Retrieve,
         V::QuerySet::item_model(&item),
     )?;
@@ -1055,11 +1055,11 @@ where
 async fn destroy<V: ViewSet>(
     Extension(state): Extension<AppState>,
     Extension(viewset): Extension<V>,
-    who: Option<Extension<CurrentUser>>,
+    who: Option<Extension<CurrentPrincipal>>,
     Path(id): Path<i64>,
 ) -> AppResult<impl IntoResponse> {
-    let u = user(&who);
-    V::Permission::default().check(&state, u, ViewAction::Delete)?;
+    let principal = current(&who);
+    V::Permission::default().check(&state, principal, ViewAction::Delete)?;
     {
         let item = viewset
             .get_queryset()
@@ -1069,7 +1069,7 @@ async fn destroy<V: ViewSet>(
             .ok_or(AppError::NotFound)?;
         V::Permission::default().check_object(
             &state,
-            u,
+            principal,
             ViewAction::Delete,
             V::QuerySet::item_model(&item),
         )?;
@@ -1086,19 +1086,19 @@ async fn destroy<V: ViewSet>(
 async fn create<V: ViewSet>(
     Extension(state): Extension<AppState>,
     Extension(viewset): Extension<V>,
-    who: Option<Extension<CurrentUser>>,
+    who: Option<Extension<CurrentPrincipal>>,
     Json(data): Json<serde_json::Value>,
 ) -> AppResult<impl IntoResponse>
 where
     V::Serializer: Serialize,
 {
-    let u = user(&who);
-    V::Permission::default().check(&state, u, ViewAction::Create)?;
+    let principal = current(&who);
+    V::Permission::default().check(&state, principal, ViewAction::Create)?;
     let mut data = data;
     normalize_datetime_fields(&mut data, V::Serializer::fields());
     let write = V::Serializer::is_valid(data, WriteMode::Create).map_err(error_validation)?;
     let model = viewset
-        .prepare_create(&state, u, write)?
+        .prepare_create(&state, principal, write)?
         .save(state.database())
         .await
         .map_err(error_write)?
@@ -1123,15 +1123,15 @@ where
 async fn patch<V: ViewSet>(
     Extension(state): Extension<AppState>,
     Extension(viewset): Extension<V>,
-    who: Option<Extension<CurrentUser>>,
+    who: Option<Extension<CurrentPrincipal>>,
     Path(id): Path<i64>,
     Json(data): Json<serde_json::Value>,
 ) -> AppResult<impl IntoResponse>
 where
     V::Serializer: Serialize,
 {
-    let u = user(&who);
-    V::Permission::default().check(&state, u, ViewAction::Patch)?;
+    let principal = current(&who);
+    V::Permission::default().check(&state, principal, ViewAction::Patch)?;
     let write = {
         let current = viewset
             .get_queryset()
@@ -1141,7 +1141,7 @@ where
             .ok_or(AppError::NotFound)?;
         V::Permission::default().check_object(
             &state,
-            u,
+            principal,
             ViewAction::Patch,
             V::QuerySet::item_model(&current),
         )?;
@@ -1149,7 +1149,7 @@ where
         normalize_datetime_fields(&mut data, V::Serializer::fields());
         let write =
             V::Serializer::is_valid(data, WriteMode::Patch { id }).map_err(error_validation)?;
-        viewset.prepare_patch(&state, u, V::QuerySet::item_model(&current), write)?
+        viewset.prepare_patch(&state, principal, V::QuerySet::item_model(&current), write)?
     };
     let model = write
         .save(state.database())
@@ -1176,15 +1176,15 @@ where
 async fn update<V: ViewSet>(
     Extension(state): Extension<AppState>,
     Extension(viewset): Extension<V>,
-    who: Option<Extension<CurrentUser>>,
+    who: Option<Extension<CurrentPrincipal>>,
     Path(id): Path<i64>,
     Json(data): Json<serde_json::Value>,
 ) -> AppResult<impl IntoResponse>
 where
     V::Serializer: Serialize,
 {
-    let u = user(&who);
-    V::Permission::default().check(&state, u, ViewAction::Update)?;
+    let principal = current(&who);
+    V::Permission::default().check(&state, principal, ViewAction::Update)?;
     let write = {
         let current = viewset
             .get_queryset()
@@ -1194,7 +1194,7 @@ where
             .ok_or(AppError::NotFound)?;
         V::Permission::default().check_object(
             &state,
-            u,
+            principal,
             ViewAction::Update,
             V::QuerySet::item_model(&current),
         )?;
@@ -1202,7 +1202,7 @@ where
         normalize_datetime_fields(&mut data, V::Serializer::fields());
         let write =
             V::Serializer::is_valid(data, WriteMode::Update { id }).map_err(error_validation)?;
-        viewset.prepare_update(&state, u, V::QuerySet::item_model(&current), write)?
+        viewset.prepare_update(&state, principal, V::QuerySet::item_model(&current), write)?
     };
     let model = write
         .save(state.database())

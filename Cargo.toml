@@ -1,6 +1,6 @@
 [package]
 name = "che-rest"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 description = "Typed REST framework and project tooling for che-orm applications"
 license = "MIT"
@@ -28,3 +28,6 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
 sha2 = "0.10"
 time = "0.3"
 toml = "0.8"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

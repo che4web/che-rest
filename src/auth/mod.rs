@@ -1,6 +1,8 @@
 pub mod models;
 pub mod views;
 
+use std::{any::Any, sync::Arc};
+
 use axum::{
     body::Body,
     extract::State,
@@ -68,6 +70,24 @@ pub struct CurrentUser {
     pub is_superuser: bool,
 }
 
+#[derive(Clone)]
+pub struct CurrentPrincipal {
+    auth_user: CurrentUser,
+    app_user: Option<Arc<dyn Any + Send + Sync>>,
+}
+
+impl CurrentPrincipal {
+    pub fn auth_user(&self) -> &CurrentUser {
+        &self.auth_user
+    }
+
+    pub fn app<T: Send + Sync + 'static>(&self) -> Option<&T> {
+        self.app_user
+            .as_deref()
+            .and_then(|user| user.downcast_ref::<T>())
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct IsAuthenticated;
 
@@ -75,10 +95,10 @@ impl<M: che_orm::Model> Permission<M> for IsAuthenticated {
     fn check(
         &self,
         _state: &AppState,
-        user: Option<&CurrentUser>,
+        current: Option<&CurrentPrincipal>,
         _action: ViewAction,
     ) -> crate::AppResult<()> {
-        user.map(|_| ()).ok_or(crate::AppError::Unauthorized(
+        current.map(|_| ()).ok_or(crate::AppError::Unauthorized(
             "authentication credentials were not provided".into(),
         ))
     }
@@ -91,10 +111,13 @@ impl<M: che_orm::Model> Permission<M> for IsAdminUser {
     fn check(
         &self,
         _state: &AppState,
-        user: Option<&CurrentUser>,
+        current: Option<&CurrentPrincipal>,
         _action: ViewAction,
     ) -> crate::AppResult<()> {
-        if user.is_some_and(|user| user.is_admin || user.is_superuser) {
+        if current.is_some_and(|current| {
+            let user = current.auth_user();
+            user.is_admin || user.is_superuser
+        }) {
             Ok(())
         } else {
             Err(crate::AppError::Forbidden(
@@ -111,10 +134,10 @@ impl<M: che_orm::Model> Permission<M> for ReadOnlyAdminUser {
     fn check(
         &self,
         state: &AppState,
-        user: Option<&CurrentUser>,
+        current: Option<&CurrentPrincipal>,
         action: ViewAction,
     ) -> crate::AppResult<()> {
-        <IsAdminUser as Permission<M>>::check(&IsAdminUser, state, user, action)?;
+        <IsAdminUser as Permission<M>>::check(&IsAdminUser, state, current, action)?;
         if matches!(action, ViewAction::List | ViewAction::Retrieve) {
             Ok(())
         } else {
@@ -219,7 +242,11 @@ pub async fn auth_middleware(
         if !user.is_active {
             return crate::AppError::Unauthorized("inactive user".into()).into_response();
         }
-        request.extensions_mut().insert(current_user(&user));
+        let principal = match current_principal(&state, &user).await {
+            Ok(principal) => principal,
+            Err(error) => return error.into_response(),
+        };
+        request.extensions_mut().insert(principal);
         return next.run(request).await;
     }
 
@@ -234,7 +261,11 @@ pub async fn auth_middleware(
     if unsafe_method(request.method()) && !csrf_valid(&request, &session) {
         return crate::AppError::Forbidden("CSRF validation failed".into()).into_response();
     }
-    request.extensions_mut().insert(current_user(&user));
+    let principal = match current_principal(&state, &user).await {
+        Ok(principal) => principal,
+        Err(error) => return error.into_response(),
+    };
+    request.extensions_mut().insert(principal);
     request.extensions_mut().insert(session.clone());
     let mut response = next.run(request).await;
     renew_session(
@@ -256,6 +287,13 @@ fn current_user(user: &User) -> CurrentUser {
         is_admin: user.is_admin,
         is_superuser: user.is_superuser,
     }
+}
+
+async fn current_principal(state: &AppState, user: &User) -> crate::AppResult<CurrentPrincipal> {
+    Ok(CurrentPrincipal {
+        auth_user: current_user(user),
+        app_user: state.resolve_current_user(user).await?,
+    })
 }
 
 async fn load_session(state: &AppState, key: &str) -> Option<(CurrentSession, User)> {
@@ -416,9 +454,165 @@ pub fn token_hash(token: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
     use super::*;
-    use axum::body::Body;
-    use axum::http::Request;
+    use axum::{
+        Extension, Json, Router,
+        body::{Body, to_bytes},
+        http::{Request, StatusCode, header},
+        routing::get,
+    };
+    use serde_json::json;
+    use tower::ServiceExt;
+
+    use crate::{AllowAny, AppModule, CurrentUserResolverFuture, ModuleContext, Server, ViewSet};
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct ApplicationUser {
+        user_id: i64,
+        organization_id: i64,
+    }
+
+    struct TestModule;
+
+    #[derive(Clone, Copy, Default)]
+    struct ApplicationUserPermission;
+
+    impl Permission<User> for ApplicationUserPermission {
+        fn check(
+            &self,
+            _state: &AppState,
+            current: Option<&CurrentPrincipal>,
+            _action: ViewAction,
+        ) -> crate::AppResult<()> {
+            current
+                .and_then(|current| current.app::<ApplicationUser>())
+                .ok_or_else(|| crate::AppError::Unauthorized("profile required".into()))?;
+            Ok(())
+        }
+    }
+
+    #[derive(Clone, Copy, Default)]
+    struct ApplicationUserViewSet;
+
+    impl ViewSet for ApplicationUserViewSet {
+        type Model = User;
+        type Serializer = AdminUserSerializer;
+        type QuerySet = che_orm::DatabaseQuery<User>;
+        type FilterSet = AdminUserFilterSet;
+        type Permission = AllowAny;
+
+        fn path(&self) -> &'static str {
+            "/profiles"
+        }
+
+        fn get_queryset(&self) -> Self::QuerySet {
+            che_orm::DatabaseQuery::new(User::query())
+        }
+
+        fn prepare_create(
+            &self,
+            _state: &AppState,
+            current: Option<&CurrentPrincipal>,
+            write: che_orm::ValidatedWrite<Self::Model>,
+        ) -> crate::AppResult<che_orm::ValidatedWrite<Self::Model>> {
+            current
+                .and_then(|current| current.app::<ApplicationUser>())
+                .ok_or_else(|| crate::AppError::Unauthorized("profile required".into()))?;
+            Ok(write)
+        }
+    }
+
+    impl AppModule for TestModule {
+        fn name(&self) -> &'static str {
+            "test"
+        }
+
+        fn schema(&self) -> che_orm::SchemaSet {
+            che_orm::SchemaSet::new()
+        }
+
+        fn init(&self, context: &mut ModuleContext) {
+            context.route_at_root(
+                Router::new()
+                    .route("/protected", get(protected))
+                    .route("/public", get(|| async { StatusCode::OK })),
+            );
+        }
+    }
+
+    async fn protected(current: Option<Extension<CurrentPrincipal>>) -> Json<serde_json::Value> {
+        let current = current.map(|current| current.0);
+        Json(json!({
+            "authenticated": current.is_some(),
+            "id": current.as_ref().map(|current| current.auth_user().id),
+            "has_profile": current
+                .as_ref()
+                .is_some_and(|current| current.app::<ApplicationUser>().is_some()),
+        }))
+    }
+
+    fn profile_resolver(
+        calls: Arc<AtomicUsize>,
+    ) -> impl for<'a> Fn(&'a AppState, &'a User) -> CurrentUserResolverFuture<'a, ApplicationUser>
+    + Send
+    + Sync
+    + 'static {
+        move |_state, user| {
+            let calls = calls.clone();
+            let user_id = user.id;
+            Box::pin(async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(Some(ApplicationUser {
+                    user_id,
+                    organization_id: 7,
+                }))
+            })
+        }
+    }
+
+    fn no_profile_resolver<'a>(
+        _state: &'a AppState,
+        _user: &'a User,
+    ) -> CurrentUserResolverFuture<'a, ApplicationUser> {
+        Box::pin(async { Ok(None) })
+    }
+
+    async fn auth_app(state: AppState) -> axum::Router {
+        Server::new(state)
+            .install(crate::InstalledApps::new().add(module()).add(TestModule))
+            .build()
+            .await
+            .unwrap()
+    }
+
+    async fn setup_auth(state: &AppState) -> User {
+        state.database().create_table::<User>().await.unwrap();
+        state.database().create_table::<AuthToken>().await.unwrap();
+        state
+            .database()
+            .create_table::<AuthSession>()
+            .await
+            .unwrap();
+        state
+            .database()
+            .create::<User>()
+            .set(User::USERNAME, "user")
+            .set(User::PASSWORD_HASH, "unused")
+            .set(User::IS_ACTIVE, true)
+            .set(User::IS_ADMIN, true)
+            .execute()
+            .await
+            .unwrap()
+    }
+
+    async fn response_json(response: axum::response::Response) -> serde_json::Value {
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap()
+    }
 
     #[test]
     fn password_hash_round_trip_and_token_hash_are_stable() {
@@ -517,6 +711,10 @@ mod tests {
             is_admin: false,
             is_superuser: false,
         };
+        let regular = CurrentPrincipal {
+            auth_user: regular,
+            app_user: None,
+        };
         assert!(
             <IsAdminUser as Permission<User>>::check(
                 &IsAdminUser,
@@ -527,9 +725,12 @@ mod tests {
             .is_err()
         );
 
-        let admin = CurrentUser {
-            is_admin: true,
-            ..regular
+        let admin = CurrentPrincipal {
+            auth_user: CurrentUser {
+                is_admin: true,
+                ..regular.auth_user.clone()
+            },
+            app_user: None,
         };
         assert!(
             <IsAdminUser as Permission<User>>::check(
@@ -540,5 +741,199 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[tokio::test]
+    async fn resolver_builds_principal_with_framework_and_application_users() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let state = AppState::from_database(che_orm::Database::connect_in_memory().unwrap())
+            .with_current_user_resolver(profile_resolver(calls.clone()));
+        let user = User {
+            id: 42,
+            username: "user".into(),
+            password_hash: String::new(),
+            is_active: true,
+            is_staff: false,
+            is_admin: true,
+            is_superuser: false,
+        };
+
+        let principal = current_principal(&state, &user).await.unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(principal.auth_user().id, 42);
+        assert!(principal.auth_user().is_admin);
+        assert_eq!(
+            principal.app::<ApplicationUser>().unwrap().organization_id,
+            7
+        );
+        assert!(principal.app::<String>().is_none());
+    }
+
+    #[tokio::test]
+    async fn resolver_returning_none_keeps_framework_authentication() {
+        let state = AppState::from_database(che_orm::Database::connect_in_memory().unwrap())
+            .with_current_user_resolver(no_profile_resolver);
+        let user = User {
+            id: 42,
+            username: "user".into(),
+            password_hash: String::new(),
+            is_active: true,
+            is_staff: false,
+            is_admin: false,
+            is_superuser: false,
+        };
+
+        let principal = current_principal(&state, &user).await.unwrap();
+
+        assert_eq!(principal.auth_user().id, user.id);
+        assert!(principal.app::<ApplicationUser>().is_none());
+        assert!(
+            <IsAuthenticated as Permission<User>>::check(
+                &IsAuthenticated,
+                &state,
+                Some(&principal),
+                ViewAction::List,
+            )
+            .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn custom_permissions_and_viewset_hooks_can_access_application_user() {
+        let state = AppState::from_database(che_orm::Database::connect_in_memory().unwrap())
+            .with_current_user_resolver(profile_resolver(Arc::new(AtomicUsize::new(0))));
+        let principal = current_principal(
+            &state,
+            &User {
+                id: 1,
+                username: "user".into(),
+                password_hash: String::new(),
+                is_active: true,
+                is_staff: false,
+                is_admin: false,
+                is_superuser: false,
+            },
+        )
+        .await
+        .unwrap();
+        let write = <AdminUserSerializer as che_orm::ModelWriteSerializer>::is_valid(
+            json!({}),
+            che_orm::WriteMode::Create,
+        )
+        .unwrap();
+
+        <ApplicationUserPermission as Permission<User>>::check(
+            &ApplicationUserPermission,
+            &state,
+            Some(&principal),
+            ViewAction::Create,
+        )
+        .unwrap();
+        ApplicationUserViewSet
+            .prepare_create(&state, Some(&principal), write)
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn token_and_session_authentication_resolve_application_user() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let state = AppState::from_database(che_orm::Database::connect_in_memory().unwrap())
+            .with_current_user_resolver(profile_resolver(calls.clone()));
+        let user = setup_auth(&state).await;
+        let token = "token";
+        state
+            .database()
+            .create::<AuthToken>()
+            .set(AuthToken::USER_ID, user.id)
+            .set(AuthToken::KEY_HASH, token_hash(token))
+            .execute()
+            .await
+            .unwrap();
+        let session_key = "session";
+        state
+            .database()
+            .create::<AuthSession>()
+            .set(AuthSession::USER_ID, user.id)
+            .set(AuthSession::KEY_HASH, token_hash(session_key))
+            .set(AuthSession::CSRF_HASH, token_hash("csrf"))
+            .set(AuthSession::DATA, "{}")
+            .set(AuthSession::REVISION, 0_i64)
+            .set(
+                AuthSession::EXPIRES_AT,
+                OffsetDateTime::now_utc() + time::Duration::hours(1),
+            )
+            .execute()
+            .await
+            .unwrap();
+        let app = auth_app(state.clone()).await;
+
+        let token_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/protected")
+                    .header(header::AUTHORIZATION, "Token token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(token_response.status(), StatusCode::OK);
+        assert_eq!(response_json(token_response).await["has_profile"], true);
+
+        let session_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/protected")
+                    .header(header::COOKIE, "che_rest_session=session")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(session_response.status(), StatusCode::OK);
+        assert_eq!(response_json(session_response).await["id"], user.id);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn authentication_succeeds_without_a_profile_or_resolver() {
+        let state = AppState::from_database(che_orm::Database::connect_in_memory().unwrap());
+        let user = setup_auth(&state).await;
+        state
+            .database()
+            .create::<AuthToken>()
+            .set(AuthToken::USER_ID, user.id)
+            .set(AuthToken::KEY_HASH, token_hash("token"))
+            .execute()
+            .await
+            .unwrap();
+        let app = auth_app(state).await;
+
+        let public = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/public")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(public.status(), StatusCode::OK);
+        let protected = app
+            .oneshot(
+                Request::builder()
+                    .uri("/protected")
+                    .header(header::AUTHORIZATION, "Token token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let payload = response_json(protected).await;
+        assert_eq!(payload["authenticated"], true);
+        assert_eq!(payload["has_profile"], false);
     }
 }

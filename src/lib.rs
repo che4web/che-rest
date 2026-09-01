@@ -15,7 +15,7 @@ pub mod signals;
 pub mod state;
 
 pub use app_channels::AppChannels;
-pub use auth::{CurrentUser, IsAdminUser, IsAuthenticated};
+pub use auth::{CurrentPrincipal, CurrentUser, IsAdminUser, IsAuthenticated};
 pub use channels::Channels;
 pub use che_orm::{
     Database, Model, ModelSerializer, ModelWriteSerializer, PatchField, ValidatedWrite,
@@ -33,4 +33,4 @@ pub use rest::{
     ViewSetConfig, ViewSetExtension, openapi_column_schema, openapi_json_for, router,
 };
 pub use signals::{SignalAccess, SignalBus, SignalEvent};
-pub use state::AppState;
+pub use state::{AppState, CurrentUserResolverFuture};

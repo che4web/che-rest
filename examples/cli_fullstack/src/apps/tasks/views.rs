@@ -1,4 +1,4 @@
-use che_rest::{AllowAny, CurrentUser, Model, SignalAccess, ViewAction, ViewSet};
+use che_rest::{AllowAny, CurrentPrincipal, Model, SignalAccess, ViewAction, ViewSet};
 
 use super::{filters::TaskFilterSet, models::Task, serializers::TaskSerializer};
 
@@ -23,11 +23,12 @@ impl ViewSet for TaskViewSet {
     fn prepare_create(
         &self,
         _state: &che_rest::AppState,
-        user: Option<&CurrentUser>,
+        current: Option<&CurrentPrincipal>,
         write: che_rest::ValidatedWrite<Self::Model>,
     ) -> che_rest::AppResult<che_rest::ValidatedWrite<Self::Model>> {
-        let user =
-            user.ok_or_else(|| che_rest::AppError::Unauthorized("authentication required".into()))?;
+        let user = current
+            .map(CurrentPrincipal::auth_user)
+            .ok_or_else(|| che_rest::AppError::Unauthorized("authentication required".into()))?;
         Ok(write.set(Task::AUTHOR_ID, user.id))
     }
 

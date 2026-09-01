@@ -13,7 +13,7 @@ use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
     AppModule, AppState, ModuleContext,
-    auth::CurrentUser,
+    auth::{CurrentPrincipal, CurrentUser},
     signals::{SignalError, error_event, signal_event, valid_signal_name},
 };
 
@@ -56,10 +56,16 @@ enum ClientFrame {
 
 async fn websocket(
     Extension(state): Extension<AppState>,
-    user: Option<Extension<CurrentUser>>,
+    current: Option<Extension<CurrentPrincipal>>,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(state, user.map(|user| user.0), socket))
+    ws.on_upgrade(move |socket| {
+        handle_socket(
+            state,
+            current.map(|current| current.0.auth_user().clone()),
+            socket,
+        )
+    })
 }
 
 async fn handle_socket(state: AppState, user: Option<CurrentUser>, socket: WebSocket) {
