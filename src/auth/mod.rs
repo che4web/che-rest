@@ -179,6 +179,7 @@ impl AppModule for AuthModule {
 
     fn init(&self, context: &mut ModuleContext) {
         context.route_at_root(views::routes());
+        context.route(views::api_routes());
         context.viewset_with(AdminUserViewSet);
     }
 
@@ -797,6 +798,23 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[tokio::test]
+    async fn admin_user_creation_is_mounted_under_api_prefix() {
+        let state = AppState::from_database(che_orm::Database::connect_in_memory().unwrap());
+        setup_auth(&state).await;
+        let app = auth_app(state).await;
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/api/auth/users/create/")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"username":"new-user","password":"secret"}"#))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

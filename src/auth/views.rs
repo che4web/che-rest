@@ -32,7 +32,10 @@ pub fn routes() -> Router {
         .route("/api-session-auth/login/", post(session_login))
         .route("/api-session-auth/logout/", post(session_logout))
         .route("/api-session-auth/me/", get(session_me))
-        .route("/auth/users/create/", post(create_user))
+}
+
+pub fn api_routes() -> Router {
+    Router::new().route("/auth/users/create/", post(create_user))
 }
 
 async fn login(
