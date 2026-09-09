@@ -199,13 +199,26 @@ fn api(endpoints: &[ApiEndpoint]) -> String {
                     .as_ref()
                     .map(|(_, schema)| schema.name)
                     .unwrap_or("void");
+                let has_id = path.contains("${id}");
                 match (&operation.request, operation.method) {
-                    (Some(request), crate::HttpMethod::Post | crate::HttpMethod::Put | crate::HttpMethod::Patch) => out.push_str(&format!(
+                    (Some(request), crate::HttpMethod::Post | crate::HttpMethod::Put | crate::HttpMethod::Patch) if has_id => out.push_str(&format!(
                         "    async {}(id: number, payload: {}): Promise<{}> {{ return (await apiClient.{}<{}>(`{}`, payload)).data; }},\n",
                         client.name, request.name, response, operation.method.openapi_key(), response, path
                     )),
-                    (None, crate::HttpMethod::Get) => out.push_str(&format!(
+                    (Some(request), crate::HttpMethod::Post | crate::HttpMethod::Put | crate::HttpMethod::Patch) => out.push_str(&format!(
+                        "    async {}(payload: {}): Promise<{}> {{ return (await apiClient.{}<{}>(`{}`, payload)).data; }},\n",
+                        client.name, request.name, response, operation.method.openapi_key(), response, path
+                    )),
+                    (None, crate::HttpMethod::Get) if has_id => out.push_str(&format!(
                         "    async {}(id: number): Promise<{}> {{ return (await apiClient.get<{}>(`{}`)).data; }},\n",
+                        client.name, response, response, path
+                    )),
+                    (None, crate::HttpMethod::Post) if has_id => out.push_str(&format!(
+                        "    async {}(id: number): Promise<{}> {{ return (await apiClient.post<{}>(`{}`)).data; }},\n",
+                        client.name, response, response, path
+                    )),
+                    (None, crate::HttpMethod::Post) => out.push_str(&format!(
+                        "    async {}(): Promise<{}> {{ return (await apiClient.post<{}>(`{}`)).data; }},\n",
                         client.name, response, response, path
                     )),
                     _ => {}
@@ -245,11 +258,17 @@ fn field_ts_type(endpoint: &ApiEndpoint, field: &che_orm::SerializerField) -> St
         .find(|column| column.name == field.source)
         .and_then(|column| column.choices.as_ref())
     {
-        return choices
+        let ty = choices
             .iter()
             .map(|choice| serde_json::to_string(choice).unwrap())
             .collect::<Vec<_>>()
             .join(" | ");
+        let nullable = endpoint
+            .columns
+            .iter()
+            .find(|column| column.name == field.source)
+            .is_some_and(|column| column.nullable);
+        return if nullable { format!("{ty} | null") } else { ty };
     }
     let ty = match field.rust_type {
         value
