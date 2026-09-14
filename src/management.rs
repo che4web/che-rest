@@ -6,7 +6,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use che_orm::{Database, Model, SchemaSet, SqliteDialect, rusqlite::OptionalExtension};
+use che_orm::{
+    Database, Migration, MigrationGraph, MigrationOperation, Model, SchemaSet, SqliteDialect,
+    rusqlite::OptionalExtension,
+};
 use clap::{Parser, Subcommand};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
@@ -51,6 +54,8 @@ enum CommandKind {
         name: Option<String>,
         #[arg(long, default_value = "migrations")]
         dir: PathBuf,
+        #[arg(long, default_value_t = false)]
+        empty: bool,
     },
     Migrate {
         #[command(subcommand)]
@@ -88,12 +93,16 @@ enum CommandKind {
 enum MigrateAction {
     Apply,
     Status,
+    OperationsApply,
+    OperationsStatus,
+    Verify,
     Lint,
     Diff { name: String },
 }
 
 pub struct Management {
     apps: InstalledApps,
+    migrations: Vec<Migration>,
     project_root: PathBuf,
 }
 
@@ -101,12 +110,20 @@ impl Management {
     pub fn new(apps: InstalledApps) -> Self {
         Self {
             apps,
+            migrations: Vec::new(),
             project_root: PathBuf::from("."),
         }
     }
 
     pub fn project_root(mut self, project_root: impl Into<PathBuf>) -> Self {
         self.project_root = project_root.into();
+        self
+    }
+
+    /// Registers compiled migrations used by `migrate operations-apply` and
+    /// `migrate operations-status`.
+    pub fn migrations(mut self, migrations: Vec<Migration>) -> Self {
+        self.migrations = migrations;
         self
     }
 
@@ -143,14 +160,24 @@ impl Management {
                 force,
             })?,
             CommandKind::Schema => print_schema(&self.apps),
-            CommandKind::Makemigrations { name, dir } => {
+            CommandKind::Makemigrations { name, dir, empty } => {
+                if !self.migrations.is_empty() {
+                    return Err(
+                        "compiled operation migration generation is not implemented yet; do not use the legacy Atlas makemigrations workflow"
+                            .into(),
+                    );
+                }
                 let name = name.unwrap_or_else(|| {
                     let seconds = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .map_or(0, |duration| duration.as_secs());
                     format!("auto_{seconds}")
                 });
-                atlas_diff(&self.apps, &dir, &name)?;
+                if empty {
+                    write_empty_migration(&dir, &name)?;
+                } else {
+                    atlas_diff(&self.apps, &dir, &name)?;
+                }
             }
             CommandKind::Migrate {
                 action,
@@ -158,18 +185,48 @@ impl Management {
                 dir,
             } => {
                 let config = AppConfig::from_file(config)?;
-                let action = action.unwrap_or(MigrateAction::Apply);
+                let action = action.unwrap_or(if self.migrations.is_empty() {
+                    MigrateAction::Apply
+                } else {
+                    MigrateAction::OperationsApply
+                });
                 match action {
-                    MigrateAction::Apply => apply_migrations(&config, dir).await?,
-                    MigrateAction::Status => migration_status(&config, dir).await?,
-                    MigrateAction::Lint => atlas_command(&[
-                        "migrate",
-                        "lint",
-                        "--dir",
-                        &file_url(&dir),
-                        "--dev-url",
-                        "sqlite://dev?mode=memory",
-                    ])?,
+                    MigrateAction::Apply => {
+                        if self.migrations.is_empty() {
+                            apply_migrations(&config, dir).await?;
+                        } else {
+                            apply_operation_migrations(&config, self.migrations).await?;
+                        }
+                    }
+                    MigrateAction::Status => {
+                        if self.migrations.is_empty() {
+                            migration_status(&config, dir).await?;
+                        } else {
+                            operation_migration_status(&config, self.migrations).await?;
+                        }
+                    }
+                    MigrateAction::OperationsApply => {
+                        apply_operation_migrations(&config, self.migrations).await?;
+                    }
+                    MigrateAction::OperationsStatus => {
+                        operation_migration_status(&config, self.migrations).await?;
+                    }
+                    MigrateAction::Verify => {
+                        if self.migrations.is_empty() {
+                            verify_migrations(&config, dir).await?;
+                        } else {
+                            verify_operation_migrations(&config, self.migrations).await?;
+                        }
+                    }
+                    MigrateAction::Lint | MigrateAction::Diff { .. }
+                        if !self.migrations.is_empty() =>
+                    {
+                        return Err(
+                            "Atlas commands are unavailable for compiled operation migrations"
+                                .into(),
+                        );
+                    }
+                    MigrateAction::Lint => atlas_lint(&dir)?,
                     MigrateAction::Diff { name } => atlas_diff(&self.apps, &dir, &name)?,
                 }
             }
@@ -250,6 +307,45 @@ fn schema(apps: &InstalledApps) -> SchemaSet {
 
 fn print_schema(apps: &InstalledApps) {
     print!("{}", schema(apps).to_sql::<SqliteDialect>());
+}
+
+fn write_empty_migration(dir: &PathBuf, name: &str) -> ManageResult<()> {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '_')
+    {
+        return Err(
+            "migration name must contain only ascii letters, digits, and underscores".into(),
+        );
+    }
+
+    let version = OffsetDateTime::now_utc()
+        .format(&Rfc3339)?
+        .chars()
+        .filter(|character| character.is_ascii_digit())
+        .take(14)
+        .collect::<String>();
+    let path = create_empty_migration(dir, name, &version)?;
+    if let Err(error) = atlas_command(&["migrate", "hash", "--dir", &file_url(dir)]) {
+        let _ = fs::remove_file(&path);
+        return Err(error);
+    }
+    println!("wrote empty migration to {}", path.display());
+    Ok(())
+}
+
+fn create_empty_migration(dir: &PathBuf, name: &str, version: &str) -> ManageResult<PathBuf> {
+    fs::create_dir_all(dir)?;
+    let path = dir.join(format!("{version}_{name}.sql"));
+    if path.exists() {
+        return Err(format!("migration already exists: {}", path.display()).into());
+    }
+    fs::write(
+        &path,
+        "-- Write the required SQLite DDL, data backfill, or trigger changes here.\n",
+    )?;
+    Ok(path)
 }
 
 async fn apply_migrations(config: &AppConfig, dir: PathBuf) -> ManageResult<()> {
@@ -397,7 +493,7 @@ fn applied_migrations(
     Ok(migrations)
 }
 
-async fn migration_status(config: &AppConfig, dir: PathBuf) -> ManageResult<()> {
+async fn migration_status(config: &AppConfig, dir: PathBuf) -> ManageResult<usize> {
     let migrations = load_atlas_migrations(&dir)?;
     let filesystem = migrations
         .iter()
@@ -448,8 +544,10 @@ async fn migration_status(config: &AppConfig, dir: PathBuf) -> ManageResult<()> 
         }
     }
 
+    let mut pending_count = 0;
     for migration in filesystem.values() {
         if !applied_versions.contains(&migration.version()) {
+            pending_count += 1;
             println!("pending V{}__{}", migration.version(), migration.name());
         }
     }
@@ -457,8 +555,235 @@ async fn migration_status(config: &AppConfig, dir: PathBuf) -> ManageResult<()> 
     if has_status_error {
         Err("migration history contains missing or divergent migrations".into())
     } else {
-        Ok(())
+        Ok(pending_count)
     }
+}
+
+/// Applies compiled operation migrations. This is primarily used by the
+/// management command and migration integration tests.
+pub async fn apply_operation_migrations(
+    config: &AppConfig,
+    migrations: Vec<Migration>,
+) -> ManageResult<()> {
+    let applied_count = run_operation_migrations(config, migrations).await?;
+    if applied_count == 0 {
+        println!("No pending operation migrations.");
+    } else {
+        println!("Applied {applied_count} operation migration(s).");
+    }
+    Ok(())
+}
+
+async fn run_operation_migrations(
+    config: &AppConfig,
+    migrations: Vec<Migration>,
+) -> ManageResult<usize> {
+    let graph = MigrationGraph::new(migrations)
+        .map_err(|error| format!("invalid operation migration graph: {error}"))?;
+    let database = Database::connect_with_pool_size(
+        sqlite_path(&config.database.url),
+        config.database.max_connections as usize,
+    )?;
+    let pool = database.pool().clone();
+    let result = pool
+        .get()
+        .await?
+        .interact(move |connection| apply_operation_migrations_on_connection(connection, graph))
+        .await
+        .map_err(|error| format!("database interaction error: {error}"))?;
+    result.map_err(|error| error as Box<dyn std::error::Error>)
+}
+
+fn apply_operation_migrations_on_connection(
+    connection: &mut che_orm::rusqlite::Connection,
+    graph: MigrationGraph,
+) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+    let applied = applied_operation_migrations(connection)?;
+    let pending = pending_operation_migrations(&graph, &applied)?;
+    if pending.is_empty() {
+        return Ok(0);
+    }
+
+    for migration in &pending {
+        for operation in &migration.operations {
+            if !matches!(operation, MigrationOperation::RunSql { .. }) {
+                return Err(format!(
+                    "operation migration {}:{} uses an unsupported operation; only RunSql is supported until a SQLite SQL renderer is available",
+                    migration.id.app, migration.id.name
+                )
+                .into());
+            }
+        }
+    }
+
+    connection
+        .execute_batch("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE;")
+        .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)?;
+    let result = (|| {
+        connection.execute_batch(OPERATION_MIGRATION_HISTORY_SQL)?;
+        for migration in &pending {
+            for operation in &migration.operations {
+                let MigrationOperation::RunSql { forward, .. } = operation else {
+                    unreachable!("operations were validated before starting the transaction");
+                };
+                connection.execute_batch(forward)?;
+            }
+            connection.execute(
+                "INSERT INTO che_migration_history (app, name, checksum, applied_on) VALUES (?1, ?2, ?3, ?4)",
+                che_orm::rusqlite::params![
+                    migration.id.app,
+                    migration.id.name,
+                    migration.checksum,
+                    OffsetDateTime::now_utc().format(&Rfc3339)?,
+                ],
+            )?;
+        }
+        assert_foreign_keys_valid(connection)?;
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    })();
+
+    match result {
+        Ok(()) => {
+            connection
+                .execute_batch("COMMIT; PRAGMA foreign_keys = ON;")
+                .map_err(|error| Box::new(error) as Box<dyn std::error::Error + Send + Sync>)?;
+            Ok(pending.len())
+        }
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK; PRAGMA foreign_keys = ON;");
+            Err(error)
+        }
+    }
+}
+
+async fn operation_migration_status(
+    config: &AppConfig,
+    migrations: Vec<Migration>,
+) -> ManageResult<usize> {
+    let graph = MigrationGraph::new(migrations)
+        .map_err(|error| format!("invalid operation migration graph: {error}"))?;
+    let database = Database::connect_with_pool_size(
+        sqlite_path(&config.database.url),
+        config.database.max_connections as usize,
+    )?;
+    let pool = database.pool().clone();
+    let result = pool
+        .get()
+        .await?
+        .interact(move |connection| operation_migration_status_for_connection(connection, graph))
+        .await
+        .map_err(|error| format!("database interaction error: {error}"))?;
+    result.map_err(|error| error as Box<dyn std::error::Error>)
+}
+
+async fn verify_operation_migrations(
+    config: &AppConfig,
+    migrations: Vec<Migration>,
+) -> ManageResult<()> {
+    let pending_count = operation_migration_status(config, migrations).await?;
+    if pending_count != 0 {
+        return Err(format!("{pending_count} operation migration(s) are pending").into());
+    }
+    verify_foreign_keys(config).await?;
+    println!("Operation migration verification passed.");
+    Ok(())
+}
+
+fn operation_migration_status_for_connection(
+    connection: &che_orm::rusqlite::Connection,
+    graph: MigrationGraph,
+) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+    let applied = applied_operation_migrations(connection)?;
+    let pending = pending_operation_migrations(&graph, &applied)?;
+    for migration in graph.ordered() {
+        if applied.contains_key(&(migration.id.app.clone(), migration.id.name.clone())) {
+            println!("applied {}:{}", migration.id.app, migration.id.name);
+        } else {
+            println!("pending {}:{}", migration.id.app, migration.id.name);
+        }
+    }
+    Ok(pending.len())
+}
+
+fn pending_operation_migrations<'a>(
+    graph: &'a MigrationGraph,
+    applied: &HashMap<(String, String), String>,
+) -> Result<Vec<&'a Migration>, Box<dyn std::error::Error + Send + Sync>> {
+    let registered = graph
+        .ordered()
+        .map(|migration| {
+            (
+                (migration.id.app.clone(), migration.id.name.clone()),
+                migration,
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    for ((app, name), checksum) in applied {
+        match registered.get(&(app.clone(), name.clone())) {
+            Some(migration) if migration.checksum == *checksum => {}
+            Some(_) => return Err(format!("divergent operation migration {app}:{name}").into()),
+            None => return Err(format!("missing operation migration {app}:{name}").into()),
+        }
+    }
+    Ok(graph
+        .ordered()
+        .filter(|migration| {
+            !applied.contains_key(&(migration.id.app.clone(), migration.id.name.clone()))
+        })
+        .collect())
+}
+
+const OPERATION_MIGRATION_HISTORY_SQL: &str = "CREATE TABLE IF NOT EXISTS che_migration_history (app TEXT NOT NULL, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_on TEXT NOT NULL, PRIMARY KEY (app, name));";
+
+fn applied_operation_migrations(
+    connection: &che_orm::rusqlite::Connection,
+) -> Result<HashMap<(String, String), String>, Box<dyn std::error::Error + Send + Sync>> {
+    let has_history = connection
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'che_migration_history'",
+            [],
+            |_| Ok(()),
+        )
+        .optional()?;
+    if has_history.is_none() {
+        return Ok(HashMap::new());
+    }
+    let mut statement =
+        connection.prepare("SELECT app, name, checksum FROM che_migration_history")?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            (row.get::<_, String>(0)?, row.get::<_, String>(1)?),
+            row.get(2)?,
+        ))
+    })?;
+    rows.collect::<Result<HashMap<_, _>, _>>()
+        .map_err(Into::into)
+}
+
+async fn verify_migrations(config: &AppConfig, dir: PathBuf) -> ManageResult<()> {
+    let pending_count = migration_status(config, dir.clone()).await?;
+    if pending_count != 0 {
+        return Err(format!("{pending_count} migration(s) are pending").into());
+    }
+    verify_foreign_keys(config).await?;
+    atlas_lint(&dir)?;
+    println!("Migration verification passed.");
+    Ok(())
+}
+
+async fn verify_foreign_keys(config: &AppConfig) -> ManageResult<()> {
+    let database = Database::connect_with_pool_size(
+        sqlite_path(&config.database.url),
+        config.database.max_connections as usize,
+    )?;
+    let pool = database.pool().clone();
+    let result = pool
+        .get()
+        .await?
+        .interact(|connection| assert_foreign_keys_valid(connection))
+        .await
+        .map_err(|error| format!("database interaction error: {error}"))?;
+    result.map_err(|error| error as Box<dyn std::error::Error>)
 }
 
 async fn run_with_refinery<T, F>(
@@ -590,6 +915,19 @@ fn atlas_diff(apps: &InstalledApps, dir: &PathBuf, name: &str) -> ManageResult<(
     result
 }
 
+fn atlas_lint(dir: &PathBuf) -> ManageResult<()> {
+    atlas_command(&[
+        "migrate",
+        "lint",
+        "--dir",
+        &file_url(dir),
+        "--dev-url",
+        "sqlite://dev?mode=memory",
+        "--latest",
+        "1",
+    ])
+}
+
 fn atlas_command(args: &[&str]) -> ManageResult<()> {
     let binary = env::var_os("ATLAS_BIN").unwrap_or_else(|| "atlas".into());
     let status = Command::new(binary).args(args).status()?;
@@ -617,10 +955,15 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use che_orm::{Database, Model, rusqlite::OptionalExtension};
+    use che_orm::{
+        Database, Migration, MigrationId, MigrationOperation, Model, rusqlite::OptionalExtension,
+    };
     use clap::Parser;
 
-    use super::{Cli, Management, apply_migrations, migration_status};
+    use super::{
+        Cli, Management, apply_migrations, apply_operation_migrations, create_empty_migration,
+        migration_status, operation_migration_status,
+    };
     use crate::InstalledApps;
     use crate::auth::{User, verify_password};
     use crate::{AppConfig, DatabaseConfig};
@@ -658,6 +1001,24 @@ mod tests {
             "manage", "startapp", "tasks", "--model", "Task", "--model", "Comment",
         ])
         .unwrap();
+        Cli::try_parse_from(["manage", "makemigrations", "backfill_tasks", "--empty"]).unwrap();
+        Cli::try_parse_from(["manage", "migrate", "verify"]).unwrap();
+        Cli::try_parse_from(["manage", "migrate", "operations-apply"]).unwrap();
+        Cli::try_parse_from(["manage", "migrate", "operations-status"]).unwrap();
+    }
+
+    #[test]
+    fn empty_migration_contains_manual_sql_prompt() {
+        let directory = temp_path("empty_migration", "dir");
+        fs::create_dir(&directory).unwrap();
+        let path = create_empty_migration(&directory, "backfill_tasks", "20260914120000").unwrap();
+        assert_eq!(
+            path.file_name().unwrap(),
+            "20260914120000_backfill_tasks.sql"
+        );
+        assert!(fs::read_to_string(&path).unwrap().contains("data backfill"));
+        assert!(create_empty_migration(&directory, "backfill_tasks", "20260914120000").is_err());
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[tokio::test]
@@ -810,6 +1171,65 @@ mod tests {
         migration_status(&config, migrations.clone()).await.unwrap();
 
         let _ = fs::remove_dir_all(migrations);
+        let _ = fs::remove_file(database_path);
+    }
+
+    #[tokio::test]
+    async fn operation_migrations_apply_and_record_history() {
+        let database_path = temp_path("operation_migrate", "sqlite");
+        let config = sqlite_config(&database_path);
+        let migrations = vec![Migration {
+            id: MigrationId {
+                app: "tasks".into(),
+                name: "0001_initial".into(),
+            },
+            dependencies: vec![],
+            operations: vec![MigrationOperation::RunSql {
+                forward: "CREATE TABLE operation_items (id INTEGER PRIMARY KEY);".into(),
+                reverse: None,
+                state_operations: vec![],
+            }],
+            checksum: "operation-items-v1".into(),
+        }];
+
+        apply_operation_migrations(&config, migrations.clone())
+            .await
+            .unwrap();
+        apply_operation_migrations(&config, migrations.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            operation_migration_status(&config, migrations)
+                .await
+                .unwrap(),
+            0
+        );
+
+        let connection = che_orm::rusqlite::Connection::open(&database_path).unwrap();
+        let table: String = connection
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'operation_items'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(table, "operation_items");
+        let history: (String, String, String) = connection
+            .query_row(
+                "SELECT app, name, checksum FROM che_migration_history",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            history,
+            (
+                "tasks".into(),
+                "0001_initial".into(),
+                "operation-items-v1".into()
+            )
+        );
+
         let _ = fs::remove_file(database_path);
     }
 
