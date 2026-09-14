@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::{Json, Router, response::Html, routing::get};
-use che_orm::SchemaSet;
+use che_orm::{MigrationError, ProjectState, SchemaSet, StateChange};
 use serde_json::{Map, Value, json};
 
 use crate::{
@@ -82,6 +82,25 @@ impl InstalledApps {
 
     pub fn names(&self) -> impl Iterator<Item = &'static str> + '_ {
         self.iter().map(AppModule::name)
+    }
+
+    /// Collects a migration-state snapshot without starting the server or
+    /// connecting to the database.
+    pub fn migration_state(&self) -> Result<ProjectState, MigrationError> {
+        let schemas: Vec<_> = self
+            .iter()
+            .map(|module| (module.name(), module.schema()))
+            .collect();
+        ProjectState::from_app_schemas(schemas.iter().map(|(name, schema)| (*name, schema)))
+    }
+
+    /// Compares compiled migration history with the current installed models.
+    /// It is side-effect free and is the input to `makemigrations`.
+    pub fn migration_diff(
+        &self,
+        history: &ProjectState,
+    ) -> Result<Vec<StateChange>, MigrationError> {
+        history.diff(&self.migration_state()?)
     }
 
     pub fn api_endpoints(&self, state: AppState) -> Vec<ApiEndpoint> {
@@ -291,6 +310,15 @@ mod tests {
     struct First;
     struct Second;
 
+    #[derive(Debug, che_orm::Model)]
+    #[orm(table = "migration_items")]
+    struct MigrationItem {
+        #[orm(primary_key)]
+        id: i64,
+    }
+
+    struct MigrationApp;
+
     impl AppModule for First {
         fn name(&self) -> &'static str {
             "first"
@@ -315,11 +343,35 @@ mod tests {
         fn init(&self, _context: &mut ModuleContext) {}
     }
 
+    impl AppModule for MigrationApp {
+        fn name(&self) -> &'static str {
+            "migration_app"
+        }
+
+        fn schema(&self) -> SchemaSet {
+            SchemaSet::new().model::<MigrationItem>()
+        }
+
+        fn init(&self, _context: &mut ModuleContext) {}
+    }
+
     #[test]
     fn installed_apps_preserve_registration_order() {
         let apps = InstalledApps::new().add(First).add(Second);
         assert_eq!(apps.names().collect::<Vec<_>>(), ["first", "second"]);
         assert!(apps.find("first").is_some());
+    }
+
+    #[test]
+    fn installed_apps_expose_app_owned_migration_state() {
+        let apps = InstalledApps::new().add(MigrationApp);
+        let state = apps.migration_state().unwrap();
+        let models = state.models();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].key.app, "migration_app");
+        assert_eq!(models[0].key.name, "MigrationItem");
+        assert_eq!(models[0].table.name, "migration_items");
+        assert!(apps.migration_diff(&state).unwrap().is_empty());
     }
 
     #[test]

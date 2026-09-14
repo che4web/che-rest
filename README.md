@@ -744,3 +744,79 @@ cargo run --bin manage -- migrate
 
 Do not create model tables from application startup; production servers only apply already-created
 SQL migrations.
+
+### Compiled forward-only migrations
+
+Calling `Management::migrations(...)` explicitly selects compiled migrations,
+including `.migrations(vec![])` when generating the first migration. Without
+this call, management retains the legacy Atlas workflow described above.
+
+Preview pending compiled migrations before applying them:
+
+```bash
+cargo run --bin manage -- migrate --plan --config app.toml
+```
+
+The plan lists migrations in dependency order, their dependencies and operations,
+and warnings for table/column deletion, column changes and manual SQL. It validates
+the registered graph, applied checksums, dependency history and historical state.
+SQLite is opened read-only; a missing database is treated as empty and is not
+created. No migrations or history records are written. The command requires a
+file database path (plain or `sqlite://`) and cannot be combined with a `migrate`
+subcommand. It previews compiled migrations; SQL execution and live-schema
+compatibility are checked when applying them. Rebuild after changing migration
+sources, and inspect `RunSql` source before applying manual SQL.
+
+For example, generate an application's migration with:
+
+```bash
+cargo run --bin manage -- makemigrations tasks --name initial --dir src/apps/tasks/migrations
+```
+
+The writer creates `m0001_initial.rs` and a managed section of `mod.rs` containing
+module declarations and `pub fn all() -> Vec<che_orm::Migration>`. Declare the
+`migrations` module in the owning application and pass its collector to management:
+
+```rust,ignore
+Management::new(installed_apps())
+    .migrations(tasks::migrations::all())
+    .run()
+    .await?;
+```
+
+For multiple applications, concatenate their `all()` results. Rebuild the
+management binary after generation. Existing handwritten `mod.rs` files must
+have `// che-orm: migrations begin` and `// che-orm: migrations end` markers;
+the writer owns the declarations and collector inside those markers. Keep
+handwritten code outside them, and avoid another `all()` in the same module.
+
+`--empty` produces zero operations even when models differ from history.
+Normal generation rejects conflicting branches and cross-application references
+whose target table or field is not yet present in compiled migration history.
+Generate and register the target application's migration first. Operations are
+ordered and replayed in memory before writing; unsupported dependency sequences
+require an explicit migration.
+
+Use `makemigrations <app> --check` in CI: it exits with an error when the
+installed models have changes without a compiled migration. Use `--dry-run` to
+print the prospective Rust source without changing files. Before either command
+creates a migration, it compares `m000N_*.rs` files with the compiled registry;
+if a prior generation has not been rebuilt yet, it stops and asks for a rebuild.
+
+For a new project whose applications contain cyclic cross-application foreign
+keys, omit the app name and provide a directory that will contain one directory
+per application:
+
+```bash
+cargo run --bin manage -- makemigrations --dir src/apps
+```
+
+This empty-history batch mode writes each app's `0001_initial` without the
+cross-application FKs, then writes `0002_relationships` migrations that depend
+on both initial migrations. Rebuild after generation and combine each app's
+`migrations::all()` when constructing `Management`.
+
+New migration files are created exclusively. Registry updates use a directory
+lock and atomic replacement. A competing writer fails without overwriting files.
+An interrupted process may leave `.che-migrations.lock` or `.che-mod.rs.tmp`;
+inspect the directory and confirm no writer is active before removing them.
