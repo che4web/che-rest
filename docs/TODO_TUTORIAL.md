@@ -77,8 +77,8 @@ cargo run --bin manage -- makemigrations
 cargo run --bin manage -- migrate
 ```
 
-Migrations are stored in the project-level `migrations/` directory. `makemigrations` requires Atlas;
-`migrate` applies the checked-in SQL files without Atlas. Run these commands after every model
+Migrations are stored in `src/migrations/<app>/` as compiled Rust modules. `makemigrations` and
+`migrate` use the built-in forward-only migration system. Run these commands after every model
 schema change; starting the server does not create tables.
 
 ## 4. Start The API

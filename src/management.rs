@@ -1,6 +1,6 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    env, fs,
+    collections::{BTreeMap, BTreeSet, HashMap},
+    fs,
     io::Write,
     path::PathBuf,
     process::{Command, Stdio},
@@ -9,10 +9,9 @@ use std::{
 
 use che_orm::{
     Database, Migration, MigrationGraph, MigrationId, MigrationOperation, Model, SchemaSet,
-    SqliteDialect, operations_from_changes, render_migration_rust, rusqlite::OptionalExtension,
+    SqliteDialect, operations_from_changes, render_migration_rust,
 };
 use clap::{Parser, Subcommand};
-use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 use crate::auth::{User, hash_password};
 use crate::{AppConfig, AppModule, AppState, InstalledApps, StartAppOptions, StartProjectOptions};
@@ -120,18 +119,13 @@ enum CommandKind {
 enum MigrateAction {
     Apply,
     Status,
-    OperationsApply,
-    OperationsStatus,
     Verify,
-    Lint,
-    Diff { name: String },
 }
 
 pub struct Management {
     apps: InstalledApps,
     migrations: Vec<Migration>,
     excluded_library_migrations: BTreeSet<String>,
-    compiled_migrations: bool,
     project_root: PathBuf,
 }
 
@@ -141,7 +135,6 @@ impl Management {
             apps,
             migrations: Vec::new(),
             excluded_library_migrations: BTreeSet::new(),
-            compiled_migrations: false,
             project_root: PathBuf::from("."),
         }
     }
@@ -160,12 +153,11 @@ impl Management {
         self
     }
 
-    /// Selects compiled migrations, including when the registry is empty.
+    /// Registers compiled migrations, including an intentionally empty registry.
     /// Pass `migrations::all()` from the generated registry; after adding a
     /// file, rebuild the management binary to register it.
     pub fn migrations(mut self, migrations: Vec<Migration>) -> Self {
         self.migrations = migrations;
-        self.compiled_migrations = true;
         self
     }
 
@@ -175,16 +167,12 @@ impl Management {
 
     async fn run_from(mut self, cli: Cli) -> ManageResult<()> {
         let project_migrations = self.migrations.clone();
-        if self.compiled_migrations {
-            self.migrations.extend(
-                self.apps
-                    .library_migrations()
-                    .into_iter()
-                    .filter(|migration| {
-                        !self.excluded_library_migrations.contains(&migration.id.app)
-                    }),
-            );
-        }
+        self.migrations.extend(
+            self.apps
+                .library_migrations()
+                .into_iter()
+                .filter(|migration| !self.excluded_library_migrations.contains(&migration.id.app)),
+        );
         match cli.command {
             CommandKind::Startproject {
                 name,
@@ -222,102 +210,88 @@ impl Management {
                 dry_run,
                 merge,
             } => {
-                if self.compiled_migrations {
-                    if merge {
-                        let Some(app) = app else {
-                            return Err("compiled --merge requires an application name".into());
-                        };
-                        if self.apps.find(&app).is_none() {
-                            return Err(format!("unknown installed application `{app}`").into());
-                        }
-                        ensure_compiled_registry_matches(&dir, &project_migrations, &app)?;
-                        let label = name.unwrap_or_else(|| "merge".into());
-                        let migration =
-                            build_operation_merge_migration(&self.migrations, &app, &label)?;
-                        if dry_run {
-                            print!("{}", render_migration_rust(&migration));
-                            return Ok(());
-                        }
-                        let path = write_operation_migration_and_register(&dir, &migration)?;
-                        println!("wrote merge migration to {}", path.display());
-                        return Ok(());
-                    }
-                    if app.is_none() {
-                        if empty {
-                            return Err("compiled --empty requires an application name".into());
-                        }
-                        if !project_migrations.is_empty() {
-                            return Err("batch migration generation is only supported for an empty compiled history".into());
-                        }
-                        let label = name.unwrap_or_else(|| "initial".into());
-                        let migrations = build_initial_cycle_batch_with_history(
-                            &self.apps,
-                            &label,
-                            &self.migrations,
-                        )?;
-                        if migrations.is_empty() {
-                            println!("No model changes detected.");
-                            return Ok(());
-                        }
-                        if check {
-                            return Err("model changes need initial migrations".into());
-                        }
-                        if dry_run {
-                            for migration in &migrations {
-                                print!("{}", render_migration_rust(migration));
-                            }
-                            return Ok(());
-                        }
-                        write_operation_migration_batch(&dir, &migrations)?;
-                        println!(
-                            "wrote {} initial migration(s) under {}",
-                            migrations.len(),
-                            dir.display()
-                        );
-                        return Ok(());
-                    }
-                    let app = app.unwrap();
-                    ensure_compiled_registry_matches(&dir, &project_migrations, &app)?;
-                    let name = name.unwrap_or_else(|| generated_migration_label());
-                    let migration = build_operation_migration(
-                        &self.apps,
-                        &self.migrations,
-                        &app,
-                        &name,
-                        empty,
-                    )?;
-                    let Some(migration) = migration else {
-                        println!("No model changes detected for {app}.");
-                        return Ok(());
+                if merge {
+                    let Some(app) = app else {
+                        return Err("compiled --merge requires an application name".into());
                     };
-                    if check {
-                        return Err(format!(
-                            "model changes for {app} need migration {}",
-                            migration.id.name
-                        )
-                        .into());
+                    if self.apps.find(&app).is_none() {
+                        return Err(format!("unknown installed application `{app}`").into());
                     }
+                    ensure_compiled_registry_matches(&dir, &project_migrations, &app)?;
+                    let label = name.unwrap_or_else(|| "merge".into());
+                    let migration =
+                        build_operation_merge_migration(&self.migrations, &app, &label)?;
                     if dry_run {
                         print!("{}", render_migration_rust(&migration));
                         return Ok(());
                     }
                     let path = write_operation_migration_and_register(&dir, &migration)?;
-                    println!("wrote operation migration to {}", path.display());
+                    println!("wrote merge migration to {}", path.display());
                     return Ok(());
                 }
-                let name = name.or(app).unwrap_or_else(generated_migration_label);
-                if empty {
-                    write_empty_migration(&dir, &name)?;
-                } else {
-                    atlas_diff(&self.apps, &dir, &name)?;
+                if app.is_none() {
+                    if empty {
+                        return Err("compiled --empty requires an application name".into());
+                    }
+                    if !project_migrations.is_empty() {
+                        return Err("batch migration generation is only supported for an empty compiled history".into());
+                    }
+                    let label = name.unwrap_or_else(|| "initial".into());
+                    let migrations = build_initial_cycle_batch_with_history(
+                        &self.apps,
+                        &label,
+                        &self.migrations,
+                    )?;
+                    if migrations.is_empty() {
+                        println!("No model changes detected.");
+                        return Ok(());
+                    }
+                    if check {
+                        return Err("model changes need initial migrations".into());
+                    }
+                    if dry_run {
+                        for migration in &migrations {
+                            print!("{}", render_migration_rust(migration));
+                        }
+                        return Ok(());
+                    }
+                    write_operation_migration_batch(&dir, &migrations)?;
+                    println!(
+                        "wrote {} initial migration(s) under {}",
+                        migrations.len(),
+                        dir.display()
+                    );
+                    return Ok(());
                 }
+                let app = app.unwrap();
+                ensure_compiled_registry_matches(&dir, &project_migrations, &app)?;
+                let name = name.unwrap_or_else(generated_migration_label);
+                let migration =
+                    build_operation_migration(&self.apps, &self.migrations, &app, &name, empty)?;
+                let Some(migration) = migration else {
+                    println!("No model changes detected for {app}.");
+                    return Ok(());
+                };
+                if check {
+                    return Err(format!(
+                        "model changes for {app} need migration {}",
+                        migration.id.name
+                    )
+                    .into());
+                }
+                if dry_run {
+                    print!("{}", render_migration_rust(&migration));
+                    return Ok(());
+                }
+                let path = write_operation_migration_and_register(&dir, &migration)?;
+                println!("wrote operation migration to {}", path.display());
             }
             CommandKind::Migrate {
                 action,
                 target,
                 plan,
                 config,
-                dir,
+                dir: _,
             } => {
                 if target.len() > 2 {
                     return Err("migrate accepts at most an app and migration name".into());
@@ -333,9 +307,6 @@ impl Management {
                         "migrate --plan cannot be combined with a migrate subcommand".into(),
                     );
                 }
-                if plan && !self.compiled_migrations {
-                    return Err("migrate --plan requires compiled operation migrations".into());
-                }
                 let config = AppConfig::from_file(config)?;
                 if plan {
                     let result = tokio::task::spawn_blocking(move || {
@@ -347,12 +318,6 @@ impl Management {
                     return Ok(());
                 }
                 if let Some(app) = target.first() {
-                    if !self.compiled_migrations {
-                        return Err(
-                            "migrate <app> [name|latest] requires compiled operation migrations"
-                                .into(),
-                        );
-                    }
                     let target = resolve_operation_migration_target(
                         &self.migrations,
                         app,
@@ -361,64 +326,26 @@ impl Management {
                     apply_operation_migrations_to(&config, self.migrations, target).await?;
                     return Ok(());
                 }
-                let action = action.unwrap_or(if !self.compiled_migrations {
-                    MigrateAction::Apply
-                } else {
-                    MigrateAction::OperationsApply
-                });
+                let action = action.unwrap_or(MigrateAction::Apply);
                 match action {
                     MigrateAction::Apply => {
-                        if !self.compiled_migrations {
-                            apply_migrations(&config, dir).await?;
-                        } else {
-                            apply_operation_migrations(&config, self.migrations).await?;
-                        }
+                        apply_operation_migrations(&config, self.migrations).await?
                     }
                     MigrateAction::Status => {
-                        if !self.compiled_migrations {
-                            migration_status(&config, dir).await?;
-                        } else {
-                            operation_migration_status(&config, self.migrations).await?;
-                        }
-                    }
-                    MigrateAction::OperationsApply => {
-                        apply_operation_migrations(&config, self.migrations).await?;
-                    }
-                    MigrateAction::OperationsStatus => {
                         operation_migration_status(&config, self.migrations).await?;
                     }
                     MigrateAction::Verify => {
-                        if !self.compiled_migrations {
-                            verify_migrations(&config, dir).await?;
-                        } else {
-                            verify_operation_migrations(&config, self.migrations).await?;
-                        }
+                        verify_operation_migrations(&config, self.migrations).await?
                     }
-                    MigrateAction::Lint | MigrateAction::Diff { .. }
-                        if self.compiled_migrations =>
-                    {
-                        return Err(
-                            "Atlas commands are unavailable for compiled operation migrations"
-                                .into(),
-                        );
-                    }
-                    MigrateAction::Lint => atlas_lint(&dir)?,
-                    MigrateAction::Diff { name } => atlas_diff(&self.apps, &dir, &name)?,
                 }
             }
             CommandKind::Sqlmigrate { app, name } => {
-                if !self.compiled_migrations {
-                    return Err("sqlmigrate requires compiled operation migrations".into());
-                }
                 print!(
                     "{}",
                     operation_migration_sql(&self.migrations, &app, &name)?
                 );
             }
             CommandKind::Showmigrations { app, config } => {
-                if !self.compiled_migrations {
-                    return Err("showmigrations requires compiled operation migrations".into());
-                }
                 let config = AppConfig::from_file(config)?;
                 let result = tokio::task::spawn_blocking(move || {
                     operation_migration_list(&config, self.migrations, app.as_deref())
@@ -624,32 +551,6 @@ fn schema(apps: &InstalledApps) -> SchemaSet {
 
 fn print_schema(apps: &InstalledApps) {
     print!("{}", schema(apps).to_sql::<SqliteDialect>());
-}
-
-fn write_empty_migration(dir: &PathBuf, name: &str) -> ManageResult<()> {
-    if name.is_empty()
-        || !name
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || character == '_')
-    {
-        return Err(
-            "migration name must contain only ascii letters, digits, and underscores".into(),
-        );
-    }
-
-    let version = OffsetDateTime::now_utc()
-        .format(&Rfc3339)?
-        .chars()
-        .filter(|character| character.is_ascii_digit())
-        .take(14)
-        .collect::<String>();
-    let path = create_empty_migration(dir, name, &version)?;
-    if let Err(error) = atlas_command(&["migrate", "hash", "--dir", &file_url(dir)]) {
-        let _ = fs::remove_file(&path);
-        return Err(error);
-    }
-    println!("wrote empty migration to {}", path.display());
-    Ok(())
 }
 
 /// Writes a generated, compiled migration without ever replacing an existing
@@ -1384,8 +1285,9 @@ fn create_empty_migration(dir: &PathBuf, name: &str, version: &str) -> ManageRes
     Ok(path)
 }
 
+#[cfg(any())]
 async fn apply_migrations(config: &AppConfig, dir: PathBuf) -> ManageResult<()> {
-    let migrations = load_atlas_migrations(&dir)?;
+    let migrations = load_retired_sql_migrations(&dir)?;
     let applied_count = run_sqlite_migrations(config, migrations).await?;
 
     if applied_count == 0 {
@@ -1396,6 +1298,7 @@ async fn apply_migrations(config: &AppConfig, dir: PathBuf) -> ManageResult<()> 
     Ok(())
 }
 
+#[cfg(any())]
 async fn run_sqlite_migrations(
     config: &AppConfig,
     migrations: Vec<refinery::Migration>,
@@ -1414,6 +1317,7 @@ async fn run_sqlite_migrations(
     result.map_err(|error| error as Box<dyn std::error::Error>)
 }
 
+#[cfg(any())]
 fn apply_sqlite_migrations(
     connection: &mut che_orm::rusqlite::Connection,
     migrations: Vec<refinery::Migration>,
@@ -1497,8 +1401,10 @@ fn apply_sqlite_migrations(
     }
 }
 
+#[cfg(any())]
 const MIGRATION_HISTORY_SQL: &str = "CREATE TABLE IF NOT EXISTS refinery_schema_history(\n             version int8 PRIMARY KEY,\n             name VARCHAR(255),\n             applied_on VARCHAR(255),\n             checksum VARCHAR(255));";
 
+#[cfg(any())]
 fn applied_migrations(
     connection: &che_orm::rusqlite::Connection,
 ) -> Result<Vec<refinery::Migration>, Box<dyn std::error::Error + Send + Sync>> {
@@ -1529,8 +1435,9 @@ fn applied_migrations(
     Ok(migrations)
 }
 
+#[cfg(any())]
 async fn migration_status(config: &AppConfig, dir: PathBuf) -> ManageResult<usize> {
-    let migrations = load_atlas_migrations(&dir)?;
+    let migrations = load_retired_sql_migrations(&dir)?;
     let filesystem = migrations
         .iter()
         .map(|migration| (migration.version(), migration.clone()))
@@ -1990,13 +1897,14 @@ fn operation_migration_status_for_connection(
     Ok(pending.len())
 }
 
+#[cfg(any())]
 async fn verify_migrations(config: &AppConfig, dir: PathBuf) -> ManageResult<()> {
     let pending_count = migration_status(config, dir.clone()).await?;
     if pending_count != 0 {
         return Err(format!("{pending_count} migration(s) are pending").into());
     }
     verify_foreign_keys(config).await?;
-    atlas_lint(&dir)?;
+    retired_sql_lint(&dir)?;
     println!("Migration verification passed.");
     Ok(())
 }
@@ -2016,6 +1924,7 @@ async fn verify_foreign_keys(config: &AppConfig) -> ManageResult<()> {
     result.map_err(|error| error as Box<dyn std::error::Error>)
 }
 
+#[cfg(any())]
 async fn run_with_refinery<T, F>(
     config: &AppConfig,
     migrations: Vec<refinery::Migration>,
@@ -2068,7 +1977,8 @@ fn assert_foreign_keys_valid(
     Ok(())
 }
 
-fn load_atlas_migrations(dir: &PathBuf) -> ManageResult<Vec<refinery::Migration>> {
+#[cfg(any())]
+fn load_retired_sql_migrations(dir: &PathBuf) -> ManageResult<Vec<refinery::Migration>> {
     let mut migrations = Vec::new();
     let mut versions = HashSet::new();
     for entry in fs::read_dir(dir)? {
@@ -2083,14 +1993,14 @@ fn load_atlas_migrations(dir: &PathBuf) -> ManageResult<Vec<refinery::Migration>
             .ok_or_else(|| format!("invalid migration filename: {}", path.display()))?;
         let Some((version, name)) = stem.split_once('_') else {
             return Err(format!(
-                "invalid Atlas migration filename `{}`; expected <version>_<name>.sql",
+                "invalid retired SQL migration filename `{}`; expected <version>_<name>.sql",
                 path.display()
             )
             .into());
         };
         if version.len() != 14 || !version.chars().all(|ch| ch.is_ascii_digit()) {
             return Err(format!(
-                "invalid Atlas migration version `{version}` in {}; expected 14 digits",
+                "invalid retired SQL migration version `{version}` in {}; expected 14 digits",
                 path.display()
             )
             .into());
@@ -2101,7 +2011,7 @@ fn load_atlas_migrations(dir: &PathBuf) -> ManageResult<Vec<refinery::Migration>
                 .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
         {
             return Err(format!(
-                "invalid Atlas migration name `{name}` in {}; use only ascii letters, digits, and underscores",
+                "invalid retired SQL migration name `{name}` in {}; use only ascii letters, digits, and underscores",
                 path.display()
             )
             .into());
@@ -2126,7 +2036,8 @@ fn sqlite_path(url: &str) -> String {
         .to_string()
 }
 
-fn atlas_diff(apps: &InstalledApps, dir: &PathBuf, name: &str) -> ManageResult<()> {
+#[cfg(any())]
+fn retired_sql_diff(apps: &InstalledApps, dir: &PathBuf, name: &str) -> ManageResult<()> {
     let temp_path = env::temp_dir().join(format!("che-rest-schema-{}.sql", std::process::id()));
     fs::write(&temp_path, schema(apps).to_sql::<SqliteDialect>())?;
     let to = file_url(&temp_path);
@@ -2145,8 +2056,9 @@ fn atlas_diff(apps: &InstalledApps, dir: &PathBuf, name: &str) -> ManageResult<(
     result
 }
 
-fn atlas_lint(dir: &PathBuf) -> ManageResult<()> {
-    atlas_command(&[
+#[cfg(any())]
+fn retired_sql_lint(dir: &PathBuf) -> ManageResult<()> {
+    retired_sql_command(&[
         "migrate",
         "lint",
         "--dir",
@@ -2158,16 +2070,18 @@ fn atlas_lint(dir: &PathBuf) -> ManageResult<()> {
     ])
 }
 
-fn atlas_command(args: &[&str]) -> ManageResult<()> {
-    let binary = env::var_os("ATLAS_BIN").unwrap_or_else(|| "atlas".into());
+#[cfg(any())]
+fn retired_sql_command(args: &[&str]) -> ManageResult<()> {
+    let binary = env::var_os("RETIRED_SQL_BIN").unwrap_or_else(|| "retired-sql".into());
     let status = Command::new(binary).args(args).status()?;
     if status.success() {
         Ok(())
     } else {
-        Err(format!("atlas exited with status {status}").into())
+        Err(format!("retired SQL runner exited with status {status}").into())
     }
 }
 
+#[cfg(any())]
 fn file_url(path: &PathBuf) -> String {
     let path = if path.is_absolute() {
         path.clone()
@@ -2187,16 +2101,13 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use che_orm::{
-        Database, Migration, MigrationId, MigrationOperation, Model, rusqlite::OptionalExtension,
-    };
+    use che_orm::{Database, Migration, MigrationId, MigrationOperation, Model};
     use clap::Parser;
 
     use super::{
-        Cli, Management, apply_migrations, apply_operation_migrations, build_operation_migration,
-        create_empty_migration, migration_status, operation_migration_status,
-        pending_operation_migrations, write_operation_migration,
-        write_operation_migration_and_register,
+        Cli, Management, apply_operation_migrations, build_operation_migration,
+        create_empty_migration, operation_migration_status, pending_operation_migrations,
+        write_operation_migration, write_operation_migration_and_register,
     };
     use crate::InstalledApps;
     use crate::auth::{User, module as auth_module, verify_password};
@@ -2867,34 +2778,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn migration_plan_cli_rejects_legacy_and_conflicting_actions() {
-        let cli = Cli::try_parse_from(["manage", "migrate", "--plan"]).unwrap();
-        let error = Management::new(InstalledApps::new())
-            .run_from(cli)
-            .await
-            .unwrap_err();
-        assert!(error.to_string().contains("requires compiled"));
+    async fn migration_plan_cli_uses_compiled_migrations_and_rejects_conflicting_actions() {
         let cli = Cli::try_parse_from(["manage", "migrate", "--plan", "apply"]).unwrap();
         let error = Management::new(InstalledApps::new())
-            .migrations(vec![])
             .run_from(cli)
             .await
             .unwrap_err();
         assert!(error.to_string().contains("cannot be combined"));
-
-        let cli = Cli::try_parse_from(["manage", "sqlmigrate", "tasks", "0001_initial"]).unwrap();
-        let error = Management::new(InstalledApps::new())
-            .run_from(cli)
-            .await
-            .unwrap_err();
-        assert!(error.to_string().contains("requires compiled"));
-
-        let cli = Cli::try_parse_from(["manage", "showmigrations"]).unwrap();
-        let error = Management::new(InstalledApps::new())
-            .run_from(cli)
-            .await
-            .unwrap_err();
-        assert!(error.to_string().contains("requires compiled"));
     }
 
     #[test]
@@ -2914,8 +2804,6 @@ mod tests {
         .unwrap();
         Cli::try_parse_from(["manage", "makemigrations", "backfill_tasks", "--empty"]).unwrap();
         Cli::try_parse_from(["manage", "migrate", "verify"]).unwrap();
-        Cli::try_parse_from(["manage", "migrate", "operations-apply"]).unwrap();
-        Cli::try_parse_from(["manage", "migrate", "operations-status"]).unwrap();
     }
 
     #[test]
@@ -3517,8 +3405,9 @@ fn main() {
         let _ = fs::remove_dir_all(output);
     }
 
+    #[cfg(any())]
     #[tokio::test]
-    async fn migrate_apply_runs_refinery_without_atlas() {
+    async fn migrate_apply_runs_retired_sql_runner() {
         let migrations = temp_path("migrations", "dir");
         fs::create_dir_all(&migrations).unwrap();
         fs::write(
@@ -3554,6 +3443,7 @@ fn main() {
         let _ = fs::remove_file(database_path);
     }
 
+    #[cfg(any())]
     #[tokio::test]
     async fn migrate_apply_rejects_changed_migration() {
         let migrations = temp_path("migrations_changed", "dir");
@@ -3576,6 +3466,7 @@ fn main() {
         let _ = fs::remove_file(database_path);
     }
 
+    #[cfg(any())]
     #[tokio::test]
     async fn migrate_status_reports_pending_on_fresh_database() {
         let migrations = temp_path("migrations_status", "dir");
@@ -3788,6 +3679,7 @@ fn main() {
         assert!(error.contains("0001_initial"));
     }
 
+    #[cfg(any())]
     #[tokio::test]
     async fn migrate_apply_rejects_foreign_key_violations() {
         let migrations = temp_path("migrations_fk", "dir");
@@ -3830,8 +3722,9 @@ fn main() {
         let _ = fs::remove_file(database_path);
     }
 
+    #[cfg(any())]
     #[tokio::test]
-    async fn migrate_apply_runs_checked_in_atlas_migrations() {
+    async fn migrate_apply_runs_checked_in_retired_sql_migrations() {
         let database_path = temp_path("cli_fullstack_migrate", "sqlite");
         let config = sqlite_config(&database_path);
         let migrations =

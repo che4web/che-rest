@@ -37,7 +37,7 @@ internal notification subscriber. `startapp` registers generated modules in `src
 
 ## Migrations And Auth
 
-Generate and apply migrations. `makemigrations` requires Atlas; `migrate` uses the built-in runner:
+Generate and apply compiled migrations with the built-in runner:
 
 ```bash
 cargo run --bin manage -- makemigrations

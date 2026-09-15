@@ -722,8 +722,9 @@ Defaults:
 --name auto
 ```
 
-`makemigrations` processes the schemas of all installed apps and writes one Atlas migration to the
-project-level `migrations/` directory. This command requires Atlas on the development machine:
+`makemigrations` compares installed app schemas with the compiled migration history and writes
+reviewable Rust migration modules under `src/migrations/<app>/`. It does not invoke an external
+migration tool:
 
 ```bash
 cargo run --bin manage -- makemigrations
@@ -732,11 +733,11 @@ cargo run --bin manage -- makemigrations
 Generated migrations are stored under:
 
 ```text
-migrations/
+src/migrations/<app>/
 ```
 
 The database URL is read from `[database].url` in `app.toml`. Apply all project migrations with the
-built-in SQLite runner; Atlas is not required on the target system:
+built-in forward-only SQLite executor:
 
 ```bash
 cargo run --bin manage -- migrate
@@ -747,9 +748,9 @@ SQL migrations.
 
 ### Compiled forward-only migrations
 
-Calling `Management::migrations(...)` explicitly selects compiled migrations,
-including `.migrations(vec![])` when generating the first migration. Without
-this call, management retains the legacy Atlas workflow described above.
+`Management::migrations(...)` supplies the project registry, usually through
+`Management::new(apps).migrations(project::migrations::all())`. An empty registry is valid while
+generating the first migration. Management has no SQL-file migration fallback.
 
 Preview pending compiled migrations before applying them:
 

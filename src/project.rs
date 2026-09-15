@@ -7,6 +7,8 @@ type ProjectResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 const APP_MODULES_MARKER: &str = "// che-rest:startapp modules";
 const APP_INSTALL_MARKER: &str = "// che-rest:startapp installed apps";
+const MIGRATION_MODULES_MARKER: &str = "// che-rest:migrations modules";
+const MIGRATION_INSTALL_MARKER: &str = "// che-rest:migrations installed apps";
 
 #[derive(Debug, Clone)]
 pub struct StartProjectOptions {
@@ -56,6 +58,10 @@ pub fn startproject(options: StartProjectOptions) -> ProjectResult<()> {
         &project_dir.join("src/apps/mod.rs"),
         &apps_mod_template(options.with_auth),
     )?;
+    write_file(
+        &project_dir.join("src/migrations/mod.rs"),
+        migrations_mod_template(),
+    )?;
 
     println!("Created project {}", project_dir.display());
     println!("Next steps:");
@@ -98,6 +104,7 @@ pub fn startapp(options: StartAppOptions) -> ProjectResult<()> {
         &app_mod_template(&options.name, &models),
     )?;
     register_app(&options.root.join("src/apps/mod.rs"), &options.name)?;
+    register_migration_app(&options.root.join("src/migrations"), &options.name)?;
 
     println!("Created app {}", app_dir.display());
     println!("Next steps:");
@@ -283,10 +290,10 @@ cargo run --bin manage -- migrate
 cargo run
 ```
 
-`makemigrations` compares all schemas from installed modules with the Atlas migration directory and
-requires Atlas. `migrate` applies checked-in SQL migrations through the built-in runner and does not
-require Atlas. It is the only command that creates or changes database tables; `Server::build()` does
-not alter the schema.
+`makemigrations` compares installed schemas with the compiled migration registry and writes Rust
+migration modules under `src/migrations/<app>/`. `migrate` applies that registry through the built-in
+forward-only SQLite executor. It is the only command that creates or changes database tables;
+`Server::build()` does not alter the schema.
 
 ## App Structure
 
@@ -329,7 +336,7 @@ OpenAPI metadata is available from the running server at `/api/openapi.json` by 
 }
 
 fn lib_rs_template() -> &'static str {
-    "pub mod apps;\n"
+    "pub mod apps;\npub mod migrations;\n"
 }
 
 fn main_rs_template(crate_name: &str) -> String {
@@ -363,12 +370,23 @@ fn manage_rs_template(crate_name: &str) -> String {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {{
     Management::new({crate_name}::apps::installed_apps())
+        .migrations({crate_name}::migrations::all())
         .project_root(env!("CARGO_MANIFEST_DIR"))
         .run()
         .await
 }}
 "#
     )
+}
+
+fn migrations_mod_template() -> &'static str {
+    "/// Compiled migration registry. `makemigrations` creates one module per application here.\n\
+// che-rest:migrations modules\n\
+pub fn all() -> Vec<che_orm::Migration> {\n\
+    let mut migrations = Vec::new();\n\
+    // che-rest:migrations installed apps\n\
+    migrations\n\
+}\n"
 }
 
 fn apps_mod_template(with_auth: bool) -> String {
@@ -427,6 +445,43 @@ fn register_app(apps_mod_path: &Path, app_name: &str) -> ProjectResult<()> {
     };
 
     fs::write(apps_mod_path, with_install)?;
+    Ok(())
+}
+
+fn register_migration_app(migrations_root: &Path, app_name: &str) -> ProjectResult<()> {
+    let app_registry = migrations_root.join(app_name).join("mod.rs");
+    write_file(
+        &app_registry,
+        "// che-orm: migrations begin\n// che-orm: migrations end\n",
+    )?;
+    let root = migrations_root.join("mod.rs");
+    let content = fs::read_to_string(&root)?;
+    if !content.contains(MIGRATION_MODULES_MARKER) || !content.contains(MIGRATION_INSTALL_MARKER) {
+        return Err(format!(
+            "{} has no che-rest migration registry markers",
+            root.display()
+        )
+        .into());
+    }
+    let module = format!("pub mod {app_name};");
+    let extend = format!("    migrations.extend({app_name}::all());");
+    let content = if content.contains(&module) {
+        content
+    } else {
+        content.replace(
+            MIGRATION_MODULES_MARKER,
+            &format!("{MIGRATION_MODULES_MARKER}\n{module}"),
+        )
+    };
+    let content = if content.contains(&extend) {
+        content
+    } else {
+        content.replace(
+            MIGRATION_INSTALL_MARKER,
+            &format!("{extend}\n    {MIGRATION_INSTALL_MARKER}"),
+        )
+    };
+    fs::write(root, content)?;
     Ok(())
 }
 
@@ -676,6 +731,12 @@ mod tests {
 
         let project = out.join("todo_api");
         assert!(project.join("src/bin/manage.rs").exists());
+        assert!(project.join("src/migrations/mod.rs").exists());
+        assert!(
+            std::fs::read_to_string(project.join("src/bin/manage.rs"))
+                .unwrap()
+                .contains(".migrations(todo_api::migrations::all())")
+        );
         let apps_mod = std::fs::read_to_string(project.join("src/apps/mod.rs")).unwrap();
         assert!(apps_mod.contains("che_rest::auth::module()"));
         assert!(apps_mod.contains("che-rest:startapp modules"));
@@ -710,6 +771,11 @@ mod tests {
         let apps_mod = std::fs::read_to_string(project.join("src/apps/mod.rs")).unwrap();
         assert!(apps_mod.contains("pub mod tasks;"));
         assert!(apps_mod.contains(".add(tasks::module())"));
+        let migrations_mod =
+            std::fs::read_to_string(project.join("src/migrations/mod.rs")).unwrap();
+        assert!(migrations_mod.contains("pub mod tasks;"));
+        assert!(migrations_mod.contains("migrations.extend(tasks::all());"));
+        assert!(project.join("src/migrations/tasks/mod.rs").exists());
         let models = std::fs::read_to_string(project.join("src/apps/tasks/models.rs")).unwrap();
         assert!(models.contains("pub struct Task"));
         assert!(models.contains("pub struct Comment"));

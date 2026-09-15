@@ -13,7 +13,7 @@
 ## Framework Gotchas
 - `CrudViewSet::<Model, Serializer>::new("/resource")` uses serializer types; no serializer instance is constructed.
 - Write handlers call `Serializer::is_valid` to build a `ValidatedWrite`; `ViewSet::prepare_*` may add server-owned fields before `ValidatedWrite::save` executes the mutation.
-- Atlas is used to generate migrations; `migrate` and `migrate status` apply/read them through the built-in Refinery runner and do not require Atlas on the target system. Production startup must not create model tables.
+- Compiled Rust migrations are the only migration format. `migrate` and `migrate status` use the built-in forward-only SQLite executor. Production startup must not create model tables.
 - `Server::new(state).install(apps).build().await` installs app routers under `/api` by default; override with `api_prefix(...)`.
 - `ModuleContext::viewset` and `viewset_with` both register the model schema, generated API metadata, and router; using only `route(...)` skips schema/codegen metadata.
 - `ViewSet::get_queryset` defines filtering scope and relation loading; serializers only convert the materialized queryset item and never query the database.
@@ -23,7 +23,7 @@
 - `examples/cli_fullstack` exposes optional writable `Task.assignee_id`; `/auth/users/` is a read-only admin relation endpoint and requires an admin user.
 - Installing `che_rest::auth::module()` enables token auth middleware for all routes under the API prefix and separately adds `/api-token-auth/` outside the prefix.
 - Installing `che_rest::channels::module()` adds `/api/ws/` for declared public signals. CRUD lifecycle signals are opt-in via `ViewSet::signal_access`, use default dotted names like `tasks.created`, and publish `{ "id": ... }` payloads. Use `ModuleContext::signal(...)` for custom public signals. `AppState::app_channels()` remains internal-only.
-- Management migrations use the project-level Atlas directory `migrations/`; `makemigrations` derives it from all installed app schemas and requires Atlas, while `migrate` applies checked-in SQL files without Atlas.
+- Management migrations live in `src/migrations/<app>/`; `makemigrations` derives operations from installed app schemas and writes Rust modules, while `migrate` applies the compiled registry.
 - Config loading only reads TOML shape `[database] url = "..."`; management commands can override with `--database-url`.
 - `generate-ts` writes `api_client.ts`, `channels.ts`, `models.ts`, `api.ts`, `useModelList.ts`, and `useModelItem.ts`; `generate-admin` writes Vue admin files and the same generated client files under `src/generated/`. These outputs are produced from installed app metadata, not by scanning source files.
 - `generate-admin` now creates a standalone Vite/Vue/Bootstrap project under `frontend/admin` by default. Re-running without `--force` updates only generated files and creates missing `src/admin/pages/<Model>{List,Form}.vue` wrappers; existing Vue/CSS/config/page files are preserved for user customization. Use `--force` to overwrite static templates and model pages.
