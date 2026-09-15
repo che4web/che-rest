@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::{Json, Router, response::Html, routing::get};
-use che_orm::{Migration, MigrationError, ProjectState, SchemaSet, StateChange};
+use che_orm::{Migration, MigrationError, ProjectState, SchemaObjectState, SchemaSet, StateChange};
 use serde_json::{Map, Value, json};
 
 use crate::{
@@ -16,6 +16,11 @@ pub trait AppModule: Send + Sync + 'static {
     /// Migrations shipped by this library application. Project-owned
     /// migrations are registered separately by the management binary.
     fn migrations(&self) -> Vec<Migration> {
+        Vec::new()
+    }
+    /// Triggers and views owned by this application. Their `app` field is
+    /// assigned from [`Self::name`] while collecting migration state.
+    fn schema_objects(&self) -> Vec<SchemaObjectState> {
         Vec::new()
     }
     fn init(&self, context: &mut ModuleContext);
@@ -96,7 +101,15 @@ impl InstalledApps {
             .iter()
             .map(|module| (module.name(), module.schema()))
             .collect();
-        ProjectState::from_app_schemas(schemas.iter().map(|(name, schema)| (*name, schema)))
+        let mut state =
+            ProjectState::from_app_schemas(schemas.iter().map(|(name, schema)| (*name, schema)))?;
+        for module in self.iter() {
+            for mut object in module.schema_objects() {
+                object.app = module.name().into();
+                state.add_schema_object(object)?;
+            }
+        }
+        Ok(state)
     }
 
     /// Compares compiled migration history with the current installed models.
@@ -328,6 +341,7 @@ mod tests {
     }
 
     struct MigrationApp;
+    struct SchemaObjectApp;
 
     impl AppModule for First {
         fn name(&self) -> &'static str {
@@ -365,6 +379,27 @@ mod tests {
         fn init(&self, _context: &mut ModuleContext) {}
     }
 
+    impl AppModule for SchemaObjectApp {
+        fn name(&self) -> &'static str {
+            "schema_object_app"
+        }
+
+        fn schema(&self) -> SchemaSet {
+            SchemaSet::new()
+        }
+
+        fn schema_objects(&self) -> Vec<SchemaObjectState> {
+            vec![SchemaObjectState {
+                app: String::new(),
+                kind: che_orm::SchemaObjectKind::View,
+                name: "migration_items_view".into(),
+                sql: "CREATE VIEW migration_items_view AS SELECT 1 AS id".into(),
+            }]
+        }
+
+        fn init(&self, _context: &mut ModuleContext) {}
+    }
+
     #[test]
     fn installed_apps_preserve_registration_order() {
         let apps = InstalledApps::new().add(First).add(Second);
@@ -382,6 +417,16 @@ mod tests {
         assert_eq!(models[0].key.name, "MigrationItem");
         assert_eq!(models[0].table.name, "migration_items");
         assert!(apps.migration_diff(&state).unwrap().is_empty());
+    }
+
+    #[test]
+    fn installed_apps_assign_schema_objects_to_their_module() {
+        let state = InstalledApps::new()
+            .add(SchemaObjectApp)
+            .migration_state()
+            .unwrap();
+        assert_eq!(state.objects().len(), 1);
+        assert_eq!(state.objects()[0].app, "schema_object_app");
     }
 
     #[test]

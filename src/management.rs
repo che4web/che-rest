@@ -415,6 +415,7 @@ fn build_initial_cycle_batch_with_history(
     let historical = graph.replay(Default::default())?;
     let desired = apps.migration_state()?;
     let models = desired.models();
+    let objects = desired.objects();
     let owners: BTreeMap<_, _> = models
         .iter()
         .map(|model| (model.table.name.clone(), model.key.app.clone()))
@@ -462,6 +463,27 @@ fn build_initial_cycle_batch_with_history(
         }
         by_app.entry(model.key.app.clone()).or_default().push(model);
     }
+    let mut objects_by_app: BTreeMap<String, Vec<che_orm::SchemaObjectState>> = BTreeMap::new();
+    for object in objects {
+        if let Some(existing) = historical
+            .objects()
+            .iter()
+            .find(|item| item.kind == object.kind && item.name == object.name)
+        {
+            if existing != object {
+                return Err(format!(
+                    "schema object {} requires an explicit library migration",
+                    object.name
+                )
+                .into());
+            }
+            continue;
+        }
+        objects_by_app
+            .entry(object.app.clone())
+            .or_default()
+            .push(object.clone());
+    }
     let mut initial_ids = BTreeMap::new();
     let mut library_heads = BTreeSet::new();
     for migration in history {
@@ -471,20 +493,28 @@ fn build_initial_cycle_batch_with_history(
         }
     }
     let mut migrations = Vec::new();
-    for (app, models) in &by_app {
+    let initial_apps: BTreeSet<_> = by_app
+        .keys()
+        .chain(objects_by_app.keys())
+        .cloned()
+        .collect();
+    for app in initial_apps {
         let id = MigrationId {
             app: app.clone(),
             name: format!("0001_{label}"),
         };
         initial_ids.insert(app.clone(), id.clone());
+        let operations = by_app
+            .get(&app)
+            .into_iter()
+            .flatten()
+            .cloned()
+            .map(|model| MigrationOperation::CreateModel { model })
+            .collect();
         migrations.push(Migration::new(
             id,
             library_heads.iter().cloned().collect(),
-            models
-                .iter()
-                .cloned()
-                .map(|model| MigrationOperation::CreateModel { model })
-                .collect(),
+            operations,
         ));
     }
     for (app, columns) in deferred {
@@ -507,6 +537,23 @@ fn build_initial_cycle_batch_with_history(
                         new_column,
                     },
                 )
+                .collect(),
+        ));
+    }
+    let schema_object_dependencies = migrations
+        .iter()
+        .map(|migration| migration.id.clone())
+        .collect::<BTreeSet<_>>();
+    for (app, objects) in objects_by_app {
+        migrations.push(Migration::new(
+            MigrationId {
+                app,
+                name: "0003_schema_objects".into(),
+            },
+            schema_object_dependencies.iter().cloned().collect(),
+            objects
+                .into_iter()
+                .map(|object| MigrationOperation::CreateSchemaObject { object })
                 .collect(),
         ));
     }
@@ -1778,6 +1825,13 @@ fn describe_migration_operation(operation: &MigrationOperation) -> String {
         } => format!(
             "BackfillColumn {table}.{column} with {value} where NULL — WARNING: changes existing data"
         ),
+        CreateSchemaObject { object } => format!(
+            "Create{:?} {} (owned by {})",
+            object.kind, object.name, object.app
+        ),
+        DropSchemaObject { kind, name } => {
+            format!("Drop{kind:?} {name} — WARNING: removes a database object")
+        }
         RunSql {
             state_operations, ..
         } => format!(
@@ -3161,6 +3215,29 @@ mod tests {
         fn init(&self, _: &mut crate::ModuleContext) {}
     }
 
+    struct SchemaObjectApp;
+
+    impl crate::AppModule for SchemaObjectApp {
+        fn name(&self) -> &'static str {
+            "schema_object"
+        }
+
+        fn schema(&self) -> che_orm::SchemaSet {
+            che_orm::SchemaSet::new()
+        }
+
+        fn schema_objects(&self) -> Vec<che_orm::SchemaObjectState> {
+            vec![che_orm::SchemaObjectState {
+                app: String::new(),
+                kind: che_orm::SchemaObjectKind::View,
+                name: "generated_view".into(),
+                sql: "CREATE VIEW generated_view AS SELECT 1 AS value".into(),
+            }]
+        }
+
+        fn init(&self, _: &mut crate::ModuleContext) {}
+    }
+
     #[test]
     fn initial_batch_defers_cyclic_cross_app_foreign_keys() {
         let apps = InstalledApps::new().add(CycleLeftApp).add(CycleRightApp);
@@ -3183,6 +3260,29 @@ mod tests {
             )
             .unwrap();
         assert_eq!(fk_count, 1);
+    }
+
+    #[test]
+    fn initial_batch_includes_app_owned_schema_objects() {
+        let apps = InstalledApps::new().add(SchemaObjectApp);
+        let migrations = super::build_initial_cycle_batch(&apps, "initial").unwrap();
+        assert_eq!(migrations.len(), 2);
+        assert!(matches!(
+            migrations[1].operations.as_slice(),
+            [che_orm::MigrationOperation::CreateSchemaObject { object }]
+                if object.app == "schema_object" && object.name == "generated_view"
+        ));
+        let mut connection = che_orm::rusqlite::Connection::open_in_memory().unwrap();
+        let graph = che_orm::MigrationGraph::new(migrations).unwrap();
+        che_orm::migration::sqlite_executor::apply_operation_migrations_on_connection(
+            &mut connection,
+            graph,
+        )
+        .unwrap();
+        let value: i64 = connection
+            .query_row("SELECT value FROM generated_view", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(value, 1);
     }
 
     #[test]
