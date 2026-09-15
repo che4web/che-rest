@@ -767,6 +767,59 @@ subcommand. It previews compiled migrations; SQL execution and live-schema
 compatibility are checked when applying them. Rebuild after changing migration
 sources, and inspect `RunSql` source before applying manual SQL.
 
+Inspect the SQLite SQL for one registered migration without opening a database:
+
+```bash
+cargo run --bin manage -- sqlmigrate tasks 0002_add_title
+```
+
+`sqlmigrate` rebuilds only the selected migration's dependency state in memory,
+then prints its SQLite statements. Declarative table changes therefore show the
+same create-copy-drop-rename SQL used by the executor. `RunSql` is printed as
+authored. The command requires compiled migrations and does not validate the
+live database schema or execute any statement.
+
+List registered compiled migrations and their database status with:
+
+```bash
+cargo run --bin manage -- showmigrations
+cargo run --bin manage -- showmigrations tasks
+```
+
+`[X]` marks a migration recorded in `che_migration_history`; `[ ]` marks a
+pending migration. Dependencies are listed beneath each migration. The command
+opens a file database only in read-only mode, treats a missing database as an
+empty history and never creates the history table.
+
+Apply a selected application's forward migration target with:
+
+```bash
+cargo run --bin manage -- migrate tasks
+cargo run --bin manage -- migrate tasks latest
+cargo run --bin manage -- migrate tasks 0002_add_title
+```
+
+The first two forms select the application's single latest migration. The
+executor applies only that target and its missing dependencies, each in a
+separate atomic SQLite transaction; unrelated pending migrations are left untouched. A target
+already passed by a later migration in the same application is rejected because
+rollback is not supported. Unknown applications and migration names are also
+rejected before the database is opened.
+
+When two reviewed branches create compatible heads for one application, create
+an empty merge migration with:
+
+```bash
+cargo run --bin manage -- makemigrations tasks --merge --name merge
+```
+
+The command accepts exactly two heads. It rebuilds their common historical
+state, replays the two branches in both orders, and creates a migration that
+depends on both heads only when the resulting declarative states agree. It
+rejects `RunSql`, conflicting operations, and three or more heads; resolve
+those with an explicit reviewed migration. Use `--dry-run` to inspect generated
+Rust before the file and registry are changed.
+
 For example, generate an application's migration with:
 
 ```bash

@@ -63,10 +63,16 @@ enum CommandKind {
         check: bool,
         #[arg(long, default_value_t = false)]
         dry_run: bool,
+        /// Generate an empty migration that merges two compatible heads.
+        #[arg(long, default_value_t = false, conflicts_with_all = ["empty", "check"])]
+        merge: bool,
     },
     Migrate {
         #[command(subcommand)]
         action: Option<MigrateAction>,
+        /// Optional target: application and migration name, or `latest`.
+        #[arg(value_names = ["APP", "NAME"], num_args = 0..=2)]
+        target: Vec<String>,
         /// Show pending compiled migrations without applying them.
         #[arg(long)]
         plan: bool,
@@ -74,6 +80,17 @@ enum CommandKind {
         config: PathBuf,
         #[arg(long, default_value = "migrations")]
         dir: PathBuf,
+    },
+    /// Print SQL for one compiled migration without executing it.
+    Sqlmigrate {
+        app: String,
+        name: String,
+    },
+    /// List compiled migrations, their dependencies and database status.
+    Showmigrations {
+        app: Option<String>,
+        #[arg(long, default_value = "app.toml")]
+        config: PathBuf,
     },
     Createsuperuser {
         #[arg(long)]
@@ -181,8 +198,28 @@ impl Management {
                 empty,
                 check,
                 dry_run,
+                merge,
             } => {
                 if self.compiled_migrations {
+                    if merge {
+                        let Some(app) = app else {
+                            return Err("compiled --merge requires an application name".into());
+                        };
+                        if self.apps.find(&app).is_none() {
+                            return Err(format!("unknown installed application `{app}`").into());
+                        }
+                        ensure_compiled_registry_matches(&dir, &self.migrations, &app)?;
+                        let label = name.unwrap_or_else(|| "merge".into());
+                        let migration =
+                            build_operation_merge_migration(&self.migrations, &app, &label)?;
+                        if dry_run {
+                            print!("{}", render_migration_rust(&migration));
+                            return Ok(());
+                        }
+                        let path = write_operation_migration_and_register(&dir, &migration)?;
+                        println!("wrote merge migration to {}", path.display());
+                        return Ok(());
+                    }
                     if app.is_none() {
                         if empty {
                             return Err("compiled --empty requires an application name".into());
@@ -254,10 +291,20 @@ impl Management {
             }
             CommandKind::Migrate {
                 action,
+                target,
                 plan,
                 config,
                 dir,
             } => {
+                if target.len() > 2 {
+                    return Err("migrate accepts at most an app and migration name".into());
+                }
+                if !target.is_empty() && (plan || action.is_some()) {
+                    return Err(
+                        "a migration target cannot be combined with --plan or a migrate subcommand"
+                            .into(),
+                    );
+                }
                 if plan && action.is_some() {
                     return Err(
                         "migrate --plan cannot be combined with a migrate subcommand".into(),
@@ -274,6 +321,21 @@ impl Management {
                     .await?
                     .map_err(|error| error as Box<dyn std::error::Error>)?;
                     print!("{result}");
+                    return Ok(());
+                }
+                if let Some(app) = target.first() {
+                    if !self.compiled_migrations {
+                        return Err(
+                            "migrate <app> [name|latest] requires compiled operation migrations"
+                                .into(),
+                        );
+                    }
+                    let target = resolve_operation_migration_target(
+                        &self.migrations,
+                        app,
+                        target.get(1).map(String::as_str),
+                    )?;
+                    apply_operation_migrations_to(&config, self.migrations, target).await?;
                     return Ok(());
                 }
                 let action = action.unwrap_or(if !self.compiled_migrations {
@@ -320,6 +382,27 @@ impl Management {
                     MigrateAction::Lint => atlas_lint(&dir)?,
                     MigrateAction::Diff { name } => atlas_diff(&self.apps, &dir, &name)?,
                 }
+            }
+            CommandKind::Sqlmigrate { app, name } => {
+                if !self.compiled_migrations {
+                    return Err("sqlmigrate requires compiled operation migrations".into());
+                }
+                print!(
+                    "{}",
+                    operation_migration_sql(&self.migrations, &app, &name)?
+                );
+            }
+            CommandKind::Showmigrations { app, config } => {
+                if !self.compiled_migrations {
+                    return Err("showmigrations requires compiled operation migrations".into());
+                }
+                let config = AppConfig::from_file(config)?;
+                let result = tokio::task::spawn_blocking(move || {
+                    operation_migration_list(&config, self.migrations, app.as_deref())
+                })
+                .await?
+                .map_err(|error| error as Box<dyn std::error::Error>)?;
+                print!("{result}");
             }
             CommandKind::Createsuperuser {
                 username,
@@ -623,6 +706,156 @@ pub fn build_operation_migration(
         dependencies.into_iter().collect(),
         operations,
     )))
+}
+
+/// Builds an empty merge migration for exactly two branches whose declarative
+/// state transitions commute. `RunSql` branches require an explicit manual
+/// merge because their database effects cannot be proven from state metadata.
+pub fn build_operation_merge_migration(
+    migrations: &[Migration],
+    app: &str,
+    label: &str,
+) -> ManageResult<Migration> {
+    validate_operation_migration_name(label)?;
+    let graph = MigrationGraph::new(migrations.to_vec())?;
+    let heads = graph.app_heads(app);
+    if heads.len() < 2 {
+        return Err(format!("{app} has no conflicting migration heads to merge").into());
+    }
+    if heads.len() > 2 {
+        return Err(format!(
+            "{app} has {} migration heads; merge them manually in smaller reviewed steps",
+            heads.len()
+        )
+        .into());
+    }
+    let heads = heads
+        .into_iter()
+        .map(|migration| migration.id.clone())
+        .collect::<Vec<_>>();
+    let left = migration_closure(&graph, &heads[0]);
+    let right = migration_closure(&graph, &heads[1]);
+    let common = left.intersection(&right).cloned().collect::<BTreeSet<_>>();
+    let left_branch = left.difference(&common).cloned().collect::<BTreeSet<_>>();
+    let right_branch = right.difference(&common).cloned().collect::<BTreeSet<_>>();
+
+    for migration in graph.ordered().filter(|migration| {
+        left_branch.contains(&migration.id) || right_branch.contains(&migration.id)
+    }) {
+        if migration
+            .operations
+            .iter()
+            .any(|operation| matches!(operation, che_orm::MigrationOperation::RunSql { .. }))
+        {
+            return Err(format!(
+                "cannot prove merge compatibility for {}:{} because it contains RunSql; write an explicit reviewed merge migration",
+                migration.id.app, migration.id.name
+            )
+            .into());
+        }
+    }
+
+    let base = graph.replay_selected(Default::default(), &common)?;
+    let left_then_right = replay_migration_branch(&graph, base.clone(), &left_branch)
+        .and_then(|state| replay_migration_branch(&graph, state, &right_branch));
+    let right_then_left = replay_migration_branch(&graph, base, &right_branch)
+        .and_then(|state| replay_migration_branch(&graph, state, &left_branch));
+    match (left_then_right, right_then_left) {
+        (Ok(left), Ok(right)) if migration_states_equivalent(&left, &right) => {}
+        (Ok(_), Ok(_)) => {
+            return Err("migration branches produce different historical states; write an explicit reviewed merge migration".into());
+        }
+        (Err(left), Err(right)) => {
+            return Err(format!(
+                "migration branches are not compatible ({left}; {right}); write an explicit reviewed merge migration"
+            )
+            .into());
+        }
+        (Err(error), _) | (_, Err(error)) => {
+            return Err(format!(
+                "migration branches are not compatible ({error}); write an explicit reviewed merge migration"
+            )
+            .into());
+        }
+    }
+    let number = next_operation_migration_number(&graph, app)?;
+    Ok(Migration::new(
+        MigrationId {
+            app: app.into(),
+            name: format!("{number:04}_{label}"),
+        },
+        heads,
+        vec![],
+    ))
+}
+
+fn migration_states_equivalent(
+    left: &che_orm::ProjectState,
+    right: &che_orm::ProjectState,
+) -> bool {
+    fn normalize_table(table: &mut che_orm::TableState) {
+        table
+            .columns
+            .sort_by(|left, right| left.name.cmp(&right.name));
+        table.indexes.sort();
+        table.unique_constraints.sort();
+    }
+    let mut left_tables = left.tables().to_vec();
+    let mut right_tables = right.tables().to_vec();
+    for table in &mut left_tables {
+        normalize_table(table);
+    }
+    for table in &mut right_tables {
+        normalize_table(table);
+    }
+    left_tables.sort_by(|left, right| left.name.cmp(&right.name));
+    right_tables.sort_by(|left, right| left.name.cmp(&right.name));
+    if left_tables != right_tables {
+        return false;
+    }
+    let mut left_models = left.models();
+    let mut right_models = right.models();
+    for model in &mut left_models {
+        normalize_table(&mut model.table);
+    }
+    for model in &mut right_models {
+        normalize_table(&mut model.table);
+    }
+    left_models.sort_by(|left, right| left.key.cmp(&right.key));
+    right_models.sort_by(|left, right| left.key.cmp(&right.key));
+    left_models == right_models
+}
+
+fn migration_closure(graph: &MigrationGraph, target: &MigrationId) -> BTreeSet<MigrationId> {
+    let migrations = graph
+        .ordered()
+        .map(|migration| (migration.id.clone(), migration))
+        .collect::<BTreeMap<_, _>>();
+    let mut closure = BTreeSet::new();
+    let mut pending = vec![target.clone()];
+    while let Some(id) = pending.pop() {
+        if closure.insert(id.clone()) {
+            pending.extend(migrations[&id].dependencies.iter().cloned());
+        }
+    }
+    closure
+}
+
+fn replay_migration_branch(
+    graph: &MigrationGraph,
+    mut state: che_orm::ProjectState,
+    branch: &BTreeSet<MigrationId>,
+) -> Result<che_orm::ProjectState, che_orm::MigrationError> {
+    for migration in graph
+        .ordered()
+        .filter(|migration| branch.contains(&migration.id))
+    {
+        for operation in &migration.operations {
+            operation.state_forwards(&mut state)?;
+            state.validate()?;
+        }
+    }
+    Ok(state)
 }
 
 fn order_generated_operations(
@@ -1153,6 +1386,23 @@ pub async fn apply_operation_migrations(
     Ok(())
 }
 
+async fn apply_operation_migrations_to(
+    config: &AppConfig,
+    migrations: Vec<Migration>,
+    target: MigrationId,
+) -> ManageResult<()> {
+    let applied_count = run_operation_migrations_to(config, migrations, target.clone()).await?;
+    if applied_count == 0 {
+        println!("Target {}:{} is already applied.", target.app, target.name);
+    } else {
+        println!(
+            "Applied {applied_count} operation migration(s) through {}:{}.",
+            target.app, target.name
+        );
+    }
+    Ok(())
+}
+
 async fn run_operation_migrations(
     config: &AppConfig,
     migrations: Vec<Migration>,
@@ -1173,43 +1423,67 @@ async fn run_operation_migrations(
     result.map_err(|error| error as Box<dyn std::error::Error>)
 }
 
+async fn run_operation_migrations_to(
+    config: &AppConfig,
+    migrations: Vec<Migration>,
+    target: MigrationId,
+) -> ManageResult<usize> {
+    let graph = MigrationGraph::new(migrations)
+        .map_err(|error| format!("invalid operation migration graph: {error}"))?;
+    let database = Database::connect_with_pool_size(
+        sqlite_path(&config.database.url),
+        config.database.max_connections as usize,
+    )?;
+    let pool = database.pool().clone();
+    let result = pool
+        .get()
+        .await?
+        .interact(move |connection| {
+            apply_operation_migrations_to_on_connection(connection, graph, Some(target))
+        })
+        .await
+        .map_err(|error| format!("database interaction error: {error}"))?;
+    result.map_err(|error| error as Box<dyn std::error::Error>)
+}
+
 use che_orm::migration::sqlite_executor::{
     applied_operation_migrations, apply_operation_migrations_on_connection,
-    pending_operation_migrations,
+    apply_operation_migrations_to_on_connection, pending_operation_migrations,
 };
+
+fn resolve_operation_migration_target(
+    migrations: &[Migration],
+    app: &str,
+    name: Option<&str>,
+) -> ManageResult<MigrationId> {
+    let graph = MigrationGraph::new(migrations.to_vec())
+        .map_err(|error| format!("invalid operation migration graph: {error}"))?;
+    let name = name.unwrap_or("latest");
+    if name == "latest" {
+        return graph
+            .app_heads(app)
+            .into_iter()
+            .next()
+            .map(|migration| migration.id.clone())
+            .ok_or_else(|| format!("no registered operation migrations for {app}").into());
+    }
+    let target = MigrationId {
+        app: app.to_owned(),
+        name: name.to_owned(),
+    };
+    if graph.ordered().any(|migration| migration.id == target) {
+        Ok(target)
+    } else {
+        Err(format!("unknown operation migration {app}:{name}").into())
+    }
+}
 
 fn operation_migration_plan(
     config: &AppConfig,
     migrations: Vec<Migration>,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    use che_orm::rusqlite::{Connection, OpenFlags};
-
     let graph = MigrationGraph::new(migrations)?;
-    let path = sqlite_path(&config.database.url);
-    if path.is_empty()
-        || path == ":memory:"
-        || path.starts_with("file:")
-        || path.contains("://")
-        || config
-            .database
-            .url
-            .split_once('?')
-            .is_some_and(|(_, query)| query.split('&').any(|item| item == "mode=memory"))
-    {
-        return Err("migrate --plan requires a SQLite file path (plain or sqlite://)".into());
-    }
-    // Never use the regular pool here: it opens with CREATE and may initialize SQLite.
-    let applied = match fs::metadata(&path) {
-        Ok(_) => {
-            let connection = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-            connection.execute_batch("BEGIN")?;
-            let applied = applied_operation_migrations(&connection)?;
-            connection.execute_batch("ROLLBACK")?;
-            applied
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
-        Err(error) => return Err(error.into()),
-    };
+    let applied = read_operation_migration_history_read_only(config, "migrate --plan")?;
     let pending = pending_operation_migrations(&graph, &applied)?;
     let applied_ids = applied
         .keys()
@@ -1250,6 +1524,84 @@ fn operation_migration_plan(
         }
     }
     output.push_str("\nPreview only: no migrations applied. SQL and live-schema compatibility are checked on apply.\n");
+    Ok(output)
+}
+
+fn read_operation_migration_history_read_only(
+    config: &AppConfig,
+    command: &str,
+) -> Result<HashMap<(String, String), String>, Box<dyn std::error::Error + Send + Sync>> {
+    use che_orm::rusqlite::{Connection, OpenFlags};
+
+    let path = sqlite_path(&config.database.url);
+    if path.is_empty()
+        || path == ":memory:"
+        || path.starts_with("file:")
+        || path.contains("://")
+        || config
+            .database
+            .url
+            .split_once('?')
+            .is_some_and(|(_, query)| query.split('&').any(|item| item == "mode=memory"))
+    {
+        return Err(format!("{command} requires a SQLite file path (plain or sqlite://)").into());
+    }
+    // Never use the regular pool here: it opens with CREATE and may initialize SQLite.
+    match fs::metadata(&path) {
+        Ok(_) => {
+            let connection = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+            connection.execute_batch("BEGIN")?;
+            let applied = applied_operation_migrations(&connection)?;
+            connection.execute_batch("ROLLBACK")?;
+            Ok(applied)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn operation_migration_list(
+    config: &AppConfig,
+    migrations: Vec<Migration>,
+    app_filter: Option<&str>,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let graph = MigrationGraph::new(migrations)?;
+    let applied = read_operation_migration_history_read_only(config, "showmigrations")?;
+    pending_operation_migrations(&graph, &applied)?;
+    let migrations = graph
+        .ordered()
+        .filter(|migration| app_filter.is_none_or(|app| migration.id.app == app))
+        .collect::<Vec<_>>();
+    if migrations.is_empty() {
+        return Ok(match app_filter {
+            Some(app) => format!("No registered migrations for {app}.\n"),
+            None => "No registered migrations.\n".to_string(),
+        });
+    }
+    let mut output = String::new();
+    for migration in migrations {
+        let marker = if applied.contains_key(&(migration.id.app.clone(), migration.id.name.clone()))
+        {
+            "[X]"
+        } else {
+            "[ ]"
+        };
+        output.push_str(&format!(
+            "{marker} {}:{}\n",
+            migration.id.app, migration.id.name
+        ));
+        if !migration.dependencies.is_empty() {
+            output.push_str(&format!(
+                "    depends on: {}\n",
+                migration
+                    .dependencies
+                    .iter()
+                    .map(|id| format!("{}:{}", id.app, id.name))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+    }
     Ok(output)
 }
 
@@ -1295,6 +1647,67 @@ fn describe_migration_operation(operation: &MigrationOperation) -> String {
             state_operations.len()
         ),
     }
+}
+
+fn operation_migration_sql(
+    migrations: &[Migration],
+    app: &str,
+    name: &str,
+) -> ManageResult<String> {
+    let graph = MigrationGraph::new(migrations.to_vec())
+        .map_err(|error| format!("invalid operation migration graph: {error}"))?;
+    let target_id = MigrationId {
+        app: app.to_owned(),
+        name: name.to_owned(),
+    };
+    let migrations_by_id = graph
+        .ordered()
+        .map(|migration| (migration.id.clone(), migration))
+        .collect::<HashMap<_, _>>();
+    let target = migrations_by_id.get(&target_id).ok_or_else(|| {
+        format!("unknown operation migration {app}:{name}; use its registered app and name")
+    })?;
+    let mut required = BTreeSet::new();
+    let mut pending = target.dependencies.clone();
+    while let Some(id) = pending.pop() {
+        if required.insert(id.clone()) {
+            pending.extend(
+                migrations_by_id
+                    .get(&id)
+                    .expect("graph dependencies were validated")
+                    .dependencies
+                    .iter()
+                    .cloned(),
+            );
+        }
+    }
+
+    let mut state = che_orm::ProjectState::default();
+    for migration in graph
+        .ordered()
+        .filter(|migration| required.contains(&migration.id))
+    {
+        for operation in &migration.operations {
+            operation.state_forwards(&mut state)?;
+        }
+    }
+
+    let mut output = format!("-- {}:{}\n", target.id.app, target.id.name);
+    if target.operations.is_empty() {
+        output.push_str("-- This migration has no SQL operations.\n");
+    }
+    for operation in &target.operations {
+        let rendered = che_orm::SqliteSchemaEditor::plan(operation, &state)?;
+        for statement in rendered.statements {
+            output.push_str(&statement);
+            if !statement.trim_end().ends_with(';') {
+                output.push(';');
+            }
+            output.push('\n');
+        }
+        state = rendered.resulting_state;
+    }
+    Ok(output)
 }
 
 async fn operation_migration_status(
@@ -1585,7 +1998,20 @@ mod tests {
             vec![MigrationOperation::CreateTable {
                 table: che_orm::TableState {
                     name: "items".into(),
-                    columns: vec![],
+                    columns: vec![che_orm::ColumnState {
+                        field_name: "id".into(),
+                        name: "id".into(),
+                        column_type: che_orm::ColumnType::Integer,
+                        nullable: false,
+                        primary_key: true,
+                        unique: false,
+                        default: None,
+                        check: None,
+                        choices: None,
+                        references: None,
+                        auto_now_add: false,
+                        auto_now: false,
+                    }],
                     indexes: vec![],
                     unique_constraints: vec![],
                 },
@@ -1602,6 +2028,119 @@ mod tests {
             }],
         );
         vec![initial, remove]
+    }
+
+    fn merge_test_migrations() -> Vec<Migration> {
+        let initial = Migration::new(
+            MigrationId {
+                app: "tasks".into(),
+                name: "0001_initial".into(),
+            },
+            vec![],
+            vec![MigrationOperation::CreateTable {
+                table: che_orm::TableState {
+                    name: "items".into(),
+                    columns: vec![che_orm::ColumnState {
+                        field_name: "id".into(),
+                        name: "id".into(),
+                        column_type: che_orm::ColumnType::Integer,
+                        nullable: false,
+                        primary_key: true,
+                        unique: false,
+                        default: None,
+                        check: None,
+                        choices: None,
+                        references: None,
+                        auto_now_add: false,
+                        auto_now: false,
+                    }],
+                    indexes: vec![],
+                    unique_constraints: vec![],
+                },
+            }],
+        );
+        let initial_id = initial.id.clone();
+        let branch = |name: &str, column: &str| {
+            Migration::new(
+                MigrationId {
+                    app: "tasks".into(),
+                    name: name.into(),
+                },
+                vec![initial_id.clone()],
+                vec![MigrationOperation::AddColumn {
+                    table: "items".into(),
+                    column: che_orm::ColumnState {
+                        field_name: column.into(),
+                        name: column.into(),
+                        column_type: che_orm::ColumnType::Text,
+                        nullable: true,
+                        primary_key: false,
+                        unique: false,
+                        default: None,
+                        check: None,
+                        choices: None,
+                        references: None,
+                        auto_now_add: false,
+                        auto_now: false,
+                    },
+                }],
+            )
+        };
+        vec![
+            initial,
+            branch("0002_add_description", "description"),
+            branch("0002_add_title", "title"),
+        ]
+    }
+
+    #[test]
+    fn merge_generation_requires_two_compatible_declarative_heads() {
+        Cli::try_parse_from(["manage", "makemigrations", "tasks", "--merge"]).unwrap();
+        let migrations = merge_test_migrations();
+        let merge = super::build_operation_merge_migration(&migrations, "tasks", "merge").unwrap();
+        assert_eq!(merge.id.name, "0003_merge");
+        assert!(merge.operations.is_empty());
+        assert_eq!(
+            merge
+                .dependencies
+                .iter()
+                .map(|id| id.name.as_str())
+                .collect::<Vec<_>>(),
+            ["0002_add_description", "0002_add_title"]
+        );
+
+        let mut conflicting = merge_test_migrations();
+        conflicting[2].operations = conflicting[1].operations.clone();
+        conflicting[2].checksum = conflicting[2].calculated_checksum();
+        assert!(
+            super::build_operation_merge_migration(&conflicting, "tasks", "merge")
+                .unwrap_err()
+                .to_string()
+                .contains("not compatible")
+        );
+    }
+
+    #[test]
+    fn merge_generation_rejects_manual_sql_and_non_branches() {
+        let mut migrations = merge_test_migrations();
+        migrations[1].operations = vec![MigrationOperation::RunSql {
+            forward: "SELECT 1".into(),
+            reverse: None,
+            state_operations: migrations[1].operations.clone(),
+        }];
+        migrations[1].checksum = migrations[1].calculated_checksum();
+        assert!(
+            super::build_operation_merge_migration(&migrations, "tasks", "merge")
+                .unwrap_err()
+                .to_string()
+                .contains("contains RunSql")
+        );
+        assert!(
+            super::build_operation_merge_migration(&plan_test_migrations(), "tasks", "merge")
+                .unwrap_err()
+                .to_string()
+                .contains("no conflicting")
+        );
     }
 
     #[test]
@@ -1783,6 +2322,221 @@ mod tests {
         }
     }
 
+    #[test]
+    fn showmigrations_lists_status_dependencies_and_does_not_create_database() {
+        let path = temp_path("showmigrations_missing", "sqlite");
+        let migrations = plan_test_migrations();
+        let output =
+            super::operation_migration_list(&sqlite_config(&path), migrations, None).unwrap();
+        assert_eq!(
+            output,
+            "[ ] tasks:0001_initial\n[ ] tasks:0002_remove\n    depends on: tasks:0001_initial\n"
+        );
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn showmigrations_filters_app_and_reads_history_without_writing() {
+        let path = temp_path("showmigrations_history", "sqlite");
+        let mut migrations = plan_test_migrations();
+        let audit = Migration::new(
+            MigrationId {
+                app: "audit".into(),
+                name: "0001_initial".into(),
+            },
+            vec![],
+            vec![],
+        );
+        let initial = migrations[0].clone();
+        migrations.push(audit);
+        let connection = che_orm::rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE che_migration_history (app TEXT, name TEXT, checksum TEXT);",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO che_migration_history VALUES (?1, ?2, ?3)",
+                [&initial.id.app, &initial.id.name, &initial.checksum],
+            )
+            .unwrap();
+        drop(connection);
+        let before = fs::read(&path).unwrap();
+        let output = super::operation_migration_list(
+            &sqlite_config(&path),
+            migrations.clone(),
+            Some("tasks"),
+        )
+        .unwrap();
+        assert_eq!(
+            output,
+            "[X] tasks:0001_initial\n[ ] tasks:0002_remove\n    depends on: tasks:0001_initial\n"
+        );
+        assert_eq!(before, fs::read(&path).unwrap());
+        assert_eq!(
+            super::operation_migration_list(&sqlite_config(&path), migrations, Some("missing"))
+                .unwrap(),
+            "No registered migrations for missing.\n"
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn migrate_target_applies_closure_and_rejects_a_passed_target() {
+        Cli::try_parse_from(["manage", "migrate", "tasks", "0002_remove"]).unwrap();
+        Cli::try_parse_from(["manage", "migrate", "tasks", "latest"]).unwrap();
+        let path = temp_path("migrate_target", "sqlite");
+        let config = sqlite_config(&path);
+        let migrations = plan_test_migrations();
+        let first =
+            super::resolve_operation_migration_target(&migrations, "tasks", Some("0001_initial"))
+                .unwrap();
+        assert_eq!(
+            super::run_operation_migrations_to(&config, migrations.clone(), first)
+                .await
+                .unwrap(),
+            1
+        );
+        let latest =
+            super::resolve_operation_migration_target(&migrations, "tasks", Some("latest"))
+                .unwrap();
+        assert_eq!(latest.name, "0002_remove");
+        assert_eq!(
+            super::run_operation_migrations_to(&config, migrations.clone(), latest)
+                .await
+                .unwrap(),
+            1
+        );
+        let rollback =
+            super::resolve_operation_migration_target(&migrations, "tasks", Some("0001_initial"))
+                .unwrap();
+        assert!(
+            super::run_operation_migrations_to(&config, migrations.clone(), rollback)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("rollback is not supported")
+        );
+        assert!(
+            super::resolve_operation_migration_target(&migrations, "tasks", Some("missing"))
+                .unwrap_err()
+                .to_string()
+                .contains("unknown operation migration")
+        );
+        assert!(
+            super::resolve_operation_migration_target(&migrations, "missing", None)
+                .unwrap_err()
+                .to_string()
+                .contains("no registered operation migrations")
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn sqlmigrate_renders_target_against_its_historical_dependencies() {
+        let initial = Migration::new(
+            MigrationId {
+                app: "tasks".into(),
+                name: "0001_initial".into(),
+            },
+            vec![],
+            vec![MigrationOperation::CreateTable {
+                table: che_orm::TableState {
+                    name: "items".into(),
+                    columns: vec![che_orm::ColumnState {
+                        field_name: "id".into(),
+                        name: "id".into(),
+                        column_type: che_orm::ColumnType::Integer,
+                        nullable: false,
+                        primary_key: true,
+                        unique: false,
+                        default: None,
+                        check: None,
+                        choices: None,
+                        references: None,
+                        auto_now_add: false,
+                        auto_now: false,
+                    }],
+                    indexes: vec![],
+                    unique_constraints: vec![],
+                },
+            }],
+        );
+        let add_title = Migration::new(
+            MigrationId {
+                app: "tasks".into(),
+                name: "0002_add_title".into(),
+            },
+            vec![initial.id.clone()],
+            vec![MigrationOperation::AddColumn {
+                table: "items".into(),
+                column: che_orm::ColumnState {
+                    field_name: "title".into(),
+                    name: "title".into(),
+                    column_type: che_orm::ColumnType::Text,
+                    nullable: true,
+                    primary_key: false,
+                    unique: false,
+                    default: None,
+                    check: None,
+                    choices: None,
+                    references: None,
+                    auto_now_add: false,
+                    auto_now: false,
+                },
+            }],
+        );
+        let sql = super::operation_migration_sql(
+            &[initial.clone(), add_title],
+            "tasks",
+            "0002_add_title",
+        )
+        .unwrap();
+        assert!(sql.starts_with("-- tasks:0002_add_title\n"));
+        assert!(sql.contains("CREATE TABLE \"__che_migration_new_items\""));
+        assert!(sql.contains("\"id\" INTEGER PRIMARY KEY"));
+        assert!(sql.contains("\"title\" TEXT"));
+        assert!(sql.contains("INSERT INTO \"__che_migration_new_items\""));
+        assert!(sql.ends_with(";\n"));
+
+        let initial_sql =
+            super::operation_migration_sql(&[initial], "tasks", "0001_initial").unwrap();
+        assert!(initial_sql.contains("CREATE TABLE \"items\""));
+        assert!(!initial_sql.contains("__che_migration"));
+    }
+
+    #[test]
+    fn sqlmigrate_preserves_manual_sql_and_rejects_unknown_migration() {
+        let migration = Migration::new(
+            MigrationId {
+                app: "tasks".into(),
+                name: "0001_manual".into(),
+            },
+            vec![],
+            vec![MigrationOperation::RunSql {
+                forward: "CREATE TABLE notes (id INTEGER PRIMARY KEY)".into(),
+                reverse: None,
+                state_operations: vec![MigrationOperation::CreateTable {
+                    table: che_orm::TableState {
+                        name: "notes".into(),
+                        columns: vec![],
+                        indexes: vec![],
+                        unique_constraints: vec![],
+                    },
+                }],
+            }],
+        );
+        let sql = super::operation_migration_sql(&[migration], "tasks", "0001_manual").unwrap();
+        assert!(sql.contains("CREATE TABLE notes (id INTEGER PRIMARY KEY);"));
+        assert!(
+            super::operation_migration_sql(&[], "tasks", "missing")
+                .unwrap_err()
+                .to_string()
+                .contains("unknown operation migration tasks:missing")
+        );
+    }
+
     #[tokio::test]
     async fn migration_plan_cli_rejects_legacy_and_conflicting_actions() {
         let cli = Cli::try_parse_from(["manage", "migrate", "--plan"]).unwrap();
@@ -1798,6 +2552,20 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("cannot be combined"));
+
+        let cli = Cli::try_parse_from(["manage", "sqlmigrate", "tasks", "0001_initial"]).unwrap();
+        let error = Management::new(InstalledApps::new())
+            .run_from(cli)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("requires compiled"));
+
+        let cli = Cli::try_parse_from(["manage", "showmigrations"]).unwrap();
+        let error = Management::new(InstalledApps::new())
+            .run_from(cli)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("requires compiled"));
     }
 
     #[test]
@@ -2444,6 +3212,7 @@ fn main() {
         let table = che_orm::TableState {
             name: "operation_items".into(),
             columns: vec![che_orm::ColumnState {
+                field_name: "id".into(),
                 name: "id".into(),
                 column_type: che_orm::ColumnType::Integer,
                 nullable: false,
@@ -2460,6 +3229,7 @@ fn main() {
             indexes: vec![],
         };
         let name = che_orm::ColumnState {
+            field_name: "name".into(),
             name: "name".into(),
             column_type: che_orm::ColumnType::Text,
             nullable: false,
