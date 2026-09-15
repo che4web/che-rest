@@ -10,7 +10,11 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use che_orm::Model;
+use che_orm::{Migration, Model};
+#[cfg(test)]
+use che_orm::{ProjectState, SchemaSet};
+
+mod migration_initial;
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
@@ -165,6 +169,13 @@ pub fn module() -> AuthModule {
     AuthModule
 }
 
+/// Declarative initial migration shipped with the authentication application.
+/// A project consumes this registry through [`crate::Management`], rather
+/// than copying the migration source into its own migrations directory.
+pub fn migrations() -> Vec<Migration> {
+    vec![migration_initial::migration()]
+}
+
 impl AppModule for AuthModule {
     fn name(&self) -> &'static str {
         "auth"
@@ -175,6 +186,10 @@ impl AppModule for AuthModule {
             .model::<User>()
             .model::<AuthToken>()
             .model::<AuthSession>()
+    }
+
+    fn migrations(&self) -> Vec<Migration> {
+        migrations()
     }
 
     fn init(&self, context: &mut ModuleContext) {
@@ -471,6 +486,21 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::{AllowAny, AppModule, CurrentUserResolverFuture, ModuleContext, Server, ViewSet};
+
+    #[test]
+    fn library_migrations_replay_the_auth_schema() {
+        assert_eq!(migrations()[0].checksum, "v1:cf9bef2cfd081db4");
+        let graph = che_orm::MigrationGraph::new(migrations()).unwrap();
+        let actual = graph.replay(Default::default()).unwrap();
+        let expected = ProjectState::from_app_schema(
+            "auth",
+            &SchemaSet::new()
+                .model::<User>()
+                .model::<AuthToken>()
+                .model::<AuthSession>(),
+        );
+        assert_eq!(actual.models(), expected.models());
+    }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct ApplicationUser {

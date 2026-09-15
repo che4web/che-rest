@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::{Json, Router, response::Html, routing::get};
-use che_orm::{MigrationError, ProjectState, SchemaSet, StateChange};
+use che_orm::{Migration, MigrationError, ProjectState, SchemaSet, StateChange};
 use serde_json::{Map, Value, json};
 
 use crate::{
@@ -13,6 +13,11 @@ use crate::{
 pub trait AppModule: Send + Sync + 'static {
     fn name(&self) -> &'static str;
     fn schema(&self) -> SchemaSet;
+    /// Migrations shipped by this library application. Project-owned
+    /// migrations are registered separately by the management binary.
+    fn migrations(&self) -> Vec<Migration> {
+        Vec::new()
+    }
     fn init(&self, context: &mut ModuleContext);
     fn subscribe(&self, _state: &AppState) {}
     fn start(&self, _state: &AppState) {}
@@ -101,6 +106,11 @@ impl InstalledApps {
         history: &ProjectState,
     ) -> Result<Vec<StateChange>, MigrationError> {
         history.diff(&self.migration_state()?)
+    }
+
+    /// Collects migrations owned by installed library applications.
+    pub fn library_migrations(&self) -> Vec<Migration> {
+        self.iter().flat_map(AppModule::migrations).collect()
     }
 
     pub fn api_endpoints(&self, state: AppState) -> Vec<ApiEndpoint> {

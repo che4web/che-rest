@@ -3,7 +3,7 @@ use std::{
     env, fs,
     io::Write,
     path::PathBuf,
-    process::Command,
+    process::{Command, Stdio},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -130,6 +130,7 @@ enum MigrateAction {
 pub struct Management {
     apps: InstalledApps,
     migrations: Vec<Migration>,
+    excluded_library_migrations: BTreeSet<String>,
     compiled_migrations: bool,
     project_root: PathBuf,
 }
@@ -139,6 +140,7 @@ impl Management {
         Self {
             apps,
             migrations: Vec::new(),
+            excluded_library_migrations: BTreeSet::new(),
             compiled_migrations: false,
             project_root: PathBuf::from("."),
         }
@@ -146,6 +148,15 @@ impl Management {
 
     pub fn project_root(mut self, project_root: impl Into<PathBuf>) -> Self {
         self.project_root = project_root.into();
+        self
+    }
+
+    /// Excludes library migrations for applications whose schema is already
+    /// owned by a project baseline. This is required for one-time cutovers
+    /// such as Tacit's existing auth tables.
+    pub fn without_library_migrations(mut self, apps: &[&str]) -> Self {
+        self.excluded_library_migrations
+            .extend(apps.iter().map(|app| (*app).to_owned()));
         self
     }
 
@@ -162,7 +173,18 @@ impl Management {
         self.run_from(Cli::parse()).await
     }
 
-    async fn run_from(self, cli: Cli) -> ManageResult<()> {
+    async fn run_from(mut self, cli: Cli) -> ManageResult<()> {
+        let project_migrations = self.migrations.clone();
+        if self.compiled_migrations {
+            self.migrations.extend(
+                self.apps
+                    .library_migrations()
+                    .into_iter()
+                    .filter(|migration| {
+                        !self.excluded_library_migrations.contains(&migration.id.app)
+                    }),
+            );
+        }
         match cli.command {
             CommandKind::Startproject {
                 name,
@@ -208,7 +230,7 @@ impl Management {
                         if self.apps.find(&app).is_none() {
                             return Err(format!("unknown installed application `{app}`").into());
                         }
-                        ensure_compiled_registry_matches(&dir, &self.migrations, &app)?;
+                        ensure_compiled_registry_matches(&dir, &project_migrations, &app)?;
                         let label = name.unwrap_or_else(|| "merge".into());
                         let migration =
                             build_operation_merge_migration(&self.migrations, &app, &label)?;
@@ -224,11 +246,15 @@ impl Management {
                         if empty {
                             return Err("compiled --empty requires an application name".into());
                         }
-                        if !self.migrations.is_empty() {
+                        if !project_migrations.is_empty() {
                             return Err("batch migration generation is only supported for an empty compiled history".into());
                         }
                         let label = name.unwrap_or_else(|| "initial".into());
-                        let migrations = build_initial_cycle_batch(&self.apps, &label)?;
+                        let migrations = build_initial_cycle_batch_with_history(
+                            &self.apps,
+                            &label,
+                            &self.migrations,
+                        )?;
                         if migrations.is_empty() {
                             println!("No model changes detected.");
                             return Ok(());
@@ -242,10 +268,7 @@ impl Management {
                             }
                             return Ok(());
                         }
-                        for migration in &migrations {
-                            let path = dir.join(&migration.id.app);
-                            write_operation_migration_and_register(&path, migration)?;
-                        }
+                        write_operation_migration_batch(&dir, &migrations)?;
                         println!(
                             "wrote {} initial migration(s) under {}",
                             migrations.len(),
@@ -254,7 +277,7 @@ impl Management {
                         return Ok(());
                     }
                     let app = app.unwrap();
-                    ensure_compiled_registry_matches(&dir, &self.migrations, &app)?;
+                    ensure_compiled_registry_matches(&dir, &project_migrations, &app)?;
                     let name = name.unwrap_or_else(|| generated_migration_label());
                     let migration = build_operation_migration(
                         &self.apps,
@@ -452,7 +475,17 @@ pub fn build_initial_cycle_batch(
     apps: &InstalledApps,
     label: &str,
 ) -> ManageResult<Vec<Migration>> {
+    build_initial_cycle_batch_with_history(apps, label, &[])
+}
+
+fn build_initial_cycle_batch_with_history(
+    apps: &InstalledApps,
+    label: &str,
+    history: &[Migration],
+) -> ManageResult<Vec<Migration>> {
     validate_operation_migration_name(label)?;
+    let graph = MigrationGraph::new(history.to_vec())?;
+    let historical = graph.replay(Default::default())?;
     let desired = apps.migration_state()?;
     let models = desired.models();
     let owners: BTreeMap<_, _> = models
@@ -465,6 +498,20 @@ pub fn build_initial_cycle_batch(
         Vec<(String, che_orm::ColumnState, che_orm::ColumnState, String)>,
     > = BTreeMap::new();
     for mut model in models {
+        if let Some(existing) = historical
+            .models()
+            .iter()
+            .find(|item| item.key == model.key)
+        {
+            if existing != &model {
+                return Err(format!(
+                    "library model {} requires a library migration",
+                    model.table.name
+                )
+                .into());
+            }
+            continue;
+        }
         for column in &mut model.table.columns {
             let original = column.clone();
             let Some(reference) = &column.references else {
@@ -489,6 +536,13 @@ pub fn build_initial_cycle_batch(
         by_app.entry(model.key.app.clone()).or_default().push(model);
     }
     let mut initial_ids = BTreeMap::new();
+    let mut library_heads = BTreeSet::new();
+    for migration in history {
+        for head in graph.app_heads(&migration.id.app) {
+            initial_ids.insert(head.id.app.clone(), head.id.clone());
+            library_heads.insert(head.id.clone());
+        }
+    }
     let mut migrations = Vec::new();
     for (app, models) in &by_app {
         let id = MigrationId {
@@ -498,7 +552,7 @@ pub fn build_initial_cycle_batch(
         initial_ids.insert(app.clone(), id.clone());
         migrations.push(Migration::new(
             id,
-            vec![],
+            library_heads.iter().cloned().collect(),
             models
                 .iter()
                 .cloned()
@@ -529,7 +583,8 @@ pub fn build_initial_cycle_batch(
                 .collect(),
         ));
     }
-    MigrationGraph::new(migrations.clone())?.replay(Default::default())?;
+    MigrationGraph::new(history.iter().cloned().chain(migrations.clone()).collect())?
+        .replay(Default::default())?;
     Ok(migrations)
 }
 
@@ -604,18 +659,44 @@ pub fn write_operation_migration(dir: &PathBuf, migration: &Migration) -> Manage
     validate_operation_migration_name(&migration.id.name)?;
     fs::create_dir_all(dir)?;
     let path = dir.join(format!("m{}.rs", migration.id.name));
+    let source = format_generated_rust(&render_migration_rust(migration))?;
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&path)?;
     if let Err(error) = file
-        .write_all(render_migration_rust(migration).as_bytes())
+        .write_all(source.as_bytes())
         .and_then(|_| file.sync_all())
     {
         let _ = fs::remove_file(&path);
         return Err(error.into());
     }
     Ok(path)
+}
+
+fn format_generated_rust(source: &str) -> ManageResult<String> {
+    let mut formatter = Command::new("rustfmt")
+        .args(["--edition", "2024", "--emit", "stdout"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("cannot run rustfmt for generated migration: {error}"))?;
+    formatter
+        .stdin
+        .as_mut()
+        .ok_or("rustfmt stdin is unavailable")?
+        .write_all(source.as_bytes())?;
+    let output = formatter.wait_with_output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "rustfmt rejected generated migration: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+        .into());
+    }
+    String::from_utf8(output.stdout)
+        .map_err(|error| format!("rustfmt emitted non-UTF-8 migration source: {error}").into())
 }
 
 /// Creates an operation migration for one installed application by comparing
@@ -645,6 +726,7 @@ pub fn build_operation_migration(
             .filter(|change| change.app() == app)
             .collect()
     };
+    validate_generated_changes(&changes)?;
     if changes.is_empty() && !empty {
         return Ok(None);
     }
@@ -708,6 +790,62 @@ pub fn build_operation_migration(
     )))
 }
 
+/// Refuse changes whose safe interpretation needs an author decision. The
+/// autodetector must never turn a likely rename into a drop-and-add migration,
+/// and it cannot select data for a new required field.
+fn validate_generated_changes(changes: &[che_orm::StateChange]) -> ManageResult<()> {
+    for removed in changes {
+        let che_orm::StateChange::RemoveColumn {
+            table,
+            column: old_column,
+            ..
+        } = removed
+        else {
+            continue;
+        };
+        for added in changes {
+            let che_orm::StateChange::AddColumn {
+                table: added_table,
+                column: new_column,
+                ..
+            } = added
+            else {
+                continue;
+            };
+            if table == added_table && same_column_except_name(old_column, new_column) {
+                return Err(format!(
+                    "possible column rename {table}.{} -> {}; write an explicit RenameColumn migration instead",
+                    old_column.name, new_column.name
+                )
+                .into());
+            }
+        }
+    }
+    for change in changes {
+        let che_orm::StateChange::AddColumn { table, column, .. } = change else {
+            continue;
+        };
+        if !column.nullable && !column.primary_key && column.default.is_none() {
+            return Err(format!(
+                "adding required column {table}.{} needs a default or an explicit nullable -> BackfillColumn -> non-null migration",
+                column.name
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+fn same_column_except_name(left: &che_orm::ColumnState, right: &che_orm::ColumnState) -> bool {
+    let mut left = left.clone();
+    let mut right = right.clone();
+    left.name.clear();
+    right.name.clear();
+    left.field_name.clear();
+    right.field_name.clear();
+    left == right
+}
+
 /// Builds an empty merge migration for exactly two branches whose declarative
 /// state transitions commute. `RunSql` branches require an explicit manual
 /// merge because their database effects cannot be proven from state metadata.
@@ -742,11 +880,13 @@ pub fn build_operation_merge_migration(
     for migration in graph.ordered().filter(|migration| {
         left_branch.contains(&migration.id) || right_branch.contains(&migration.id)
     }) {
-        if migration
-            .operations
-            .iter()
-            .any(|operation| matches!(operation, che_orm::MigrationOperation::RunSql { .. }))
-        {
+        if migration.operations.iter().any(|operation| {
+            matches!(
+                operation,
+                che_orm::MigrationOperation::RunSql { .. }
+                    | che_orm::MigrationOperation::BackfillColumn { .. }
+            )
+        }) {
             return Err(format!(
                 "cannot prove merge compatibility for {}:{} because it contains RunSql; write an explicit reviewed merge migration",
                 migration.id.app, migration.id.name
@@ -1005,6 +1145,72 @@ pub fn write_operation_migration_and_register(
     Ok(path)
 }
 
+/// Writes a generated initial-migration batch as one recoverable filesystem
+/// operation. If one app cannot be registered, sources and registries already
+/// written for earlier apps are restored to their exact previous contents.
+fn write_operation_migration_batch(
+    root: &PathBuf,
+    migrations: &[Migration],
+) -> ManageResult<Vec<PathBuf>> {
+    for migration in migrations {
+        validate_operation_migration_name(&migration.id.name)?;
+        let dir = root.join(&migration.id.app);
+        let source = dir.join(format!("m{}.rs", migration.id.name));
+        if source.exists() {
+            return Err(format!("migration source {} already exists", source.display()).into());
+        }
+        // Validate the registry before writing any application. This catches
+        // malformed managed sections and duplicate modules up front.
+        rendered_registry_update(&dir.join("mod.rs"), &format!("m{}", migration.id.name))?;
+        format_generated_rust(&render_migration_rust(migration))?;
+    }
+
+    struct Written {
+        source: PathBuf,
+        registry: PathBuf,
+        previous_registry: Option<Vec<u8>>,
+        created_dir: bool,
+    }
+
+    let mut written = Vec::new();
+    for migration in migrations {
+        let dir = root.join(&migration.id.app);
+        let created_dir = !dir.exists();
+        let registry = dir.join("mod.rs");
+        let previous_registry = match fs::read(&registry) {
+            Ok(contents) => Some(contents),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        match write_operation_migration_and_register(&dir, migration) {
+            Ok(source) => written.push(Written {
+                source,
+                registry,
+                previous_registry,
+                created_dir,
+            }),
+            Err(error) => {
+                for item in written.into_iter().rev() {
+                    let _ = fs::remove_file(&item.source);
+                    match item.previous_registry {
+                        Some(contents) => {
+                            let _ = fs::write(&item.registry, contents);
+                        }
+                        None => {
+                            let _ = fs::remove_file(&item.registry);
+                        }
+                    }
+                    if item.created_dir {
+                        let _ = fs::remove_dir(item.registry.parent().expect("registry parent"));
+                    }
+                }
+                return Err(error);
+            }
+        }
+    }
+    Ok(written.into_iter().map(|item| item.source).collect())
+}
+
 struct RemoveOnDrop(PathBuf);
 impl Drop for RemoveOnDrop {
     fn drop(&mut self) {
@@ -1102,12 +1308,17 @@ fn ensure_compiled_registry_matches(
     migrations: &[Migration],
     app: &str,
 ) -> ManageResult<()> {
-    let expected: BTreeSet<_> = migrations
+    let expected: BTreeMap<_, _> = migrations
         .iter()
         .filter(|migration| migration.id.app == app)
-        .map(|migration| format!("m{}.rs", migration.id.name))
-        .collect();
-    let actual = if dir.exists() {
+        .map(|migration| {
+            Ok((
+                format!("m{}.rs", migration.id.name),
+                format_generated_rust(&render_migration_rust(migration))?,
+            ))
+        })
+        .collect::<ManageResult<_>>()?;
+    let actual: BTreeMap<_, _> = if dir.exists() {
         fs::read_dir(dir)?
             .filter_map(Result::ok)
             .filter_map(|entry| {
@@ -1118,20 +1329,33 @@ fn ensure_compiled_registry_matches(
                         suffix.as_bytes().first().is_some_and(u8::is_ascii_digit)
                     })
                     && name.ends_with(".rs"))
-                .then_some(name)
+                .then_some(entry.path())
             })
-            .collect()
+            .map(|path| {
+                let name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or("invalid migration source filename")?
+                    .to_owned();
+                Ok((name, format_generated_rust(&fs::read_to_string(path)?)?))
+            })
+            .collect::<ManageResult<_>>()
+            .map_err(|_| compiled_registry_mismatch(app, dir))?
     } else {
-        BTreeSet::new()
+        BTreeMap::new()
     };
     if actual != expected {
-        return Err(format!(
-            "compiled migration registry for {app} differs from {}. Rebuild the management binary after makemigrations before generating another migration",
-            dir.display()
-        )
-        .into());
+        return Err(compiled_registry_mismatch(app, dir));
     }
     Ok(())
+}
+
+fn compiled_registry_mismatch(app: &str, dir: &std::path::Path) -> Box<dyn std::error::Error> {
+    format!(
+        "compiled migration registry for {app} differs from {}. Rebuild the management binary after makemigrations before generating another migration",
+        dir.display()
+    )
+    .into()
 }
 
 fn validate_operation_migration_name(name: &str) -> ManageResult<()> {
@@ -1640,6 +1864,13 @@ fn describe_migration_operation(operation: &MigrationOperation) -> String {
         RemoveUniqueConstraint { table, columns } => {
             format!("RemoveUniqueConstraint {table} ({})", columns.join(", "))
         }
+        BackfillColumn {
+            table,
+            column,
+            value,
+        } => format!(
+            "BackfillColumn {table}.{column} with {value} where NULL — WARNING: changes existing data"
+        ),
         RunSql {
             state_operations, ..
         } => format!(
@@ -1952,6 +2183,7 @@ mod tests {
         collections::HashMap,
         fs,
         path::PathBuf,
+        process::Command,
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -1967,7 +2199,7 @@ mod tests {
         write_operation_migration_and_register,
     };
     use crate::InstalledApps;
-    use crate::auth::{User, verify_password};
+    use crate::auth::{User, module as auth_module, verify_password};
     use crate::{AppConfig, DatabaseConfig};
 
     fn temp_path(name: &str, extension: &str) -> PathBuf {
@@ -1976,6 +2208,96 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("che_rest_{name}_{suffix}.{extension}"))
+    }
+
+    #[tokio::test]
+    async fn library_history_does_not_require_project_sources() {
+        let dir = temp_path("library_source", "dir");
+        for args in [
+            vec!["manage", "makemigrations", "auth", "--check", "--dry-run"],
+            vec!["manage", "makemigrations", "--check", "--dry-run"],
+        ] {
+            let mut args = args;
+            args.extend(["--dir", dir.to_str().unwrap()]);
+            Management::new(InstalledApps::new().add(auth_module()))
+                .migrations(vec![])
+                .run_from(Cli::try_parse_from(args).unwrap())
+                .await
+                .unwrap();
+        }
+        assert!(!dir.exists());
+    }
+
+    #[tokio::test]
+    async fn initial_batch_keeps_library_sources_out_of_project() {
+        let apps = || {
+            InstalledApps::new()
+                .add(auth_module())
+                .add(CycleLeftApp)
+                .add(CycleRightApp)
+        };
+        let history = crate::auth::migrations();
+        let batch =
+            super::build_initial_cycle_batch_with_history(&apps(), "initial", &history).unwrap();
+        assert!(batch.iter().all(|migration| migration.id.app != "auth"));
+        let graph =
+            che_orm::MigrationGraph::new(history.into_iter().chain(batch).collect()).unwrap();
+        assert!(
+            graph
+                .replay(Default::default())
+                .unwrap()
+                .diff(&apps().migration_state().unwrap())
+                .unwrap()
+                .is_empty()
+        );
+        let mut db = che_orm::rusqlite::Connection::open_in_memory().unwrap();
+        super::apply_operation_migrations_on_connection(&mut db, graph).unwrap();
+        let dir = temp_path("library_batch", "dir");
+        Management::new(apps())
+            .migrations(vec![])
+            .run_from(
+                Cli::try_parse_from(["manage", "makemigrations", "--dir", dir.to_str().unwrap()])
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(!dir.join("auth").exists());
+        assert!(dir.join("left/m0001_initial.rs").exists());
+        assert!(dir.join("right/m0002_relationships.rs").exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn library_exclusion_is_independent_of_builder_order() {
+        for exclude_first in [true, false] {
+            let mut management = Management::new(InstalledApps::new().add(auth_module()));
+            management = if exclude_first {
+                management
+                    .without_library_migrations(&["auth"])
+                    .migrations(vec![])
+            } else {
+                management
+                    .migrations(vec![])
+                    .without_library_migrations(&["auth"])
+            };
+            let cli =
+                Cli::try_parse_from(["manage", "sqlmigrate", "auth", "0001_initial"]).unwrap();
+            assert!(
+                management
+                    .run_from(cli)
+                    .await
+                    .unwrap_err()
+                    .to_string()
+                    .contains("unknown operation migration")
+            );
+        }
+        Management::new(InstalledApps::new().add(auth_module()))
+            .migrations(vec![])
+            .run_from(
+                Cli::try_parse_from(["manage", "sqlmigrate", "auth", "0001_initial"]).unwrap(),
+            )
+            .await
+            .unwrap();
     }
 
     fn sqlite_config(database_path: &std::path::Path) -> AppConfig {
@@ -2231,6 +2553,13 @@ mod tests {
             state_operations: vec![],
         });
         assert!(sql.contains("WARNING: manual SQL may change or delete data"));
+        let backfill = super::describe_migration_operation(&MigrationOperation::BackfillColumn {
+            table: "items".into(),
+            column: "title".into(),
+            value: "'untitled'".into(),
+        });
+        assert!(backfill.contains("BackfillColumn items.title"));
+        assert!(backfill.contains("WARNING: changes existing data"));
     }
 
     #[test]
@@ -2622,8 +2951,38 @@ mod tests {
         assert_eq!(path.file_name().unwrap(), "m0001_initial.rs");
         let source = fs::read_to_string(&path).unwrap();
         assert!(source.contains("Migration::new("));
+        assert!(
+            Command::new("rustfmt")
+                .args(["--check", path.to_str().unwrap()])
+                .status()
+                .unwrap()
+                .success()
+        );
         assert!(write_operation_migration(&directory, &migration).is_err());
         let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn compiled_registry_rejects_a_valid_but_changed_generated_source() {
+        let directory = temp_path("registry_contents", "dir");
+        let apps = InstalledApps::new().add(ReviewApp);
+        let migration = build_operation_migration(&apps, &[], "review", "initial", false)
+            .unwrap()
+            .unwrap();
+        let path = write_operation_migration(&directory, &migration).unwrap();
+        super::ensure_compiled_registry_matches(&directory, &[migration.clone()], "review")
+            .unwrap();
+        let changed = fs::read_to_string(&path)
+            .unwrap()
+            .replacen("ReviewItem", "ChangedItem", 1);
+        fs::write(&path, changed).unwrap();
+        assert!(
+            super::ensure_compiled_registry_matches(&directory, &[migration], "review")
+                .unwrap_err()
+                .to_string()
+                .contains("Rebuild the management binary")
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -2812,6 +3171,69 @@ mod tests {
         assert!(actual.diff(&desired).unwrap().is_empty());
     }
 
+    #[test]
+    fn generator_review_requires_explicit_decisions_for_rename_and_required_column() {
+        let old_column = che_orm::ColumnState {
+            field_name: "old_title".into(),
+            name: "old_title".into(),
+            column_type: che_orm::ColumnType::Text,
+            nullable: false,
+            primary_key: false,
+            unique: false,
+            default: None,
+            check: None,
+            choices: None,
+            references: None,
+            auto_now_add: false,
+            auto_now: false,
+        };
+        let mut new_column = old_column.clone();
+        new_column.field_name = "title".into();
+        new_column.name = "title".into();
+        let key = che_orm::ModelKey {
+            app: "review".into(),
+            name: "ReviewItem".into(),
+        };
+        let rename_error = super::validate_generated_changes(&[
+            che_orm::StateChange::RemoveColumn {
+                key: key.clone(),
+                table: "review_items".into(),
+                column: old_column,
+            },
+            che_orm::StateChange::AddColumn {
+                key: key.clone(),
+                table: "review_items".into(),
+                column: new_column,
+            },
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(rename_error.contains("explicit RenameColumn"));
+
+        let required_error =
+            super::validate_generated_changes(&[che_orm::StateChange::AddColumn {
+                key,
+                table: "review_items".into(),
+                column: che_orm::ColumnState {
+                    field_name: "title".into(),
+                    name: "title".into(),
+                    column_type: che_orm::ColumnType::Text,
+                    nullable: false,
+                    primary_key: false,
+                    unique: false,
+                    default: None,
+                    check: None,
+                    choices: None,
+                    references: None,
+                    auto_now_add: false,
+                    auto_now: false,
+                },
+            }])
+            .unwrap_err()
+            .to_string();
+        assert!(required_error.contains("BackfillColumn"));
+    }
+
     #[derive(Debug, Model)]
     #[orm(table = "cycle_left")]
     struct CycleLeft {
@@ -2873,6 +3295,26 @@ mod tests {
             )
             .unwrap();
         assert_eq!(fk_count, 1);
+    }
+
+    #[test]
+    fn initial_batch_writer_rolls_back_earlier_apps_when_later_write_fails() {
+        let apps = InstalledApps::new().add(CycleLeftApp).add(CycleRightApp);
+        let migrations = super::build_initial_cycle_batch(&apps, "initial").unwrap();
+        let root = temp_path("initial_batch_rollback", "dir");
+        let blocked_dir = root.join("right");
+        fs::create_dir_all(&blocked_dir).unwrap();
+        fs::write(blocked_dir.join(".che-mod.rs.tmp"), "held").unwrap();
+
+        assert!(super::write_operation_migration_batch(&root, &migrations).is_err());
+        assert!(!root.join("left").exists());
+        assert!(!blocked_dir.join("m0001_initial.rs").exists());
+        assert!(!blocked_dir.join("mod.rs").exists());
+        assert_eq!(
+            fs::read_to_string(blocked_dir.join(".che-mod.rs.tmp")).unwrap(),
+            "held"
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -2952,7 +3394,7 @@ mod tests {
             .unwrap()
             .unwrap();
         write_operation_migration_and_register(&migrations_dir, &first).unwrap();
-        let second = build_operation_migration(&apps, &[first], "review", "manual", true)
+        let second = build_operation_migration(&apps, &[first.clone()], "review", "manual", true)
             .unwrap()
             .unwrap();
         write_operation_migration_and_register(&migrations_dir, &second).unwrap();
@@ -2989,6 +3431,12 @@ fn main() {
             output.status.success(),
             "{}",
             String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            build_operation_migration(&apps, &[first, second], "review", "again", false)
+                .unwrap()
+                .is_none(),
+            "after recompiling the generated registry, --check must see no model changes"
         );
         fs::remove_dir_all(directory).unwrap();
     }
