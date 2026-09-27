@@ -153,8 +153,8 @@ field. The generated admin uses an async relation selector, while nested fields 
 
 ## Typed ViewSets
 
-Generated and custom viewsets use associated types for their serializer, queryset, filters, and
-permissions:
+Generated and custom viewsets use associated types for their detail/write serializer, list
+serializer, queryset, filters, and permissions:
 
 ```rust
 use che_rest::{AllowAny, Filter, FilterSetSpec, Model, ViewSet};
@@ -185,6 +185,7 @@ pub struct TaskViewSet;
 impl ViewSet for TaskViewSet {
     type Model = Task;
     type Serializer = TaskSerializer;
+    type ListSerializer = Self::Serializer;
     type QuerySet = che_orm::DatabaseQuery<Task>;
     type FilterSet = TaskFilterSet;
     type Permission = AllowAny;
@@ -205,6 +206,34 @@ and API metadata:
 ```rust
 ctx.viewset_with(TaskViewSet);
 ```
+
+`ListSerializer` is required on every `ViewSet`. Set it to `Self::Serializer` when list and detail
+responses have the same fields. To return fewer fields from the list, derive a separate
+`ModelSerializer` for the same model and use it instead:
+
+```rust
+#[derive(che_orm::ModelSerializer)]
+#[serializer(model = Task)]
+pub struct TaskListSerializer {
+    #[serializer(read_only)]
+    pub id: i64,
+    #[serializer(read_only)]
+    pub name: String,
+}
+
+impl ViewSet for TaskViewSet {
+    type Model = Task;
+    type Serializer = TaskSerializer;
+    type ListSerializer = TaskListSerializer;
+    // QuerySet, FilterSet, Permission, get_queryset, and path as above.
+}
+```
+
+Both serializers must accept the queryset's item type. `GET /tasks/` uses `ListSerializer`;
+`GET /tasks/{id}/` and write responses use `Serializer`. OpenAPI describes separate list-item
+and detail schemas. `generate-ts` gives `list()` a distinct `TaskListItem` result type when
+the fields differ, while `retrieve()` retains `Task`. The generated admin uses list fields for
+table columns and detail fields for forms. Regenerate the clients after changing either serializer.
 
 `FilterSetSpec` types must implement `Default`. Built-in permissions include `AllowAny`,
 `IsAuthenticated`, and `IsAdminUser`.
@@ -246,6 +275,7 @@ write preparation hook:
 impl ViewSet for TaskViewSet {
     type Model = Task;
     type Serializer = TaskSerializer;
+    type ListSerializer = Self::Serializer;
     type QuerySet = che_orm::DatabaseQuery<Task>;
     type FilterSet = che_rest::FilterSet<Task>;
     type Permission = IsAuthenticated;
@@ -850,6 +880,12 @@ whose target table or field is not yet present in compiled migration history.
 Generate and register the target application's migration first. Operations are
 ordered and replayed in memory before writing; unsupported dependency sequences
 require an explicit migration.
+
+When SQLite must rebuild a table, generated migrations temporarily drop and
+restore declared triggers and views that reference it, including objects owned
+by other applications. The definitions are taken from compiled migration
+history. Review the generated operations before applying them, and rebuild
+`manage` after generation.
 
 Use `makemigrations <app> --check` in CI: it exits with an error when the
 installed models have changes without a compiled migration. Use `--dry-run` to

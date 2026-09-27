@@ -13,7 +13,7 @@ const error = ref("");
 
 const resource = computed(() => String(route.params.resource ?? ""));
 const model = computed(() => adminModels.find((item) => item.resource === resource.value));
-const columns = computed(() => model.value?.fields.filter((field) => !field.writeOnly) ?? []);
+const columns = computed(() => model.value?.fields.filter((field) => model.value?.listFields.includes(field.name)) ?? []);
 
 function initFilters() {
   filterValues.value = Object.fromEntries(

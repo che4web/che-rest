@@ -16,7 +16,7 @@ const pageSize = 20;
 const loading = ref(false);
 const error = ref("");
 
-const columns = computed(() => props.model.fields.filter((field) => !field.writeOnly));
+const columns = computed(() => props.model.fields.filter((field) => props.model.listFields.includes(field.name)));
 const pageCount = computed(() => Math.max(1, Math.ceil(count.value / pageSize)));
 const firstRow = computed(() => (count.value === 0 ? 0 : (page.value - 1) * pageSize + 1));
 const lastRow = computed(() => Math.min(page.value * pageSize, count.value));

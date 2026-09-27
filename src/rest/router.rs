@@ -577,6 +577,11 @@ pub trait ViewSet: Clone + Send + Sync + 'static {
         + Send
         + Sync
         + 'static;
+    type ListSerializer: ModelSerializer<Model = Self::Model, Input = <Self::Serializer as ModelSerializer>::Input>
+        + Serialize
+        + Send
+        + Sync
+        + 'static;
     type QuerySet: RestQuerySet<Model = Self::Model, Item = <Self::Serializer as ModelSerializer>::Input>
         + Send
         + Sync;
@@ -702,6 +707,7 @@ where
 {
     type Model = M;
     type Serializer = S;
+    type ListSerializer = S;
     type QuerySet = DatabaseQuery<M>;
     type FilterSet = FilterSet<M>;
     type Permission = AllowAny;
@@ -828,6 +834,17 @@ where
     M: Model,
     S: ModelSerializer<Model = M> + ModelWriteSerializer<Model = M> + Serialize,
 {
+    openapi_json_for_with_list::<M, S>(path, S::fields())
+}
+
+pub fn openapi_json_for_with_list<M, S>(
+    path: &str,
+    list_fields: &[SerializerField],
+) -> serde_json::Value
+where
+    M: Model,
+    S: ModelSerializer<Model = M> + ModelWriteSerializer<Model = M> + Serialize,
+{
     let serializer_name = std::any::type_name::<S>()
         .rsplit("::")
         .next()
@@ -837,6 +854,7 @@ where
     let update = format!("{serializer_name}Update");
     let patch = format!("{serializer_name}Patch");
     let list = format!("{serializer_name}List");
+    let list_item = format!("{serializer_name}ListItem");
     let schema = M::schema();
     let mut response_properties = serde_json::Map::new();
     let mut create_properties = serde_json::Map::new();
@@ -880,6 +898,26 @@ where
         }
     }
     let response_schema = object_schema(response_properties, response_required);
+    let mut list_properties = serde_json::Map::new();
+    let mut list_required = Vec::new();
+    for field in list_fields.iter().filter(|field| !field.write_only) {
+        let column = schema
+            .columns
+            .iter()
+            .find(|column| column.name == field.source);
+        let property = if field.related_model.is_some() {
+            json!({"type": "object"})
+        } else {
+            column
+                .map(openapi_column_schema)
+                .unwrap_or_else(|| json!({"type": "object"}))
+        };
+        list_properties.insert(field.name.to_owned(), property);
+        if column.is_some_and(|column| !column.nullable) {
+            list_required.push(field.name.to_owned());
+        }
+    }
+    let list_item_schema = object_schema(list_properties, list_required);
     let create_schema = object_schema(create_properties, create_required);
     let update_schema = object_schema(update_properties, update_required);
     let patch_schema = object_schema(patch_properties, Vec::new());
@@ -903,10 +941,11 @@ where
         },
         "components": {"schemas": {
             response.clone(): response_schema,
+            list_item.clone(): list_item_schema,
             create: create_schema,
             update: update_schema,
             patch: patch_schema,
-            list: {"type": "object", "required": ["count", "results"], "properties": {"count": {"type": "integer"}, "results": {"type": "array", "items": schema_ref(&response)}}},
+            list: {"type": "object", "required": ["count", "results"], "properties": {"count": {"type": "integer"}, "results": {"type": "array", "items": schema_ref(&list_item)}}},
             "Error": {"type": "object", "required": ["detail"], "properties": {"detail": {"type": "string"}}}
         }}
     })
@@ -1021,7 +1060,7 @@ where
         .await?;
     let results = rows
         .into_iter()
-        .map(V::Serializer::to_json)
+        .map(V::ListSerializer::to_json)
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Json(json!({"count": count, "results": results})))
 }

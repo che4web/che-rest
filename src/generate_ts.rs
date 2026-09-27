@@ -51,6 +51,27 @@ fn models(endpoints: &[ApiEndpoint]) -> String {
             }
         }
         out.push_str("}\n\n");
+        if endpoint.list_fields != endpoint.fields {
+            out.push_str(&format!(
+                "export interface {}ListItem {{\n",
+                endpoint.model_name
+            ));
+            for field in endpoint
+                .list_fields
+                .iter()
+                .filter(|field| !field.write_only)
+            {
+                out.push_str(&format!(
+                    "  {}: {};\n",
+                    field.name,
+                    field_ts_type(endpoint, field)
+                ));
+                if let Some(model) = field.related_model {
+                    related.insert(last_path_part(model), (field.many, field.rust_type));
+                }
+            }
+            out.push_str("}\n\n");
+        }
         out.push_str(&format!(
             "export interface {}Create {{\n",
             endpoint.model_name
@@ -146,6 +167,9 @@ fn api(endpoints: &[ApiEndpoint]) -> String {
             "  {},\n  {}Create,\n  {}Update,\n  {}ListParams,\n",
             endpoint.model_name, endpoint.model_name, endpoint.model_name, endpoint.model_name
         ));
+        if endpoint.list_fields != endpoint.fields {
+            out.push_str(&format!("  {}ListItem,\n", endpoint.model_name));
+        }
     }
     let mut extension_types = BTreeMap::new();
     for endpoint in endpoints {
@@ -166,15 +190,20 @@ fn api(endpoints: &[ApiEndpoint]) -> String {
     out.push_str("} from \"./models\";\n\n");
     for endpoint in endpoints {
         let name = api_name(endpoint, endpoints);
+        let list_item = if endpoint.list_fields == endpoint.fields {
+            endpoint.model_name.clone()
+        } else {
+            format!("{}ListItem", endpoint.model_name)
+        };
         if endpoint.extensions.is_empty() {
             out.push_str(&format!(
-                "export const {name}Api = createModelApi<{}, {}Create, {}Update, {}ListParams>(\"{}\");\n",
+                "export const {name}Api = createModelApi<{}, {}Create, {}Update, {}ListParams, {list_item}>(\"{}\");\n",
                 endpoint.model_name, endpoint.model_name, endpoint.model_name, endpoint.model_name, endpoint.resource
             ));
             continue;
         }
         out.push_str(&format!(
-            "const {name}Crud = createModelApi<{}, {}Create, {}Update, {}ListParams>(\"{}\");\nexport const {name}Api = {{\n  ...{name}Crud,\n",
+            "const {name}Crud = createModelApi<{}, {}Create, {}Update, {}ListParams, {list_item}>(\"{}\");\nexport const {name}Api = {{\n  ...{name}Crud,\n",
             endpoint.model_name, endpoint.model_name, endpoint.model_name, endpoint.model_name, endpoint.resource
         ));
         for extension in &endpoint.extensions {
@@ -385,8 +414,8 @@ fn api_client() -> String {
 export interface BaseEntity { id?: number; }
 export interface ListParams {{ ordering?: string; limit?: number; offset?: number; [key: string]: string | number | boolean | null | undefined; }}
 export interface PaginatedResponse<T> {{ count: number; results: T[]; }}
-export interface ModelApi<T extends BaseEntity, CreateDTO = Partial<T>, UpdateDTO = Partial<T>, Params extends ListParams = ListParams> {{
-  list: (params?: Params) => Promise<PaginatedResponse<T>>;
+export interface ModelApi<T extends BaseEntity, CreateDTO = Partial<T>, UpdateDTO = Partial<T>, Params extends ListParams = ListParams, ListItem extends BaseEntity = T> {{
+  list: (params?: Params) => Promise<PaginatedResponse<ListItem>>;
   retrieve: (id: number) => Promise<T>;
   create: (payload: CreateDTO) => Promise<T>;
   update: (id: number, payload: UpdateDTO) => Promise<T>;
@@ -396,10 +425,10 @@ export interface ModelApi<T extends BaseEntity, CreateDTO = Partial<T>, UpdateDT
 let authToken: string | null = null;
 export function setAuthToken(token: string | null) {{ authToken = token; }}
 apiClient.interceptors.request.use((config) => {{ if (authToken) config.headers.Authorization = `Token ${{authToken}}`; else delete config.headers.Authorization; return config; }});
-export function createModelApi<T extends BaseEntity, CreateDTO = Partial<T>, UpdateDTO = Partial<T>, Params extends ListParams = ListParams>(resource: string): ModelApi<T, CreateDTO, UpdateDTO, Params> {{
+export function createModelApi<T extends BaseEntity, CreateDTO = Partial<T>, UpdateDTO = Partial<T>, Params extends ListParams = ListParams, ListItem extends BaseEntity = T>(resource: string): ModelApi<T, CreateDTO, UpdateDTO, Params, ListItem> {{
   const normalized = resource.endsWith("/") ? resource : `${{resource}}/`;
   return {{
-    async list(params) {{ return (await apiClient.get<PaginatedResponse<T>>(normalized, {{ params }})).data; }},
+    async list(params) {{ return (await apiClient.get<PaginatedResponse<ListItem>>(normalized, {{ params }})).data; }},
     async retrieve(id) {{ return (await apiClient.get<T>(`${{normalized}}${{id}}/`)).data; }},
     async create(payload) {{ return (await apiClient.post<T>(normalized, payload)).data; }},
     async update(id, payload) {{ return (await apiClient.patch<T>(`${{normalized}}${{id}}/`, payload)).data; }},
@@ -496,8 +525,8 @@ export interface UseModelListOptions<Params extends ListParams> {{
   onError?: (message: string, error: unknown) => void;
 }}
 
-export function useModelList<T extends BaseEntity, CreateDTO = Partial<T>, UpdateDTO = Partial<T>, Params extends ListParams = ListParams>(api: ModelApi<T, CreateDTO, UpdateDTO, Params>, options: UseModelListOptions<Params> = {{}}) {{
-  const items = shallowRef<T[]>([]);
+export function useModelList<T extends BaseEntity, CreateDTO = Partial<T>, UpdateDTO = Partial<T>, Params extends ListParams = ListParams, ListItem extends BaseEntity = T>(api: ModelApi<T, CreateDTO, UpdateDTO, Params, ListItem>, options: UseModelListOptions<Params> = {{}}) {{
+  const items = shallowRef<ListItem[]>([]);
   const filters = reactive({{ ...(options.defaultFilters ?? {{}}) }} as Params) as Params;
   const count = ref(0); const loading = ref(false); const error = ref("");
    let loadTimer: ReturnType<typeof setTimeout> | undefined; let skipNextFilterReload = false; let requestSequence = 0;
@@ -524,7 +553,7 @@ fn use_model_item() -> String {
         r#"{HEADER}import {{ shallowRef, ref }} from "vue";
 import type {{ BaseEntity, ListParams, ModelApi }} from "./api_client";
 export interface UseModelItemOptions {{ onError?: (message: string, error: unknown) => void; }}
-export function useModelItem<T extends BaseEntity, CreateDTO = Partial<T>, UpdateDTO = Partial<T>, Params extends ListParams = ListParams>(api: ModelApi<T, CreateDTO, UpdateDTO, Params>, options: UseModelItemOptions = {{}}) {{
+export function useModelItem<T extends BaseEntity, CreateDTO = Partial<T>, UpdateDTO = Partial<T>, Params extends ListParams = ListParams, ListItem extends BaseEntity = T>(api: ModelApi<T, CreateDTO, UpdateDTO, Params, ListItem>, options: UseModelItemOptions = {{}}) {{
   const item = shallowRef<T | null>(null); const loading = ref(false); const error = ref("");
   async function retrieve(id: number) {{ return run(() => api.retrieve(id), "Unable to load object"); }}
   async function create(payload: CreateDTO) {{ return run(() => api.create(payload), "Unable to create object"); }}
@@ -623,6 +652,7 @@ mod tests {
                     many: false,
                 },
             ],
+            list_fields: vec![],
             columns: vec![crate::module::ApiColumn {
                 name: "status",
                 nullable: false,
@@ -663,12 +693,44 @@ mod tests {
     }
 
     #[test]
+    fn list_serializer_generates_distinct_item_type() {
+        let id = che_orm::SerializerField {
+            name: "id",
+            source: "id",
+            read_only: true,
+            write_only: false,
+            rust_type: "i64",
+            related_model: None,
+            many: false,
+        };
+        let mut description = id.clone();
+        description.name = "description";
+        description.source = "description";
+        description.rust_type = "String";
+        let endpoint = ApiEndpoint {
+            app_name: "knowledge",
+            model_name: "Module".into(),
+            resource: "modules".into(),
+            fields: vec![id.clone(), description],
+            list_fields: vec![id],
+            columns: vec![],
+            filters: vec![],
+            extensions: vec![],
+        };
+        let types = models(&[endpoint.clone()]);
+        assert!(types.contains("export interface ModuleListItem {\n  id: number;\n}"));
+        assert!(!types.contains("export interface ModuleListItem {\n  id: number;\n  description"));
+        assert!(api(&[endpoint]).contains("ModuleListParams, ModuleListItem>"));
+    }
+
+    #[test]
     fn duplicate_model_endpoints_use_resource_api_names() {
         let user = ApiEndpoint {
             app_name: "auth",
             model_name: "User".into(),
             resource: "users".into(),
             fields: vec![],
+            list_fields: vec![],
             columns: vec![],
             filters: vec![],
             extensions: vec![],

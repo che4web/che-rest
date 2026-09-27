@@ -6,8 +6,7 @@ use serde_json::{Map, Value, json};
 
 use crate::{
     AppError, AppResult, AppState, CrudViewSet, FilterSetSpec, Model, ModelSerializer,
-    SignalAccess, ViewAction, ViewSet, ViewSetConfig, openapi_column_schema, openapi_json_for,
-    router,
+    SignalAccess, ViewAction, ViewSet, ViewSetConfig, openapi_column_schema, router,
 };
 
 pub trait AppModule: Send + Sync + 'static {
@@ -40,6 +39,7 @@ pub struct ApiEndpoint {
     pub model_name: String,
     pub resource: String,
     pub fields: Vec<che_orm::SerializerField>,
+    pub list_fields: Vec<che_orm::SerializerField>,
     pub columns: Vec<ApiColumn>,
     pub filters: Vec<ApiFilter>,
     pub extensions: Vec<crate::ApiExtension>,
@@ -224,6 +224,7 @@ impl ModuleContext {
                 .to_owned(),
             resource: path.trim_matches('/').to_owned(),
             fields: V::Serializer::fields().to_vec(),
+            list_fields: V::ListSerializer::fields().to_vec(),
             columns: V::Model::schema()
                 .columns
                 .iter()
@@ -267,7 +268,10 @@ impl ModuleContext {
             .state
             .as_ref()
             .expect("module context is not initialized");
-        let document = openapi_json_for::<V::Model, V::Serializer>(path);
+        let document = crate::rest::router::openapi_json_for_with_list::<V::Model, V::Serializer>(
+            path,
+            V::ListSerializer::fields(),
+        );
         let mut document = document;
         add_filter_parameters::<V>(&mut document, &viewset);
         let extension_openapi = crate::rest::extensions::extension_openapi(&extensions);

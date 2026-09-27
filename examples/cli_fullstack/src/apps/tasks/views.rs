@@ -8,6 +8,7 @@ pub struct TaskViewSet;
 impl ViewSet for TaskViewSet {
     type Model = Task;
     type Serializer = TaskSerializer;
+    type ListSerializer = Self::Serializer;
     type QuerySet = che_orm::SelectRelatedQuery<
         Task,
         che_rest::auth::models::User,

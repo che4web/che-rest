@@ -714,7 +714,40 @@ pub fn build_operation_migration(
                 .map(|migration| migration.id.clone()),
         );
     }
-    let operations = order_generated_operations(operations_from_changes(changes), &history)?;
+    let mut operations = operations_from_changes(changes);
+    // SQLite rebuilds the whole table even for a single added column. A trigger
+    // or view owned by another app can refer to that table, so temporarily
+    // remove it using the *historical* definition and restore it afterwards.
+    // Do not include unrelated, pending changes to the other app's objects.
+    let rebuilt_tables: BTreeSet<_> = operations
+        .iter()
+        .filter_map(che_orm::SqliteSchemaEditor::rebuild_table_name)
+        .map(str::to_ascii_lowercase)
+        .collect();
+    let external_objects: Vec<_> = history
+        .objects()
+        .iter()
+        .filter(|object| object.app != app)
+        .filter(|object| {
+            let sql = object.sql.to_ascii_lowercase();
+            rebuilt_tables.iter().any(|table| sql.contains(table))
+        })
+        .cloned()
+        .collect();
+    let mut drops: Vec<_> = external_objects
+        .iter()
+        .map(|object| che_orm::MigrationOperation::DropSchemaObject {
+            kind: object.kind,
+            name: object.name.clone(),
+        })
+        .collect();
+    drops.append(&mut operations);
+    drops.extend(
+        external_objects
+            .into_iter()
+            .map(|object| che_orm::MigrationOperation::CreateSchemaObject { object }),
+    );
+    let operations = order_generated_operations(drops, &history)?;
     if !empty {
         let mut resulting = history.clone();
         for operation in &operations {
@@ -3111,6 +3144,120 @@ mod tests {
         let graph = che_orm::MigrationGraph::new(vec![first, next]).unwrap();
         let actual = graph.replay(Default::default()).unwrap();
         assert!(actual.diff(&desired).unwrap().is_empty());
+    }
+
+    #[test]
+    fn generator_restores_cross_app_trigger_around_table_rebuild() {
+        #[derive(Debug, Model)]
+        #[orm(table = "observer_events")]
+        struct ObserverEvent {
+            #[orm(primary_key)]
+            id: i64,
+        }
+
+        struct ObserverApp;
+        impl crate::AppModule for ObserverApp {
+            fn name(&self) -> &'static str {
+                "observer"
+            }
+            fn schema(&self) -> che_orm::SchemaSet {
+                che_orm::SchemaSet::new().model::<ObserverEvent>()
+            }
+            fn schema_objects(&self) -> Vec<che_orm::SchemaObjectState> {
+                vec![
+                    che_orm::SchemaObjectState {
+                        app: String::new(),
+                        kind: che_orm::SchemaObjectKind::Trigger,
+                        name: "observer_guard".into(),
+                        sql: "CREATE TRIGGER observer_guard BEFORE INSERT ON observer_events BEGIN SELECT count(*) FROM review_items; END".into(),
+                    },
+                    che_orm::SchemaObjectState {
+                        app: String::new(),
+                        kind: che_orm::SchemaObjectKind::View,
+                        name: "observer_pending".into(),
+                        sql: "CREATE VIEW observer_pending AS SELECT 1 AS value".into(),
+                    },
+                ]
+            }
+            fn init(&self, _: &mut crate::ModuleContext) {}
+        }
+
+        let apps = InstalledApps::new().add(ReviewApp).add(ObserverApp);
+        let desired = apps.migration_state().unwrap();
+        let mut model = desired
+            .models()
+            .into_iter()
+            .find(|model| model.key.app == "review")
+            .unwrap();
+        let mut obsolete = model.table.columns[0].clone();
+        obsolete.field_name = "obsolete".into();
+        obsolete.name = "obsolete".into();
+        obsolete.primary_key = false;
+        obsolete.nullable = true;
+        model.table.columns.push(obsolete);
+        let first = Migration::new(
+            MigrationId {
+                app: "review".into(),
+                name: "0001_initial".into(),
+            },
+            vec![],
+            vec![MigrationOperation::CreateModel { model }],
+        );
+        let guard = desired
+            .objects()
+            .iter()
+            .find(|object| object.name == "observer_guard")
+            .unwrap()
+            .clone();
+        let second = Migration::new(
+            MigrationId {
+                app: "observer".into(),
+                name: "0001_guard".into(),
+            },
+            vec![first.id.clone()],
+            vec![
+                MigrationOperation::CreateModel {
+                    model: desired
+                        .models()
+                        .into_iter()
+                        .find(|model| model.key.app == "observer")
+                        .unwrap(),
+                },
+                MigrationOperation::CreateSchemaObject {
+                    object: guard.clone(),
+                },
+            ],
+        );
+        let next = build_operation_migration(
+            &apps,
+            &[first.clone(), second.clone()],
+            "review",
+            "remove",
+            false,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(matches!(next.operations.as_slice(), [
+            MigrationOperation::DropSchemaObject { name, .. },
+            MigrationOperation::RemoveColumn { .. },
+            MigrationOperation::CreateSchemaObject { object },
+        ] if name == "observer_guard" && object == &guard));
+        let graph = che_orm::MigrationGraph::new(vec![first, second, next]).unwrap();
+        let state = graph.replay(Default::default()).unwrap();
+        assert!(state.objects().iter().any(|object| object == &guard));
+        assert!(
+            !state
+                .objects()
+                .iter()
+                .any(|object| object.name == "observer_pending")
+        );
+        let mut connection = che_orm::rusqlite::Connection::open_in_memory().unwrap();
+        che_orm::migration::sqlite_executor::apply_operation_migrations_on_connection(
+            &mut connection,
+            graph,
+        )
+        .unwrap();
+        assert_eq!(connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = 'observer_guard'", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
     }
 
     #[test]

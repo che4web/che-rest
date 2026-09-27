@@ -462,6 +462,7 @@ mod tests {
     impl ViewSet for TestViewSet {
         type Model = crate::auth::User;
         type Serializer = AdminUserSerializer;
+        type ListSerializer = Self::Serializer;
         type QuerySet = DatabaseQuery<crate::auth::User>;
         type FilterSet = AdminUserFilterSet;
         type Permission = AllowAny;

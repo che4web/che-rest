@@ -52,6 +52,7 @@ impl FilterSetSpec for AdminUserFilterSet {
 impl ViewSet for AdminUserViewSet {
     type Model = User;
     type Serializer = AdminUserSerializer;
+    type ListSerializer = Self::Serializer;
     type QuerySet = che_orm::DatabaseQuery<User>;
     type FilterSet = AdminUserFilterSet;
     type Permission = ReadOnlyAdminUser;
@@ -533,6 +534,7 @@ mod tests {
     impl ViewSet for ApplicationUserViewSet {
         type Model = User;
         type Serializer = AdminUserSerializer;
+        type ListSerializer = Self::Serializer;
         type QuerySet = che_orm::DatabaseQuery<User>;
         type FilterSet = AdminUserFilterSet;
         type Permission = AllowAny;

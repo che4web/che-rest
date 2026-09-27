@@ -637,6 +637,7 @@ pub struct {model}ViewSet;
 impl ViewSet for {model}ViewSet {{
     type Model = {model};
     type Serializer = {model}Serializer;
+    type ListSerializer = Self::Serializer;
     type QuerySet = che_orm::DatabaseQuery<{model}>;
     type FilterSet = {model}FilterSet;
     type Permission = AllowAny;

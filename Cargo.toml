@@ -1,6 +1,6 @@
 [package]
 name = "che-rest"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 description = "Typed REST framework and project tooling for che-orm applications"
 license = "MIT"
@@ -16,7 +16,7 @@ exclude = ["benchmarks/**"]
 axum = { version = "0.8", features = ["ws"] }
 argon2 = "0.5"
 clap = { version = "4", features = ["derive"] }
-che-orm = { version = "0.2.1", path = "../che-orm" }
+che-orm = { version = "0.2.2", path = "../che-orm" }
 hex = "0.4"
 futures-util = "0.3"
 rand = "0.8"
