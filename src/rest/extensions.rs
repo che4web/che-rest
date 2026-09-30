@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, marker::PhantomData, sync::Arc};
+use std::{collections::BTreeMap, future::Future, marker::PhantomData, pin::Pin, sync::Arc};
 
 use axum::{Router, handler::Handler, http::StatusCode, routing};
 use serde_json::{Map, Value, json};
@@ -53,6 +53,8 @@ pub struct OperationSpec {
     pub errors: Vec<u16>,
     pub authenticated: bool,
     pub client: Option<ClientMethod>,
+    pub multipart: bool,
+    pub body_limit: Option<usize>,
 }
 
 impl OperationSpec {
@@ -65,6 +67,8 @@ impl OperationSpec {
             errors: Vec::new(),
             authenticated: false,
             client: None,
+            multipart: false,
+            body_limit: None,
         }
     }
 
@@ -97,6 +101,16 @@ impl OperationSpec {
         self.client = Some(ClientMethod { namespace, name });
         self
     }
+
+    pub fn multipart(mut self) -> Self {
+        self.multipart = true;
+        self
+    }
+
+    pub fn body_limit(mut self, limit: usize) -> Self {
+        self.body_limit = Some(limit);
+        self
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -108,6 +122,7 @@ pub struct ApiOperation {
     pub request: Option<ApiSchemaDefinition>,
     pub response: Option<(u16, ApiSchemaDefinition)>,
     pub client: Option<ClientMethod>,
+    pub multipart: bool,
     pub openapi: Value,
 }
 
@@ -119,6 +134,20 @@ pub struct ApiExtension {
 
 pub trait MutationHook<V: ViewSet>: Send + Sync + 'static {
     fn id(&self) -> &'static str;
+    fn prepare_delete(&self, _model: &V::Model) -> serde_json::Value {
+        serde_json::Value::Null
+    }
+    fn prepare_delete_async<'a>(
+        &'a self,
+        _state: &'a AppState,
+        model: &'a V::Model,
+    ) -> Pin<Box<dyn Future<Output = AppResult<serde_json::Value>> + Send + 'a>> {
+        let value = self.prepare_delete(model);
+        Box::pin(async move { Ok(value) })
+    }
+    fn after_delete(&self, _state: &AppState, _payload: &serde_json::Value) -> AppResult<()> {
+        Ok(())
+    }
     fn after_commit(
         &self,
         _state: &AppState,
@@ -168,7 +197,7 @@ impl<V: ViewSet> ViewSetConfig<V> {
     where
         E: ViewSetExtension<V>,
     {
-        if self.extensions.iter().any(|item| item.id == E::ID) {
+        if E::ID != "image-field" && self.extensions.iter().any(|item| item.id == E::ID) {
             return Err(AppError::BadRequest(format!(
                 "extension `{}` is already installed for {}",
                 E::ID,
@@ -185,6 +214,18 @@ impl<V: ViewSet> ViewSetConfig<V> {
             id: E::ID,
             operations: extension_context.operations,
         });
+        Ok(())
+    }
+
+    pub fn mutation_hook<H: MutationHook<V>>(&mut self, hook: H) -> AppResult<()> {
+        if self.hooks.iter().any(|item| item.id() == hook.id()) {
+            return Err(AppError::BadRequest(format!(
+                "mutation hook `{}` is already installed for {}",
+                hook.id(),
+                self.path
+            )));
+        }
+        self.hooks.push(Arc::new(hook));
         Ok(())
     }
 
@@ -226,15 +267,7 @@ impl<'a, V: ViewSet> ExtensionContext<'a, V> {
     }
 
     pub fn mutation_hook<H: MutationHook<V>>(&mut self, hook: H) -> AppResult<()> {
-        if self.config.hooks.iter().any(|item| item.id() == hook.id()) {
-            return Err(AppError::BadRequest(format!(
-                "mutation hook `{}` is already installed for {}",
-                hook.id(),
-                self.config.path
-            )));
-        }
-        self.config.hooks.push(Arc::new(hook));
-        Ok(())
+        self.config.mutation_hook(hook)
     }
 
     fn register_schema(&mut self, schema: ApiSchemaDefinition) -> AppResult<()> {
@@ -290,33 +323,38 @@ impl<'a, V: ViewSet> ExtensionContext<'a, V> {
         if let Some((_, schema)) = spec.response.clone() {
             self.register_schema(schema)?;
         }
-        let openapi = operation_json(&spec);
+        let openapi = operation_json(&spec, method);
+        let limit = spec.body_limit;
+        let router = |method: axum::routing::MethodRouter| match limit {
+            Some(limit) => method.layer(axum::extract::DefaultBodyLimit::max(limit)),
+            None => method,
+        };
         self.config.router = match method {
             HttpMethod::Get => self
                 .config
                 .router
                 .clone()
-                .route(&path, routing::get(handler)),
+                .route(&path, router(routing::get(handler))),
             HttpMethod::Post => self
                 .config
                 .router
                 .clone()
-                .route(&path, routing::post(handler)),
+                .route(&path, router(routing::post(handler))),
             HttpMethod::Put => self
                 .config
                 .router
                 .clone()
-                .route(&path, routing::put(handler)),
+                .route(&path, router(routing::put(handler))),
             HttpMethod::Patch => self
                 .config
                 .router
                 .clone()
-                .route(&path, routing::patch(handler)),
+                .route(&path, router(routing::patch(handler))),
             HttpMethod::Delete => self
                 .config
                 .router
                 .clone()
-                .route(&path, routing::delete(handler)),
+                .route(&path, router(routing::delete(handler))),
         };
         self.config
             .operation_keys
@@ -329,6 +367,7 @@ impl<'a, V: ViewSet> ExtensionContext<'a, V> {
             request: spec.request,
             response: spec.response,
             client: spec.client,
+            multipart: spec.multipart,
             openapi,
         });
         Ok(())
@@ -371,7 +410,7 @@ fn normalize_path(prefix: &str, relative: &str) -> AppResult<String> {
     Ok(format!("{}/{}/", prefix.trim_end_matches('/'), relative))
 }
 
-fn operation_json(spec: &OperationSpec) -> Value {
+fn operation_json(spec: &OperationSpec, method: HttpMethod) -> Value {
     let mut operation = Map::new();
     operation.insert(
         "operationId".into(),
@@ -380,7 +419,17 @@ fn operation_json(spec: &OperationSpec) -> Value {
     if let Some(summary) = &spec.summary {
         operation.insert("summary".into(), Value::String(summary.clone()));
     }
-    if let Some(request) = &spec.request {
+    if spec.multipart {
+        let schema = if method == HttpMethod::Delete {
+            json!({"type": "object", "additionalProperties": {"type": "string"}})
+        } else {
+            json!({"type": "object", "properties": {"file": {"type": "string", "format": "binary"}}, "required": ["file"], "additionalProperties": {"type": "string"}})
+        };
+        operation.insert(
+            "requestBody".into(),
+            json!({"required": true, "content": {"multipart/form-data": {"schema": schema}}}),
+        );
+    } else if let Some(request) = &spec.request {
         operation.insert(
             "requestBody".into(),
             json!({"required": true, "content": {"application/json": {"schema": {"$ref": format!("#/components/schemas/{}", request.name)}}}}),

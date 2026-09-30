@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.4
+
+- Add validated image storage, authenticated media delivery, and declarative image actions with generated multipart clients.
+- Use conditional image replacement and retryable post-commit file cleanup; support async deletion hooks for cascaded records.
+
 ## 0.2.2
 
 - Add request-scoped `CurrentPrincipal`, retaining the built-in `auth::User` as the framework

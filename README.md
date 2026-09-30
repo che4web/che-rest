@@ -131,6 +131,76 @@ cargo run --bin manage -- makemigrations
 cargo run --bin manage -- migrate
 ```
 
+### Image fields
+
+Install `che_rest::media::module()` alongside auth to serve authenticated files under
+`/api/media/{key}` (or the configured API prefix). `che_orm::ImageField` is a
+TEXT-backed **relative storage key**, not a URL or a BLOB; `Option<ImageField>`
+is nullable. The field is always read-only in JSON writes, even without an
+explicit `#[serializer(read_only)]`. Register an image action once in the
+owning ViewSet; `che-rest` then creates the upload/replace and clear endpoints:
+
+```rust
+use che_orm::ImageField;
+use che_rest::media::{ImageFieldEndpoint, ImagePolicy};
+
+// In the model: pub avatar: Option<ImageField>,
+// In the ViewSet's configure():
+config.image_field(ImageFieldEndpoint::<Self>::new(
+    "avatar", User::AVATAR, |user| user.avatar.as_ref(),
+    ImagePolicy::new("avatars", 10 * 1024 * 1024, 8192),
+))?;
+```
+
+For a ViewSet registered at `/users`, this adds `PUT` and `DELETE` at
+`/api/users/{id}/images/avatar/`. `PUT` takes a multipart `file` and replaces
+the image; `DELETE` clears it. Both operations appear in OpenAPI and the
+generated TypeScript client (`userApi.avatar.replace(id, file)` and
+`userApi.avatar.clear(id)`). By default, the handlers use the ViewSet's
+permissions and object queryset. `authorize`, `before`, and `write` callbacks
+allow field-specific rules: a self-only avatar, a scene-version check held
+through saving, or additional model metadata. Configure them explicitly when
+the default ViewSet write permission is inappropriate.
+
+`ImageCreateEndpoint` similarly adds a multipart `POST /api/{resource}/upload/`
+for images that are *new records*, such as attachments. Its application
+callback validates extra form fields and creates domain links; on failure the
+framework removes the new file. The generated client sends optional extra
+fields as `Record<string, string | Blob>`. Neither form accepts a storage key
+from the client.
+
+The media service's `read_image_field` limits multipart parts;
+`ImageStorage::save` checks the actual JPEG/PNG/GIF/WebP format, decodes the
+image and enforces byte and dimension limits. An
+`ImagePolicy::thumbnail(max_dimension)` re-encodes a bounded PNG. Without it,
+the validated original bytes are retained (including animated GIFs).
+`replace` writes a new file, compares the previously read image key with the
+current database key, then updates the model. A stale write returns `409` and
+discards its new file. The `write` callback can include related metadata such
+as the avatar URL, MIME type and size in that same conditional database update.
+`clear` uses the same check. Application callbacks remain responsible for
+domain-specific checks such as diagram revision matching; they do not implement
+the HTTP upload flow.
+
+JSON responses serialize `ImageField` as its storage key. `generate-ts` emits
+`string | null` for nullable image fields, and generated admin metadata marks
+them as images. A browser can form an image URL using the configured API base
+plus `/media/` and the returned key. A ViewSet can register `ImageCleanup` in
+`configure()` to remove the file **after a direct ViewSet deletion**. An async
+`prepare_delete_async` hook can collect keys before a parent record cascades;
+`after_delete` then removes them. Post-commit failures are queued in
+`.pending-image-deletions` and retried on startup or later uploads: a committed
+DELETE must not return `500` because file cleanup failed. Raw SQL deletes do
+not run ViewSet hooks and need separate orphan cleanup. With no `[media]`
+section, the storage root is `uploads`. To override it in `app.toml`:
+
+```toml
+[media]
+root = "/var/lib/my-app/uploads"
+```
+
+Back up this directory separately from the SQLite database.
+
 The generated `app.toml` also configures the listener and API prefix:
 
 ```toml

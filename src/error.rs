@@ -16,6 +16,8 @@ pub enum AppError {
     Unauthorized(String),
     #[error("forbidden: {0}")]
     Forbidden(String),
+    #[error("conflict: {0}")]
+    Conflict(String),
 }
 
 pub type AppResult<T> = Result<T, AppError>;
@@ -35,6 +37,11 @@ impl axum::response::IntoResponse for AppError {
                 .into_response(),
             Self::Forbidden(detail) => (
                 axum::http::StatusCode::FORBIDDEN,
+                axum::Json(serde_json::json!({ "detail": detail })),
+            )
+                .into_response(),
+            Self::Conflict(detail) => (
+                axum::http::StatusCode::CONFLICT,
                 axum::Json(serde_json::json!({ "detail": detail })),
             )
                 .into_response(),

@@ -8,6 +8,7 @@ pub mod error;
 pub mod generate_admin;
 pub mod generate_ts;
 pub mod management;
+pub mod media;
 pub mod module;
 pub mod project;
 pub mod rest;
@@ -18,7 +19,7 @@ pub use app_channels::AppChannels;
 pub use auth::{CurrentPrincipal, CurrentUser, IsAdminUser, IsAuthenticated};
 pub use channels::Channels;
 pub use che_orm::{
-    Database, Model, ModelSerializer, ModelWriteSerializer, PatchField, ValidatedWrite,
+    Database, ImageField, Model, ModelSerializer, ModelWriteSerializer, PatchField, ValidatedWrite,
     ValidationErrors, WriteMode,
 };
 pub use config::{AppConfig, DatabaseConfig, ServerConfig};

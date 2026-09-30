@@ -6,7 +6,7 @@ use serde_json::{Map, Value, json};
 
 use crate::{
     AppError, AppResult, AppState, CrudViewSet, FilterSetSpec, Model, ModelSerializer,
-    SignalAccess, ViewAction, ViewSet, ViewSetConfig, openapi_column_schema, router,
+    SignalAccess, ViewAction, ViewSet, ViewSetConfig, openapi_column_schema,
 };
 
 pub trait AppModule: Send + Sync + 'static {
@@ -54,6 +54,7 @@ pub struct ApiSignal {
 #[derive(Debug, Clone)]
 pub struct ApiColumn {
     pub name: &'static str,
+    pub field_name: &'static str,
     pub nullable: bool,
     pub has_default: bool,
     pub choices: Option<Vec<&'static str>>,
@@ -214,7 +215,7 @@ impl ModuleContext {
         if let Err(error) = viewset.configure(&mut config) {
             self.registration_errors.push(error.to_string());
         }
-        let (extension_router, extensions, extension_schemas, _hooks) = config.into_parts();
+        let (extension_router, extensions, extension_schemas, hooks) = config.into_parts();
         self.api_endpoints.push(ApiEndpoint {
             app_name: self.current_app,
             model_name: std::any::type_name::<V::Model>()
@@ -230,6 +231,7 @@ impl ModuleContext {
                 .iter()
                 .map(|column| ApiColumn {
                     name: column.name,
+                    field_name: column.field_name,
                     nullable: column.nullable,
                     has_default: column.default.is_some() || column.auto_now || column.auto_now_add,
                     choices: column.choices.clone(),
@@ -308,8 +310,12 @@ impl ModuleContext {
         if let Some(schemas) = document["components"]["schemas"].as_object() {
             self.openapi_components.extend(schemas.clone());
         }
-        self.routers
-            .push(router(state.clone(), viewset, extension_router));
+        self.routers.push(crate::rest::router::router_with_hooks(
+            state.clone(),
+            viewset,
+            extension_router,
+            hooks,
+        ));
     }
 
     fn schema(&self) -> SchemaSet {

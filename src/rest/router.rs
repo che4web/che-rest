@@ -1,4 +1,4 @@
-use std::{collections::HashMap, future::Future, marker::PhantomData, pin::Pin};
+use std::{collections::HashMap, future::Future, marker::PhantomData, pin::Pin, sync::Arc};
 
 use axum::{
     Extension, Json, Router,
@@ -15,7 +15,37 @@ use che_orm::{
 use serde::Serialize;
 use serde_json::json;
 
+use super::extensions::MutationHook;
 use crate::{AppError, AppResult, AppState, auth::CurrentPrincipal};
+
+#[derive(Clone)]
+pub struct MutationHooks<V: ViewSet>(Vec<Arc<dyn MutationHook<V>>>);
+
+impl<V: ViewSet> MutationHooks<V> {
+    fn after_commit(
+        &self,
+        state: &AppState,
+        principal: Option<&CurrentPrincipal>,
+        action: ViewAction,
+        model: &V::Model,
+    ) -> AppResult<()> {
+        for hook in &self.0 {
+            hook.after_commit(state, principal, action, model)?;
+        }
+        Ok(())
+    }
+
+    fn after_delete(&self, state: &AppState, values: &[serde_json::Value]) {
+        for (hook, value) in self.0.iter().zip(values) {
+            if let Err(error) = hook.after_delete(state, value) {
+                eprintln!(
+                    "post-delete hook {} failed after commit: {error}",
+                    hook.id()
+                );
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewAction {
@@ -723,6 +753,18 @@ pub fn router<V: ViewSet>(state: AppState, viewset: V, extensions: Router) -> Ro
 where
     V::Serializer: Serialize,
 {
+    router_with_hooks(state, viewset, extensions, Vec::new())
+}
+
+pub fn router_with_hooks<V: ViewSet>(
+    state: AppState,
+    viewset: V,
+    extensions: Router,
+    hooks: Vec<Arc<dyn MutationHook<V>>>,
+) -> Router
+where
+    V::Serializer: Serialize,
+{
     let path = viewset.path().trim_end_matches('/');
     Router::new()
         .route(&format!("{path}/"), get(list::<V>).post(create::<V>))
@@ -736,6 +778,7 @@ where
         .merge(extensions)
         .layer(Extension(state))
         .layer(Extension(viewset))
+        .layer(Extension(MutationHooks::<V>(hooks)))
 }
 
 #[cfg(test)]
@@ -867,7 +910,7 @@ where
         let column = schema
             .columns
             .iter()
-            .find(|column| column.name == field.source);
+            .find(|column| column.name == field.source || column.field_name == field.source);
         let property = column
             .map(openapi_column_schema)
             .unwrap_or_else(|| json!({"type": "object"}));
@@ -904,7 +947,7 @@ where
         let column = schema
             .columns
             .iter()
-            .find(|column| column.name == field.source);
+            .find(|column| column.name == field.source || column.field_name == field.source);
         let property = if field.related_model.is_some() {
             json!({"type": "object"})
         } else {
@@ -1094,6 +1137,7 @@ where
 async fn destroy<V: ViewSet>(
     Extension(state): Extension<AppState>,
     Extension(viewset): Extension<V>,
+    Extension(hooks): Extension<MutationHooks<V>>,
     who: Option<Extension<CurrentPrincipal>>,
     Path(id): Path<i64>,
 ) -> AppResult<impl IntoResponse> {
@@ -1113,7 +1157,17 @@ async fn destroy<V: ViewSet>(
             V::QuerySet::item_model(&item),
         )?;
     }
+    let model = state
+        .database()
+        .get::<V::Model>(id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let mut values = Vec::with_capacity(hooks.0.len());
+    for hook in &hooks.0 {
+        values.push(hook.prepare_delete_async(&state, &model).await?);
+    }
     state.database().delete::<V::Model>(id).await?;
+    hooks.after_delete(&state, &values);
     if let Some(signal) = viewset.signal_name(ViewAction::Delete) {
         if viewset.signal_access(ViewAction::Delete).is_some() {
             state.signals().publish(signal, json!({"id": id}));
@@ -1125,6 +1179,7 @@ async fn destroy<V: ViewSet>(
 async fn create<V: ViewSet>(
     Extension(state): Extension<AppState>,
     Extension(viewset): Extension<V>,
+    Extension(hooks): Extension<MutationHooks<V>>,
     who: Option<Extension<CurrentPrincipal>>,
     Json(data): Json<serde_json::Value>,
 ) -> AppResult<impl IntoResponse>
@@ -1142,6 +1197,7 @@ where
         .await
         .map_err(error_write)?
         .ok_or(AppError::BadRequest("create did not return a model".into()))?;
+    hooks.after_commit(&state, principal, ViewAction::Create, &model)?;
     let item = viewset
         .get_queryset()
         .filter(V::Model::primary_key().eq(model.primary_key_value()))
@@ -1162,6 +1218,7 @@ where
 async fn patch<V: ViewSet>(
     Extension(state): Extension<AppState>,
     Extension(viewset): Extension<V>,
+    Extension(hooks): Extension<MutationHooks<V>>,
     who: Option<Extension<CurrentPrincipal>>,
     Path(id): Path<i64>,
     Json(data): Json<serde_json::Value>,
@@ -1195,6 +1252,7 @@ where
         .await
         .map_err(error_write)?
         .ok_or(AppError::NotFound)?;
+    hooks.after_commit(&state, principal, ViewAction::Patch, &model)?;
     let item = viewset
         .get_queryset()
         .filter(V::Model::primary_key().eq(model.primary_key_value()))
@@ -1215,6 +1273,7 @@ where
 async fn update<V: ViewSet>(
     Extension(state): Extension<AppState>,
     Extension(viewset): Extension<V>,
+    Extension(hooks): Extension<MutationHooks<V>>,
     who: Option<Extension<CurrentPrincipal>>,
     Path(id): Path<i64>,
     Json(data): Json<serde_json::Value>,
@@ -1248,6 +1307,7 @@ where
         .await
         .map_err(error_write)?
         .ok_or(AppError::NotFound)?;
+    hooks.after_commit(&state, principal, ViewAction::Update, &model)?;
     let item = viewset
         .get_queryset()
         .filter(V::Model::primary_key().eq(model.primary_key_value()))

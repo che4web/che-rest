@@ -118,6 +118,12 @@ function displayValue(value: unknown) {
   return value;
 }
 
+function imageUrl(value: unknown) {
+  return typeof value === "string" && value
+    ? `${String(import.meta.env.VITE_API_BASE_URL ?? "/api").replace(/\/$/, "")}/media/${value}`
+    : "";
+}
+
 watch(() => props.model.resource, async () => {
   initFilters();
   page.value = 1;
@@ -194,7 +200,10 @@ watch(() => props.model.resource, async () => {
                   <td :colspan="columns.length + 1">No objects yet.</td>
                 </tr>
                 <tr v-for="row in rows" :key="String(row.id)">
-                  <td v-for="field in columns" :key="field.name">{{ displayValue(row[field.name]) }}</td>
+                  <td v-for="field in columns" :key="field.name">
+                    <img v-if="field.type === 'image' && imageUrl(row[field.name])" :src="imageUrl(row[field.name])" alt="" style="max-width: 7rem; max-height: 4rem; object-fit: contain" />
+                    <span v-else>{{ displayValue(row[field.name]) }}</span>
+                  </td>
                   <td>
                     <div class="d-flex gap-2">
                       <button class="btn btn-sm btn-outline-secondary" type="button" @click="router.push(`/admin/${model.resource}/${row.id}/edit`)">Edit</button>

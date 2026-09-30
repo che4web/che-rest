@@ -229,6 +229,25 @@ fn api(endpoints: &[ApiEndpoint]) -> String {
                     .map(|(_, schema)| schema.name)
                     .unwrap_or("void");
                 let has_id = path.contains("${id}");
+                if operation.multipart {
+                    let extras = "if (fields) for (const [key, value] of Object.entries(fields)) data.append(key, value);";
+                    match (operation.method, has_id) {
+                        (crate::HttpMethod::Put | crate::HttpMethod::Post, true) => out.push_str(&format!(
+                            "    async {}(id: number, file: Blob, fields?: Record<string, string | Blob>): Promise<{}> {{ const data = new FormData(); data.append(\"file\", file, file instanceof File ? file.name : \"image.png\"); {extras} return (await apiClient.{}<{}>(`{}`, data, {{ headers: {{ \"Content-Type\": undefined }} }})).data; }},\n",
+                            client.name, response, operation.method.openapi_key(), response, path
+                        )),
+                        (crate::HttpMethod::Post, false) => out.push_str(&format!(
+                            "    async {}(file: Blob, fields?: Record<string, string | Blob>): Promise<{}> {{ const data = new FormData(); data.append(\"file\", file, file instanceof File ? file.name : \"image.png\"); {extras} return (await apiClient.post<{}>(`{}`, data, {{ headers: {{ \"Content-Type\": undefined }} }})).data; }},\n",
+                            client.name, response, response, path
+                        )),
+                        (crate::HttpMethod::Delete, true) => out.push_str(&format!(
+                            "    async {}(id: number, fields?: Record<string, string | Blob>): Promise<void> {{ const data = new FormData(); {extras} await apiClient.delete(`{}`, {{ data, headers: {{ \"Content-Type\": undefined }} }}); }},\n",
+                            client.name, path
+                        )),
+                        _ => {}
+                    }
+                    continue;
+                }
                 match (&operation.request, operation.method) {
                     (Some(request), crate::HttpMethod::Post | crate::HttpMethod::Put | crate::HttpMethod::Patch) if has_id => out.push_str(&format!(
                         "    async {}(id: number, payload: {}): Promise<{}> {{ return (await apiClient.{}<{}>(`{}`, payload)).data; }},\n",
@@ -266,7 +285,7 @@ fn field_ts_type(endpoint: &ApiEndpoint, field: &che_orm::SerializerField) -> St
             let nullable = endpoint
                 .columns
                 .iter()
-                .find(|column| column.name == field.source)
+                .find(|column| column.name == field.source || column.field_name == field.source)
                 .is_some_and(|column| column.nullable);
             return if nullable {
                 "number | null".into()
@@ -284,7 +303,7 @@ fn field_ts_type(endpoint: &ApiEndpoint, field: &che_orm::SerializerField) -> St
     if let Some(choices) = endpoint
         .columns
         .iter()
-        .find(|column| column.name == field.source)
+        .find(|column| column.name == field.source || column.field_name == field.source)
         .and_then(|column| column.choices.as_ref())
     {
         let ty = choices
@@ -295,7 +314,7 @@ fn field_ts_type(endpoint: &ApiEndpoint, field: &che_orm::SerializerField) -> St
         let nullable = endpoint
             .columns
             .iter()
-            .find(|column| column.name == field.source)
+            .find(|column| column.name == field.source || column.field_name == field.source)
             .is_some_and(|column| column.nullable);
         return if nullable { format!("{ty} | null") } else { ty };
     }
@@ -310,13 +329,14 @@ fn field_ts_type(endpoint: &ApiEndpoint, field: &che_orm::SerializerField) -> St
         }
         "bool" => "boolean".into(),
         "String" | "&str" | "Option<String>" => "string".into(),
+        value if value.contains("ImageField") => "string".into(),
         value if value.contains("OffsetDateTime") => "string".into(),
         _ => "unknown".into(),
     };
     let nullable = endpoint
         .columns
         .iter()
-        .find(|column| column.name == field.source)
+        .find(|column| column.name == field.source || column.field_name == field.source)
         .is_some_and(|column| column.nullable);
     if nullable { format!("{ty} | null") } else { ty }
 }
@@ -325,7 +345,7 @@ fn field_required(endpoint: &ApiEndpoint, field: &che_orm::SerializerField) -> b
     endpoint
         .columns
         .iter()
-        .find(|column| column.name == field.source)
+        .find(|column| column.name == field.source || column.field_name == field.source)
         .is_some_and(|column| !column.nullable && !column.has_default)
 }
 
@@ -609,6 +629,86 @@ mod tests {
     use super::*;
 
     #[test]
+    fn multipart_image_actions_generate_formdata_put_and_delete_methods() {
+        let operation = |method, name, response| crate::ApiOperation {
+            extension_id: "image-field",
+            operation_id: format!("image.{name}"),
+            method,
+            path: "/boards/{id}/images/preview/".into(),
+            request: None,
+            response,
+            client: Some(crate::ClientMethod {
+                namespace: "preview",
+                name,
+            }),
+            multipart: true,
+            openapi: serde_json::json!({}),
+        };
+        let endpoint = ApiEndpoint {
+            app_name: "boards",
+            model_name: "Board".into(),
+            resource: "boards".into(),
+            fields: vec![],
+            list_fields: vec![],
+            columns: vec![],
+            filters: vec![],
+            extensions: vec![crate::ApiExtension {
+                id: "image-field",
+                operations: vec![
+                    operation(
+                        crate::HttpMethod::Put,
+                        "replace",
+                        Some((
+                            200,
+                            crate::ApiSchemaDefinition {
+                                name: "ImageUploadResponse",
+                                openapi: serde_json::json!({}),
+                                typescript: "export interface ImageUploadResponse { url: string; }",
+                            },
+                        )),
+                    ),
+                    operation(crate::HttpMethod::Delete, "clear", None),
+                ],
+            }],
+        };
+        let output = api(&[endpoint]);
+        assert!(output.contains("async replace(id: number, file: Blob"));
+        assert!(output.contains("data.append(\"file\", file"));
+        assert!(output.contains("async clear(id: number, fields?"));
+        assert!(output.contains("apiClient.delete(`boards/${id}/images/preview/`"));
+    }
+
+    #[test]
+    fn image_field_uses_nullable_storage_column_even_with_db_column_alias() {
+        let field = che_orm::SerializerField {
+            name: "preview",
+            source: "preview",
+            read_only: true,
+            write_only: false,
+            rust_type: "Option<che_orm::ImageField>",
+            related_model: None,
+            many: false,
+        };
+        let endpoint = ApiEndpoint {
+            app_name: "diagrams",
+            model_name: "Board".into(),
+            resource: "boards".into(),
+            fields: vec![field.clone()],
+            list_fields: vec![field.clone()],
+            columns: vec![crate::module::ApiColumn {
+                name: "preview_storage_name",
+                field_name: "preview",
+                nullable: true,
+                has_default: false,
+                choices: None,
+            }],
+            filters: vec![],
+            extensions: vec![],
+        };
+        assert_eq!(field_ts_type(&endpoint, &field), "string | null");
+    }
+
+    #[test]
     fn generates_nested_model_and_typed_write_dtos() {
         let endpoint = ApiEndpoint {
             app_name: "tasks",
@@ -655,6 +755,7 @@ mod tests {
             list_fields: vec![],
             columns: vec![crate::module::ApiColumn {
                 name: "status",
+                field_name: "status",
                 nullable: false,
                 has_default: false,
                 choices: Some(vec!["draft", "in_progress", "done"]),

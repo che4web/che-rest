@@ -10,6 +10,22 @@ pub struct AppConfig {
     pub server: ServerConfig,
     #[serde(default)]
     pub auth: AuthConfig,
+    #[serde(default)]
+    pub media: MediaConfig,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(default)]
+pub struct MediaConfig {
+    pub root: String,
+}
+
+impl Default for MediaConfig {
+    fn default() -> Self {
+        Self {
+            root: "uploads".into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -97,5 +113,6 @@ mod tests {
         assert_eq!(config.server.host, "127.0.0.1");
         assert_eq!(config.server.port, 3000);
         assert_eq!(config.server.api_prefix, "/api");
+        assert_eq!(config.media.root, "uploads");
     }
 }

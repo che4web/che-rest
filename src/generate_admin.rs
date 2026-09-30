@@ -53,7 +53,7 @@ fn admin_schema(endpoints: &[ApiEndpoint]) -> String {
         out.push_str(&format!("  {}Api,\n", api_name(endpoint, endpoints)));
     }
     out.push_str("} from \"../../generated/api\";\n\n");
-    out.push_str("export type AdminFieldType = \"integer\" | \"text\" | \"boolean\" | \"real\" | \"datetime\";\n\n");
+    out.push_str("export type AdminFieldType = \"integer\" | \"text\" | \"boolean\" | \"real\" | \"datetime\" | \"image\";\n\n");
     out.push_str(
         "export interface AdminField { name: string; source: string; type: AdminFieldType; label: string; readOnly: boolean; writeOnly: boolean; required: boolean; nullable: boolean; hasDefault: boolean; choices?: string[]; relatedModel?: string; relationField?: string; }\n\nexport interface AdminFilter { name: string; source: string; type: AdminFieldType; label: string; nullable: boolean; choices?: string[]; }\n\nexport interface AdminModelApi { list: (params?: any) => Promise<{ count: number; results: any[] }>; retrieve: (id: number) => Promise<any>; create: (payload: any) => Promise<any>; update: (id: number, payload: any) => Promise<any>; remove: (id: number) => Promise<void>; }\n\nexport interface AdminModel { appName: string; name: string; resource: string; api: AdminModelApi; fields: AdminField[]; listFields: string[]; filters: AdminFilter[]; }\nexport interface AdminApp { name: string; models: AdminModel[]; }\n\nexport const adminModels: AdminModel[] = [\n",
     );
@@ -73,7 +73,10 @@ fn admin_schema(endpoints: &[ApiEndpoint]) -> String {
             let ty = admin_type(field.rust_type, related.is_some());
             let nested_relation = related.is_some_and(|_| field.name != field.source);
             let read_only = field.read_only || nested_relation;
-            let column = endpoint.columns.iter().find(|column| column.name == source);
+            let column = endpoint
+                .columns
+                .iter()
+                .find(|column| column.name == source || column.field_name == source);
             let nullable = column.is_some_and(|column| column.nullable);
             let has_default = column.is_some_and(|column| column.has_default);
             let choices = column
@@ -339,7 +342,9 @@ fn admin_routes(endpoints: &[ApiEndpoint]) -> String {
 }
 
 fn admin_type(rust_type: &str, relation: bool) -> &'static str {
-    if relation || rust_type.contains("i64") {
+    if rust_type.contains("ImageField") {
+        "image"
+    } else if relation || rust_type.contains("i64") {
         "integer"
     } else if rust_type == "bool" {
         "boolean"
