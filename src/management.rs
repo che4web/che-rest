@@ -1130,7 +1130,7 @@ pub fn write_operation_migration_and_register(
 /// operation. If one app cannot be registered, sources and registries already
 /// written for earlier apps are restored to their exact previous contents.
 fn write_operation_migration_batch(
-    root: &PathBuf,
+    root: &std::path::Path,
     migrations: &[Migration],
 ) -> ManageResult<Vec<PathBuf>> {
     for migration in migrations {
@@ -1352,6 +1352,7 @@ fn validate_operation_migration_name(name: &str) -> ManageResult<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn create_empty_migration(dir: &PathBuf, name: &str, version: &str) -> ManageResult<PathBuf> {
     fs::create_dir_all(dir)?;
     let path = dir.join(format!("{version}_{name}.sql"));
@@ -2945,8 +2946,12 @@ mod tests {
             .unwrap()
             .unwrap();
         let path = write_operation_migration(&directory, &migration).unwrap();
-        super::ensure_compiled_registry_matches(&directory, &[migration.clone()], "review")
-            .unwrap();
+        super::ensure_compiled_registry_matches(
+            &directory,
+            std::slice::from_ref(&migration),
+            "review",
+        )
+        .unwrap();
         let changed = fs::read_to_string(&path)
             .unwrap()
             .replacen("ReviewItem", "ChangedItem", 1);
@@ -3138,9 +3143,15 @@ mod tests {
             vec![],
             vec![MigrationOperation::CreateModel { model }],
         );
-        let next = build_operation_migration(&apps, &[first.clone()], "review", "remove", false)
-            .unwrap()
-            .unwrap();
+        let next = build_operation_migration(
+            &apps,
+            std::slice::from_ref(&first),
+            "review",
+            "remove",
+            false,
+        )
+        .unwrap()
+        .unwrap();
         let graph = che_orm::MigrationGraph::new(vec![first, next]).unwrap();
         let actual = graph.replay(Default::default()).unwrap();
         assert!(actual.diff(&desired).unwrap().is_empty());
@@ -3529,9 +3540,15 @@ mod tests {
             .unwrap()
             .unwrap();
         write_operation_migration_and_register(&migrations_dir, &first).unwrap();
-        let second = build_operation_migration(&apps, &[first.clone()], "review", "manual", true)
-            .unwrap()
-            .unwrap();
+        let second = build_operation_migration(
+            &apps,
+            std::slice::from_ref(&first),
+            "review",
+            "manual",
+            true,
+        )
+        .unwrap()
+        .unwrap();
         write_operation_migration_and_register(&migrations_dir, &second).unwrap();
         let rest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let orm = rest.join("../che-orm");

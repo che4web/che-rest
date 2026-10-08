@@ -1168,10 +1168,10 @@ async fn destroy<V: ViewSet>(
     }
     state.database().delete::<V::Model>(id).await?;
     hooks.after_delete(&state, &values);
-    if let Some(signal) = viewset.signal_name(ViewAction::Delete) {
-        if viewset.signal_access(ViewAction::Delete).is_some() {
-            state.signals().publish(signal, json!({"id": id}));
-        }
+    if let Some(signal) = viewset.signal_name(ViewAction::Delete)
+        && viewset.signal_access(ViewAction::Delete).is_some()
+    {
+        state.signals().publish(signal, json!({"id": id}));
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1205,12 +1205,12 @@ where
         .await?
         .ok_or(AppError::NotFound)?;
     let payload = V::Serializer::to_json(item)?;
-    if let Some(signal) = viewset.signal_name(ViewAction::Create) {
-        if viewset.signal_access(ViewAction::Create).is_some() {
-            state
-                .signals()
-                .publish(signal, json!({"id": model.primary_key_value()}));
-        }
+    if let Some(signal) = viewset.signal_name(ViewAction::Create)
+        && viewset.signal_access(ViewAction::Create).is_some()
+    {
+        state
+            .signals()
+            .publish(signal, json!({"id": model.primary_key_value()}));
     }
     Ok((StatusCode::CREATED, Json(payload)))
 }
@@ -1260,12 +1260,12 @@ where
         .await?
         .ok_or(AppError::NotFound)?;
     let payload = V::Serializer::to_json(item)?;
-    if let Some(signal) = viewset.signal_name(ViewAction::Patch) {
-        if viewset.signal_access(ViewAction::Patch).is_some() {
-            state
-                .signals()
-                .publish(signal, json!({"id": model.primary_key_value()}));
-        }
+    if let Some(signal) = viewset.signal_name(ViewAction::Patch)
+        && viewset.signal_access(ViewAction::Patch).is_some()
+    {
+        state
+            .signals()
+            .publish(signal, json!({"id": model.primary_key_value()}));
     }
     Ok(Json(payload))
 }
@@ -1315,12 +1315,12 @@ where
         .await?
         .ok_or(AppError::NotFound)?;
     let payload = V::Serializer::to_json(item)?;
-    if let Some(signal) = viewset.signal_name(ViewAction::Update) {
-        if viewset.signal_access(ViewAction::Update).is_some() {
-            state
-                .signals()
-                .publish(signal, json!({"id": model.primary_key_value()}));
-        }
+    if let Some(signal) = viewset.signal_name(ViewAction::Update)
+        && viewset.signal_access(ViewAction::Update).is_some()
+    {
+        state
+            .signals()
+            .publish(signal, json!({"id": model.primary_key_value()}));
     }
     Ok(Json(payload))
 }

@@ -2,6 +2,7 @@
 
 ## 0.2.4
 
+- Raise the minimum supported Rust version to 1.88 to match the current dependencies.
 - Add validated image storage, authenticated media delivery, and declarative image actions with generated multipart clients.
 - Use conditional image replacement and retryable post-commit file cleanup; support async deletion hooks for cascaded records.
 

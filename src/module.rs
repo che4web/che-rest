@@ -277,19 +277,19 @@ impl ModuleContext {
         let mut document = document;
         add_filter_parameters::<V>(&mut document, &viewset);
         let extension_openapi = crate::rest::extensions::extension_openapi(&extensions);
-        if let Some(action_paths) = extension_openapi.get("paths").and_then(Value::as_object) {
-            if let Some(paths) = document["paths"].as_object_mut() {
-                for (path, item) in action_paths {
-                    let target = paths.entry(path.clone()).or_insert_with(|| json!({}));
-                    target
-                        .as_object_mut()
-                        .expect("OpenAPI path items are objects")
-                        .extend(
-                            item.as_object()
-                                .expect("OpenAPI path item is an object")
-                                .clone(),
-                        );
-                }
+        if let Some(action_paths) = extension_openapi.get("paths").and_then(Value::as_object)
+            && let Some(paths) = document["paths"].as_object_mut()
+        {
+            for (path, item) in action_paths {
+                let target = paths.entry(path.clone()).or_insert_with(|| json!({}));
+                target
+                    .as_object_mut()
+                    .expect("OpenAPI path items are objects")
+                    .extend(
+                        item.as_object()
+                            .expect("OpenAPI path item is an object")
+                            .clone(),
+                    );
             }
         }
         if let Some(schemas) = document["components"]["schemas"].as_object_mut() {
@@ -522,10 +522,9 @@ impl Server {
                         if let Some(target) = openapi_components
                             .get_mut("schemas")
                             .and_then(Value::as_object_mut)
+                            && let Some(values) = values.as_object()
                         {
-                            if let Some(values) = values.as_object() {
-                                target.extend(values.clone());
-                            }
+                            target.extend(values.clone());
                         }
                     } else {
                         openapi_components.insert(name.clone(), values.clone());

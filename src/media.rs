@@ -535,6 +535,10 @@ impl ImageStorage {
 
     /// Compare-and-swap the image key and optional server-owned metadata in one
     /// database update. A losing request removes its own file, not the winner's.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Keep the public replacement API consistent with replace, adding only the metadata callback"
+    )]
     pub async fn replace_with<M, F>(
         &self,
         state: &AppState,

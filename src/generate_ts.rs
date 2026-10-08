@@ -693,8 +693,8 @@ mod tests {
             app_name: "diagrams",
             model_name: "Board".into(),
             resource: "boards".into(),
-            fields: vec![field.clone()],
-            list_fields: vec![field.clone()],
+            fields: vec![field],
+            list_fields: vec![field],
             columns: vec![crate::module::ApiColumn {
                 name: "preview_storage_name",
                 field_name: "preview",
@@ -804,7 +804,7 @@ mod tests {
             related_model: None,
             many: false,
         };
-        let mut description = id.clone();
+        let mut description = id;
         description.name = "description";
         description.source = "description";
         description.rust_type = "String";
@@ -812,13 +812,13 @@ mod tests {
             app_name: "knowledge",
             model_name: "Module".into(),
             resource: "modules".into(),
-            fields: vec![id.clone(), description],
+            fields: vec![id, description],
             list_fields: vec![id],
             columns: vec![],
             filters: vec![],
             extensions: vec![],
         };
-        let types = models(&[endpoint.clone()]);
+        let types = models(std::slice::from_ref(&endpoint));
         assert!(types.contains("export interface ModuleListItem {\n  id: number;\n}"));
         assert!(!types.contains("export interface ModuleListItem {\n  id: number;\n  description"));
         assert!(api(&[endpoint]).contains("ModuleListParams, ModuleListItem>"));

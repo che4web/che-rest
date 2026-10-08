@@ -8,7 +8,8 @@
 ## Verification Commands
 - `cargo fmt --check` passes and is the fastest formatting check.
 - `cargo test` is the main library and integration test check, including media storage, route authorization, and ViewSet image cleanup tests.
-- `cargo clippy --all-targets -- -D warnings` currently fails on existing lints in `src/management.rs` (`single_match`) and `src/module.rs` (`should_implement_trait`); do not present a change as clippy-clean unless those baseline lints are fixed.
+- `cargo clippy --all-targets -- -D warnings` passes and is required for release verification.
+- The minimum supported Rust version is 1.88; verify packaged builds on that toolchain when changing dependencies.
 
 ## Framework Gotchas
 - `CrudViewSet::<Model, Serializer>::new("/resource")` uses serializer types; no serializer instance is constructed.
