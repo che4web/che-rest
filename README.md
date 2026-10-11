@@ -2,6 +2,9 @@
 
 Breaking v2 REST layer for `che-orm` applications.
 
+The library targets `che-orm 0.3`. Database connection methods are async;
+REST viewsets and image actions currently require models with `i64` primary keys.
+
 The current v2 surface is the typed ORM2 CRUD router. A viewset builds its
 database-independent queryset in `get_queryset`; database access happens only
 when the queryset is materialized:

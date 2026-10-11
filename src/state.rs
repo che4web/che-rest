@@ -37,10 +37,7 @@ impl AppState {
 
     pub async fn from_config_file(path: impl AsRef<Path>) -> AppResult<Self> {
         let config = AppConfig::from_file(path)?;
-        let database = Database::connect_with_pool_size(
-            sqlite_path(&config.database.url),
-            config.database.max_connections as usize,
-        )?;
+        let database = config.database.connect().await?;
         Ok(Self {
             config,
             database,
@@ -98,11 +95,3 @@ impl AppState {
 
 pub type CurrentUserResolverFuture<'a, T> =
     Pin<Box<dyn Future<Output = AppResult<Option<T>>> + Send + 'a>>;
-
-fn sqlite_path(url: &str) -> String {
-    url.strip_prefix("sqlite://")
-        .and_then(|value| value.split('?').next())
-        .filter(|value| !value.is_empty())
-        .unwrap_or(url)
-        .to_string()
-}

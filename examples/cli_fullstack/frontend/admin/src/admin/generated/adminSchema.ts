@@ -6,7 +6,7 @@ import {
   taskApi,
 } from "../../generated/api";
 
-export type AdminFieldType = "integer" | "text" | "boolean" | "real" | "datetime";
+export type AdminFieldType = "integer" | "text" | "boolean" | "real" | "datetime" | "image";
 
 export interface AdminField { name: string; source: string; type: AdminFieldType; label: string; readOnly: boolean; writeOnly: boolean; required: boolean; nullable: boolean; hasDefault: boolean; choices?: string[]; relatedModel?: string; relationField?: string; }
 
@@ -14,7 +14,7 @@ export interface AdminFilter { name: string; source: string; type: AdminFieldTyp
 
 export interface AdminModelApi { list: (params?: any) => Promise<{ count: number; results: any[] }>; retrieve: (id: number) => Promise<any>; create: (payload: any) => Promise<any>; update: (id: number, payload: any) => Promise<any>; remove: (id: number) => Promise<void>; }
 
-export interface AdminModel { appName: string; name: string; resource: string; api: AdminModelApi; fields: AdminField[]; filters: AdminFilter[]; }
+export interface AdminModel { appName: string; name: string; resource: string; api: AdminModelApi; fields: AdminField[]; listFields: string[]; filters: AdminFilter[]; }
 export interface AdminApp { name: string; models: AdminModel[]; }
 
 export const adminModels: AdminModel[] = [
@@ -24,6 +24,7 @@ export const adminModels: AdminModel[] = [
       { name: "id", source: "id", type: "integer", label: "Id", readOnly: true, writeOnly: false, required: false, nullable: false, hasDefault: false },
       { name: "username", source: "username", type: "text", label: "Username", readOnly: true, writeOnly: false, required: false, nullable: false, hasDefault: false },
     ],
+    listFields: ["id", "username", ],
     filters: [
       { name: "username__contains", source: "username", type: "text", label: "Username Contains", nullable: false },
     ],
@@ -39,6 +40,7 @@ export const adminModels: AdminModel[] = [
       { name: "created_at", source: "created_at", type: "datetime", label: "Created At", readOnly: true, writeOnly: false, required: false, nullable: false, hasDefault: true },
       { name: "updated_at", source: "updated_at", type: "datetime", label: "Updated At", readOnly: true, writeOnly: false, required: false, nullable: false, hasDefault: true },
     ],
+    listFields: ["id", "author", "assignee_id", "name", "status", "created_at", "updated_at", ],
     filters: [
       { name: "id", source: "id", type: "integer", label: "Id", nullable: false },
       { name: "name__contains", source: "name", type: "text", label: "Name Contains", nullable: false },

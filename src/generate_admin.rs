@@ -344,6 +344,8 @@ fn admin_routes(endpoints: &[ApiEndpoint]) -> String {
 fn admin_type(rust_type: &str, relation: bool) -> &'static str {
     if rust_type.contains("ImageField") {
         "image"
+    } else if rust_type.contains("f64") {
+        "real"
     } else if relation || rust_type.contains("i64") {
         "integer"
     } else if rust_type == "bool" {

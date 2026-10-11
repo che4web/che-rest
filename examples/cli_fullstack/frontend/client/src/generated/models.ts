@@ -3,21 +3,6 @@
 
 import type { ListParams } from "./api_client";
 
-export interface User {
-  id: number;
-  username: string;
-}
-
-export interface UserCreate {
-}
-
-export interface UserUpdate {
-}
-
-export interface UserListParams extends ListParams {
-  username__contains?: string;
-}
-
 export interface Task {
   id: number;
   author: User;
@@ -46,4 +31,19 @@ export interface TaskListParams extends ListParams {
   status?: "draft" | "in_progress" | "done";
   created_at?: string;
   updated_at?: string;
+}
+
+export interface User {
+  id: number;
+  username: string;
+}
+
+export interface UserCreate {
+}
+
+export interface UserUpdate {
+}
+
+export interface UserListParams extends ListParams {
+  username__contains?: string;
 }

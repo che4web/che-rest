@@ -14,6 +14,7 @@ use che_orm::{
 use clap::{Parser, Subcommand};
 
 use crate::auth::{User, hash_password};
+use crate::config::sqlite_path;
 use crate::{AppConfig, AppModule, AppState, InstalledApps, StartAppOptions, StartProjectOptions};
 
 type ManageResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -361,7 +362,7 @@ impl Management {
             } => create_superuser(username, password, config).await?,
             CommandKind::GenerateTs { out, config } => {
                 AppConfig::from_file(config)?;
-                let state = AppState::from_database(Database::connect_in_memory()?);
+                let state = AppState::from_database(Database::connect_in_memory().await?);
                 let endpoints = self.apps.api_endpoints(state.clone());
                 let signals = self.apps.api_signals(state);
                 let files = crate::generate_ts::generate(
@@ -374,7 +375,7 @@ impl Management {
             }
             CommandKind::GenerateAdmin { out, config, force } => {
                 AppConfig::from_file(config)?;
-                let state = AppState::from_database(Database::connect_in_memory()?);
+                let state = AppState::from_database(Database::connect_in_memory().await?);
                 let endpoints = self.apps.api_endpoints(state.clone());
                 let signals = self.apps.api_signals(state);
                 let generated = crate::generate_ts::generate(
@@ -1384,10 +1385,7 @@ async fn run_sqlite_migrations(
     config: &AppConfig,
     migrations: Vec<refinery::Migration>,
 ) -> ManageResult<usize> {
-    let database = Database::connect_with_pool_size(
-        sqlite_path(&config.database.url),
-        config.database.max_connections as usize,
-    )?;
+    let database = config.database.connect().await?;
     let pool = database.pool().clone();
     let result = pool
         .get()
@@ -1621,18 +1619,8 @@ async fn run_operation_migrations(
 ) -> ManageResult<usize> {
     let graph = MigrationGraph::new(migrations)
         .map_err(|error| format!("invalid operation migration graph: {error}"))?;
-    let database = Database::connect_with_pool_size(
-        sqlite_path(&config.database.url),
-        config.database.max_connections as usize,
-    )?;
-    let pool = database.pool().clone();
-    let result = pool
-        .get()
-        .await?
-        .interact(move |connection| apply_operation_migrations_on_connection(connection, graph))
-        .await
-        .map_err(|error| format!("database interaction error: {error}"))?;
-    result.map_err(|error| error as Box<dyn std::error::Error>)
+    let database = config.database.connect().await?;
+    Ok(database.migrate(graph).await?)
 }
 
 async fn run_operation_migrations_to(
@@ -1642,25 +1630,14 @@ async fn run_operation_migrations_to(
 ) -> ManageResult<usize> {
     let graph = MigrationGraph::new(migrations)
         .map_err(|error| format!("invalid operation migration graph: {error}"))?;
-    let database = Database::connect_with_pool_size(
-        sqlite_path(&config.database.url),
-        config.database.max_connections as usize,
-    )?;
-    let pool = database.pool().clone();
-    let result = pool
-        .get()
-        .await?
-        .interact(move |connection| {
-            apply_operation_migrations_to_on_connection(connection, graph, Some(target))
-        })
-        .await
-        .map_err(|error| format!("database interaction error: {error}"))?;
-    result.map_err(|error| error as Box<dyn std::error::Error>)
+    let database = config.database.connect().await?;
+    Ok(database.migrate_to(graph, Some(target)).await?)
 }
 
+#[cfg(test)]
+use che_orm::migration::sqlite_executor::apply_operation_migrations_on_connection;
 use che_orm::migration::sqlite_executor::{
-    applied_operation_migrations, apply_operation_migrations_on_connection,
-    apply_operation_migrations_to_on_connection, pending_operation_migrations,
+    applied_operation_migrations, pending_operation_migrations,
 };
 
 fn resolve_operation_migration_target(
@@ -1942,18 +1919,18 @@ async fn operation_migration_status(
 ) -> ManageResult<usize> {
     let graph = MigrationGraph::new(migrations)
         .map_err(|error| format!("invalid operation migration graph: {error}"))?;
-    let database = Database::connect_with_pool_size(
-        sqlite_path(&config.database.url),
-        config.database.max_connections as usize,
-    )?;
-    let pool = database.pool().clone();
-    let result = pool
-        .get()
-        .await?
-        .interact(move |connection| operation_migration_status_for_connection(connection, graph))
-        .await
-        .map_err(|error| format!("database interaction error: {error}"))?;
-    result.map_err(|error| error as Box<dyn std::error::Error>)
+    let database = config.database.connect().await?;
+    let applied = database.migration_history().await?;
+    let pending = pending_operation_migrations(&graph, &applied)
+        .map_err(|error| error as Box<dyn std::error::Error>)?;
+    for migration in graph.ordered() {
+        if applied.contains_key(&(migration.id.app.clone(), migration.id.name.clone())) {
+            println!("applied {}:{}", migration.id.app, migration.id.name);
+        } else {
+            println!("pending {}:{}", migration.id.app, migration.id.name);
+        }
+    }
+    Ok(pending.len())
 }
 
 async fn verify_operation_migrations(
@@ -1969,22 +1946,6 @@ async fn verify_operation_migrations(
     Ok(())
 }
 
-fn operation_migration_status_for_connection(
-    connection: &che_orm::rusqlite::Connection,
-    graph: MigrationGraph,
-) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
-    let applied = applied_operation_migrations(connection)?;
-    let pending = pending_operation_migrations(&graph, &applied)?;
-    for migration in graph.ordered() {
-        if applied.contains_key(&(migration.id.app.clone(), migration.id.name.clone())) {
-            println!("applied {}:{}", migration.id.app, migration.id.name);
-        } else {
-            println!("pending {}:{}", migration.id.app, migration.id.name);
-        }
-    }
-    Ok(pending.len())
-}
-
 #[cfg(any())]
 async fn verify_migrations(config: &AppConfig, dir: PathBuf) -> ManageResult<()> {
     let pending_count = migration_status(config, dir.clone()).await?;
@@ -1998,18 +1959,15 @@ async fn verify_migrations(config: &AppConfig, dir: PathBuf) -> ManageResult<()>
 }
 
 async fn verify_foreign_keys(config: &AppConfig) -> ManageResult<()> {
-    let database = Database::connect_with_pool_size(
-        sqlite_path(&config.database.url),
-        config.database.max_connections as usize,
-    )?;
-    let pool = database.pool().clone();
-    let result = pool
-        .get()
+    let database = config.database.connect().await?;
+    if !database
+        .query_sql("PRAGMA foreign_key_check;", vec![])
         .await?
-        .interact(|connection| assert_foreign_keys_valid(connection))
-        .await
-        .map_err(|error| format!("database interaction error: {error}"))?;
-    result.map_err(|error| error as Box<dyn std::error::Error>)
+        .is_empty()
+    {
+        return Err("migration left foreign key violations".into());
+    }
+    Ok(())
 }
 
 #[cfg(any())]
@@ -2027,10 +1985,7 @@ where
         + Send
         + 'static,
 {
-    let database = Database::connect_with_pool_size(
-        sqlite_path(&config.database.url),
-        config.database.max_connections as usize,
-    )?;
+    let database = config.database.connect().await?;
     let pool = database.pool().clone();
     let result = pool
         .get()
@@ -2046,6 +2001,7 @@ where
     result.map_err(|error| error as Box<dyn std::error::Error>)
 }
 
+#[cfg(any())]
 fn assert_foreign_keys_valid(
     connection: &che_orm::rusqlite::Connection,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -2114,14 +2070,6 @@ fn load_retired_sql_migrations(dir: &PathBuf) -> ManageResult<Vec<refinery::Migr
     }
     migrations.sort();
     Ok(migrations)
-}
-
-fn sqlite_path(url: &str) -> String {
-    url.strip_prefix("sqlite://")
-        .and_then(|value| value.split('?').next())
-        .filter(|value| !value.is_empty())
-        .unwrap_or(url)
-        .to_string()
 }
 
 #[cfg(any())]
@@ -3606,6 +3554,7 @@ fn main() {
         )
         .unwrap();
         Database::connect(database_path.to_string_lossy())
+            .await
             .unwrap()
             .create_table::<User>()
             .await
@@ -3627,7 +3576,9 @@ fn main() {
             .await
             .unwrap();
 
-        let database = Database::connect(database_path.to_string_lossy()).unwrap();
+        let database = Database::connect(database_path.to_string_lossy())
+            .await
+            .unwrap();
         let user = database
             .fetch_one(User::query().filter(User::USERNAME.eq("admin")))
             .await
@@ -3747,6 +3698,22 @@ fn main() {
 
         let _ = fs::remove_dir_all(migrations);
         let _ = fs::remove_file(database_path);
+    }
+
+    #[tokio::test]
+    async fn memory_config_supports_migration_management() {
+        let config: AppConfig = toml::from_str("[database]\nurl = 'sqlite://:memory:'").unwrap();
+        assert_eq!(
+            super::run_operation_migrations(&config, vec![])
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            operation_migration_status(&config, vec![]).await.unwrap(),
+            0
+        );
+        super::verify_foreign_keys(&config).await.unwrap();
     }
 
     #[tokio::test]

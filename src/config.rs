@@ -94,6 +94,26 @@ impl Default for DatabaseConfig {
     }
 }
 
+impl DatabaseConfig {
+    pub(crate) async fn connect(&self) -> Result<che_orm::Database, che_orm::OrmError> {
+        let path = sqlite_path(&self.url);
+        let pool_size = if path == ":memory:" {
+            1
+        } else {
+            self.max_connections as usize
+        };
+        che_orm::Database::connect_with_pool_size(path, pool_size).await
+    }
+}
+
+pub(crate) fn sqlite_path(url: &str) -> String {
+    url.strip_prefix("sqlite://")
+        .and_then(|value| value.split('?').next())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(url)
+        .to_string()
+}
+
 impl AppConfig {
     pub fn from_file(path: impl AsRef<Path>) -> AppResult<Self> {
         let content = std::fs::read_to_string(path)?;

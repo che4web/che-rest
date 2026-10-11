@@ -323,13 +323,15 @@ fn field_ts_type(endpoint: &ApiEndpoint, field: &che_orm::SerializerField) -> St
             if value.contains("i64")
                 || value.contains("i32")
                 || value.contains("u64")
-                || value.contains("usize") =>
+                || value.contains("usize")
+                || value.contains("f64") =>
         {
             "number".into()
         }
         "bool" => "boolean".into(),
         "String" | "&str" | "Option<String>" => "string".into(),
         value if value.contains("ImageField") => "string".into(),
+        value if value.contains("Uuid") => "string".into(),
         value if value.contains("OffsetDateTime") => "string".into(),
         _ => "unknown".into(),
     };

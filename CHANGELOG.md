@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Upgrade to `che-orm 0.3.0`, using async database connections and the public migration API.
+- Keep REST and image actions on integer primary keys; describe real and UUID columns in OpenAPI.
+- Use a single connection for configured in-memory SQLite databases in server and management commands.
+- Generate numeric admin inputs for real fields and typed TypeScript real/UUID fields, including nullable columns.
+
 ## 0.2.4
 
 - Raise the minimum supported Rust version to 1.88 to match the current dependencies.

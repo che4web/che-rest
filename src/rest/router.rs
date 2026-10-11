@@ -444,7 +444,7 @@ where
 impl<M, R, Relation> RestQuerySet for SelectRelatedQuery<M, R, Relation, i64>
 where
     M: Model + Send + Sync + 'static,
-    R: Model + Send + Sync + 'static,
+    R: Model<PrimaryKey = i64> + Send + Sync + 'static,
     Relation: Send + Sync + 'static,
 {
     type Model = M;
@@ -498,7 +498,7 @@ where
 impl<M, R, Relation> RestQuerySet for SelectRelatedQuery<M, R, Relation, Option<i64>>
 where
     M: Model + Send + Sync + 'static,
-    R: Model + Send + Sync + 'static,
+    R: Model<PrimaryKey = i64> + Send + Sync + 'static,
     Relation: Send + Sync + 'static,
 {
     type Model = M;
@@ -551,7 +551,7 @@ where
 
 impl<M, R, Relation> RestQuerySet for PrefetchRelatedQuery<M, R, Relation, i64>
 where
-    M: Model + Send + Sync + 'static,
+    M: Model<PrimaryKey = i64> + Send + Sync + 'static,
     R: Model + Send + Sync + 'static,
     Relation: Send + Sync + 'static,
 {
@@ -600,7 +600,8 @@ where
 }
 
 pub trait ViewSet: Clone + Send + Sync + 'static {
-    type Model: Model + Send + Sync + 'static;
+    /// REST routes currently use integer primary keys.
+    type Model: Model<PrimaryKey = i64> + Send + Sync + 'static;
     type Serializer: ModelSerializer<Model = Self::Model>
         + ModelWriteSerializer<Model = Self::Model>
         + Serialize
@@ -727,7 +728,7 @@ impl<M, S> CrudViewSet<M, S> {
 }
 impl<M, S> ViewSet for CrudViewSet<M, S>
 where
-    M: Model + Send + Sync + 'static,
+    M: Model<PrimaryKey = i64> + Send + Sync + 'static,
     S: ModelSerializer<Model = M, Input = M>
         + ModelWriteSerializer<Model = M>
         + Serialize
@@ -1020,6 +1021,8 @@ fn schema_ref(name: &str) -> serde_json::Value {
 pub fn openapi_column_schema(column: &che_orm::ColumnSchema) -> serde_json::Value {
     let mut schema = match column.column_type {
         che_orm::ColumnType::Integer => json!({"type": "integer", "format": "int64"}),
+        che_orm::ColumnType::Real => json!({"type": "number", "format": "double"}),
+        che_orm::ColumnType::Uuid => json!({"type": "string", "format": "uuid"}),
         che_orm::ColumnType::Text => json!({"type": "string"}),
         che_orm::ColumnType::Binary => json!({"type": "string", "format": "byte"}),
         che_orm::ColumnType::Boolean => json!({"type": "boolean"}),

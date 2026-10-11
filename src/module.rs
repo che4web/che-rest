@@ -194,7 +194,7 @@ impl ModuleContext {
 
     pub fn viewset<M, S>(&mut self, viewset: CrudViewSet<M, S>)
     where
-        M: Model + Send + Sync + 'static,
+        M: Model<PrimaryKey = i64> + Send + Sync + 'static,
         S: ModelSerializer<Model = M, Input = M>
             + che_orm::ModelWriteSerializer<Model = M>
             + serde::Serialize
@@ -439,9 +439,9 @@ mod tests {
         assert_eq!(state.objects()[0].app, "schema_object_app");
     }
 
-    #[test]
-    fn lifecycle_signals_are_opt_in() {
-        let state = AppState::from_database(che_orm::Database::connect_in_memory().unwrap());
+    #[tokio::test]
+    async fn lifecycle_signals_are_opt_in() {
+        let state = AppState::from_database(che_orm::Database::connect_in_memory().await.unwrap());
         let mut context = ModuleContext::new(state.clone());
 
         context.viewset_with(crate::auth::AdminUserViewSet);
@@ -449,9 +449,9 @@ mod tests {
         assert!(state.signals().public_signals().is_empty());
     }
 
-    #[test]
-    fn viewset_path_drives_metadata_and_openapi() {
-        let state = AppState::from_database(che_orm::Database::connect_in_memory().unwrap());
+    #[tokio::test]
+    async fn viewset_path_drives_metadata_and_openapi() {
+        let state = AppState::from_database(che_orm::Database::connect_in_memory().await.unwrap());
         let mut context = ModuleContext::new(state);
 
         context.viewset_with(crate::auth::AdminUserViewSet);

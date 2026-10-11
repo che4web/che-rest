@@ -4,7 +4,7 @@
 import { shallowRef, ref } from "vue";
 import type { BaseEntity, ListParams, ModelApi } from "./api_client";
 export interface UseModelItemOptions { onError?: (message: string, error: unknown) => void; }
-export function useModelItem<T extends BaseEntity, CreateDTO = Partial<T>, UpdateDTO = Partial<T>, Params extends ListParams = ListParams>(api: ModelApi<T, CreateDTO, UpdateDTO, Params>, options: UseModelItemOptions = {}) {
+export function useModelItem<T extends BaseEntity, CreateDTO = Partial<T>, UpdateDTO = Partial<T>, Params extends ListParams = ListParams, ListItem extends BaseEntity = T>(api: ModelApi<T, CreateDTO, UpdateDTO, Params, ListItem>, options: UseModelItemOptions = {}) {
   const item = shallowRef<T | null>(null); const loading = ref(false); const error = ref("");
   async function retrieve(id: number) { return run(() => api.retrieve(id), "Unable to load object"); }
   async function create(payload: CreateDTO) { return run(() => api.create(payload), "Unable to create object"); }

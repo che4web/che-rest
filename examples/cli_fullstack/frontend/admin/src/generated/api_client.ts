@@ -6,8 +6,8 @@ import axios from "axios";
 export interface BaseEntity { id?: number; }
 export interface ListParams { ordering?: string; limit?: number; offset?: number; [key: string]: string | number | boolean | null | undefined; }
 export interface PaginatedResponse<T> { count: number; results: T[]; }
-export interface ModelApi<T extends BaseEntity, CreateDTO = Partial<T>, UpdateDTO = Partial<T>, Params extends ListParams = ListParams> {
-  list: (params?: Params) => Promise<PaginatedResponse<T>>;
+export interface ModelApi<T extends BaseEntity, CreateDTO = Partial<T>, UpdateDTO = Partial<T>, Params extends ListParams = ListParams, ListItem extends BaseEntity = T> {
+  list: (params?: Params) => Promise<PaginatedResponse<ListItem>>;
   retrieve: (id: number) => Promise<T>;
   create: (payload: CreateDTO) => Promise<T>;
   update: (id: number, payload: UpdateDTO) => Promise<T>;
@@ -17,10 +17,10 @@ export interface ModelApi<T extends BaseEntity, CreateDTO = Partial<T>, UpdateDT
 let authToken: string | null = null;
 export function setAuthToken(token: string | null) { authToken = token; }
 apiClient.interceptors.request.use((config) => { if (authToken) config.headers.Authorization = `Token ${authToken}`; else delete config.headers.Authorization; return config; });
-export function createModelApi<T extends BaseEntity, CreateDTO = Partial<T>, UpdateDTO = Partial<T>, Params extends ListParams = ListParams>(resource: string): ModelApi<T, CreateDTO, UpdateDTO, Params> {
+export function createModelApi<T extends BaseEntity, CreateDTO = Partial<T>, UpdateDTO = Partial<T>, Params extends ListParams = ListParams, ListItem extends BaseEntity = T>(resource: string): ModelApi<T, CreateDTO, UpdateDTO, Params, ListItem> {
   const normalized = resource.endsWith("/") ? resource : `${resource}/`;
   return {
-    async list(params) { return (await apiClient.get<PaginatedResponse<T>>(normalized, { params })).data; },
+    async list(params) { return (await apiClient.get<PaginatedResponse<ListItem>>(normalized, { params })).data; },
     async retrieve(id) { return (await apiClient.get<T>(`${normalized}${id}/`)).data; },
     async create(payload) { return (await apiClient.post<T>(normalized, payload)).data; },
     async update(id, payload) { return (await apiClient.patch<T>(`${normalized}${id}/`, payload)).data; },

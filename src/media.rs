@@ -512,7 +512,7 @@ impl ImageStorage {
 
     /// Store and attach a replacement only after validation succeeds. If the
     /// database write fails, discard the new file and leave the old one intact.
-    pub async fn replace<M: Model + Send + 'static>(
+    pub async fn replace<M: Model<PrimaryKey = i64> + Send + 'static>(
         &self,
         state: &AppState,
         id: i64,
@@ -550,7 +550,7 @@ impl ImageStorage {
         prepare: F,
     ) -> AppResult<ImageField>
     where
-        M: Model + Send + 'static,
+        M: Model<PrimaryKey = i64> + Send + 'static,
         F: FnOnce(&ImageField, ValidatedWrite<M>) -> AppResult<ValidatedWrite<M>>,
     {
         let next = self.save(bytes, policy)?;
@@ -592,7 +592,7 @@ impl ImageStorage {
         Ok(next)
     }
 
-    pub async fn clear<M: Model + Send + 'static>(
+    pub async fn clear<M: Model<PrimaryKey = i64> + Send + 'static>(
         &self,
         state: &AppState,
         id: i64,
@@ -611,7 +611,7 @@ impl ImageStorage {
         prepare: F,
     ) -> AppResult<()>
     where
-        M: Model + Send + 'static,
+        M: Model<PrimaryKey = i64> + Send + 'static,
         F: FnOnce(ValidatedWrite<M>) -> AppResult<ValidatedWrite<M>>,
     {
         let reference = column.column();
@@ -832,7 +832,7 @@ impl ImageStorage {
     }
 }
 
-async fn image_update_conflict<M: Model + Send + 'static>(
+async fn image_update_conflict<M: Model<PrimaryKey = i64> + Send + 'static>(
     state: &AppState,
     id: i64,
 ) -> AppResult<AppError> {
@@ -1041,7 +1041,7 @@ mod tests {
     #[tokio::test]
     async fn viewset_deletion_removes_owned_image_after_database_delete() {
         let root = std::env::temp_dir().join(format!("che-rest-media-{}", rand::random::<u64>()));
-        let mut state = AppState::from_database(Database::connect_in_memory().unwrap());
+        let mut state = AppState::from_database(Database::connect_in_memory().await.unwrap());
         state.config.media.root = root.to_string_lossy().into_owned();
         state.database().create_table::<ImageItem>().await.unwrap();
         let mut png = Cursor::new(Vec::new());
@@ -1099,7 +1099,7 @@ mod tests {
     #[tokio::test]
     async fn failed_post_commit_cleanup_does_not_fail_delete_or_suppress_signal() {
         let root = std::env::temp_dir().join(format!("che-rest-media-{}", rand::random::<u64>()));
-        let mut state = AppState::from_database(Database::connect_in_memory().unwrap());
+        let mut state = AppState::from_database(Database::connect_in_memory().await.unwrap());
         state.config.media.root = root.to_string_lossy().into_owned();
         state.database().create_table::<ImageItem>().await.unwrap();
         let image = ImageField::new("items/blocked.png");
@@ -1163,7 +1163,7 @@ mod tests {
     #[tokio::test]
     async fn replace_discards_image_when_model_disappears() {
         let root = std::env::temp_dir().join(format!("che-rest-media-{}", rand::random::<u64>()));
-        let mut state = AppState::from_database(Database::connect_in_memory().unwrap());
+        let mut state = AppState::from_database(Database::connect_in_memory().await.unwrap());
         state.config.media.root = root.to_string_lossy().into_owned();
         state.database().create_table::<ImageItem>().await.unwrap();
         let mut png = Cursor::new(Vec::new());
@@ -1188,7 +1188,7 @@ mod tests {
     #[tokio::test]
     async fn stale_replacement_and_clear_cannot_overwrite_winner_or_leave_files() {
         let root = std::env::temp_dir().join(format!("che-rest-media-{}", rand::random::<u64>()));
-        let mut state = AppState::from_database(Database::connect_in_memory().unwrap());
+        let mut state = AppState::from_database(Database::connect_in_memory().await.unwrap());
         state.config.media.root = root.to_string_lossy().into_owned();
         state.database().create_table::<ImageItem>().await.unwrap();
         let item = state
@@ -1255,7 +1255,7 @@ mod tests {
     #[tokio::test]
     async fn conditional_image_and_metadata_update_commit_together() {
         let root = std::env::temp_dir().join(format!("che-rest-media-{}", rand::random::<u64>()));
-        let mut state = AppState::from_database(Database::connect_in_memory().unwrap());
+        let mut state = AppState::from_database(Database::connect_in_memory().await.unwrap());
         state.config.media.root = root.to_string_lossy().into_owned();
         state
             .database()
@@ -1320,7 +1320,7 @@ mod tests {
     #[tokio::test]
     async fn replacement_succeeds_when_old_file_cleanup_must_be_queued() {
         let root = std::env::temp_dir().join(format!("che-rest-media-{}", rand::random::<u64>()));
-        let mut state = AppState::from_database(Database::connect_in_memory().unwrap());
+        let mut state = AppState::from_database(Database::connect_in_memory().await.unwrap());
         state.config.media.root = root.to_string_lossy().into_owned();
         state.database().create_table::<ImageItem>().await.unwrap();
         let old = ImageField::new("items/blocked.png");
@@ -1396,7 +1396,7 @@ mod tests {
 
     #[tokio::test]
     async fn media_route_requires_authentication() {
-        let state = AppState::from_database(Database::connect_in_memory().unwrap());
+        let state = AppState::from_database(Database::connect_in_memory().await.unwrap());
         let router = Router::new()
             .route("/media/{*key}", get(download_image))
             .layer(Extension(state));
@@ -1415,7 +1415,7 @@ mod tests {
     #[tokio::test]
     async fn declared_image_field_uploads_replaces_and_clears() {
         let root = std::env::temp_dir().join(format!("che-rest-media-{}", rand::random::<u64>()));
-        let mut state = AppState::from_database(Database::connect_in_memory().unwrap());
+        let mut state = AppState::from_database(Database::connect_in_memory().await.unwrap());
         state.config.media.root = root.to_string_lossy().into_owned();
         state.database().create_table::<ImageItem>().await.unwrap();
         let item = state
@@ -1567,7 +1567,7 @@ mod tests {
     #[tokio::test]
     async fn declared_image_creation_checks_domain_data_and_cleans_failed_uploads() {
         let root = std::env::temp_dir().join(format!("che-rest-media-{}", rand::random::<u64>()));
-        let mut state = AppState::from_database(Database::connect_in_memory().unwrap());
+        let mut state = AppState::from_database(Database::connect_in_memory().await.unwrap());
         state.config.media.root = root.to_string_lossy().into_owned();
         let mut config = ViewSetConfig::<ImageViewSet>::new("/image-items");
         config
