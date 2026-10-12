@@ -209,7 +209,7 @@ impl<V: ViewSet> ImageFieldEndpoint<V> {
         state: &AppState,
         viewset: &V,
         principal: Option<&CurrentPrincipal>,
-        id: i64,
+        id: <V::Model as Model>::PrimaryKey,
     ) -> AppResult<V::Model> {
         if self.authorize.is_none() {
             V::Permission::default().check(state, principal, ViewAction::Update)?;
@@ -246,7 +246,7 @@ impl<V: ViewSet> ImageFieldEndpoint<V> {
         state: AppState,
         viewset: V,
         principal: Option<CurrentPrincipal>,
-        id: i64,
+        id: <V::Model as Model>::PrimaryKey,
         multipart: Multipart,
     ) -> AppResult<axum::Json<ImageUploadResponse>> {
         let form = parse_image_form(multipart, self.policy.max_bytes).await?;
@@ -284,7 +284,7 @@ impl<V: ViewSet> ImageFieldEndpoint<V> {
         state: AppState,
         viewset: V,
         principal: Option<CurrentPrincipal>,
-        id: i64,
+        id: <V::Model as Model>::PrimaryKey,
         multipart: Multipart,
     ) -> AppResult<StatusCode> {
         let form = parse_image_form(multipart, self.policy.max_bytes).await?;
@@ -343,7 +343,7 @@ impl<V: ViewSet> ViewSetExtension<V> for ImageFieldEndpoint<V> {
                 move |Extension(state): Extension<AppState>,
                       Extension(viewset): Extension<V>,
                       who: Option<Extension<CurrentPrincipal>>,
-                      AxumPath(id): AxumPath<i64>,
+                      AxumPath(id): AxumPath<<V::Model as Model>::PrimaryKey>,
                       form: Multipart| {
                     let endpoint = upload.clone();
                     async move {
@@ -364,7 +364,7 @@ impl<V: ViewSet> ViewSetExtension<V> for ImageFieldEndpoint<V> {
                 move |Extension(state): Extension<AppState>,
                       Extension(viewset): Extension<V>,
                       who: Option<Extension<CurrentPrincipal>>,
-                      AxumPath(id): AxumPath<i64>,
+                      AxumPath(id): AxumPath<<V::Model as Model>::PrimaryKey>,
                       form: Multipart| {
                     let endpoint = clear.clone();
                     async move {
@@ -515,7 +515,7 @@ impl ImageStorage {
     pub async fn replace<M: Model + Send + 'static>(
         &self,
         state: &AppState,
-        id: i64,
+        id: M::PrimaryKey,
         column: ModelField<M, Option<ImageField>>,
         previous: Option<&ImageField>,
         bytes: &[u8],
@@ -538,7 +538,7 @@ impl ImageStorage {
     pub async fn replace_with<M, F>(
         &self,
         state: &AppState,
-        id: i64,
+        id: M::PrimaryKey,
         column: ModelField<M, Option<ImageField>>,
         previous: Option<&ImageField>,
         bytes: &[u8],
@@ -591,7 +591,7 @@ impl ImageStorage {
     pub async fn clear<M: Model + Send + 'static>(
         &self,
         state: &AppState,
-        id: i64,
+        id: M::PrimaryKey,
         column: ModelField<M, Option<ImageField>>,
         previous: Option<&ImageField>,
     ) -> AppResult<()> {
@@ -601,7 +601,7 @@ impl ImageStorage {
     pub async fn clear_with<M, F>(
         &self,
         state: &AppState,
-        id: i64,
+        id: M::PrimaryKey,
         column: ModelField<M, Option<ImageField>>,
         previous: Option<&ImageField>,
         prepare: F,
@@ -830,7 +830,7 @@ impl ImageStorage {
 
 async fn image_update_conflict<M: Model + Send + 'static>(
     state: &AppState,
-    id: i64,
+    id: M::PrimaryKey,
 ) -> AppResult<AppError> {
     Ok(if state.database().get::<M>(id).await?.is_some() {
         AppError::Conflict("image has changed".into())
@@ -1037,7 +1037,7 @@ mod tests {
     #[tokio::test]
     async fn viewset_deletion_removes_owned_image_after_database_delete() {
         let root = std::env::temp_dir().join(format!("che-rest-media-{}", rand::random::<u64>()));
-        let mut state = AppState::from_database(Database::connect_in_memory().unwrap());
+        let mut state = AppState::from_database(Database::connect_in_memory().await.unwrap());
         state.config.media.root = root.to_string_lossy().into_owned();
         state.database().create_table::<ImageItem>().await.unwrap();
         let mut png = Cursor::new(Vec::new());
@@ -1095,7 +1095,7 @@ mod tests {
     #[tokio::test]
     async fn failed_post_commit_cleanup_does_not_fail_delete_or_suppress_signal() {
         let root = std::env::temp_dir().join(format!("che-rest-media-{}", rand::random::<u64>()));
-        let mut state = AppState::from_database(Database::connect_in_memory().unwrap());
+        let mut state = AppState::from_database(Database::connect_in_memory().await.unwrap());
         state.config.media.root = root.to_string_lossy().into_owned();
         state.database().create_table::<ImageItem>().await.unwrap();
         let image = ImageField::new("items/blocked.png");
@@ -1159,7 +1159,7 @@ mod tests {
     #[tokio::test]
     async fn replace_discards_image_when_model_disappears() {
         let root = std::env::temp_dir().join(format!("che-rest-media-{}", rand::random::<u64>()));
-        let mut state = AppState::from_database(Database::connect_in_memory().unwrap());
+        let mut state = AppState::from_database(Database::connect_in_memory().await.unwrap());
         state.config.media.root = root.to_string_lossy().into_owned();
         state.database().create_table::<ImageItem>().await.unwrap();
         let mut png = Cursor::new(Vec::new());
@@ -1184,7 +1184,7 @@ mod tests {
     #[tokio::test]
     async fn stale_replacement_and_clear_cannot_overwrite_winner_or_leave_files() {
         let root = std::env::temp_dir().join(format!("che-rest-media-{}", rand::random::<u64>()));
-        let mut state = AppState::from_database(Database::connect_in_memory().unwrap());
+        let mut state = AppState::from_database(Database::connect_in_memory().await.unwrap());
         state.config.media.root = root.to_string_lossy().into_owned();
         state.database().create_table::<ImageItem>().await.unwrap();
         let item = state
@@ -1251,7 +1251,7 @@ mod tests {
     #[tokio::test]
     async fn conditional_image_and_metadata_update_commit_together() {
         let root = std::env::temp_dir().join(format!("che-rest-media-{}", rand::random::<u64>()));
-        let mut state = AppState::from_database(Database::connect_in_memory().unwrap());
+        let mut state = AppState::from_database(Database::connect_in_memory().await.unwrap());
         state.config.media.root = root.to_string_lossy().into_owned();
         state
             .database()
@@ -1316,7 +1316,7 @@ mod tests {
     #[tokio::test]
     async fn replacement_succeeds_when_old_file_cleanup_must_be_queued() {
         let root = std::env::temp_dir().join(format!("che-rest-media-{}", rand::random::<u64>()));
-        let mut state = AppState::from_database(Database::connect_in_memory().unwrap());
+        let mut state = AppState::from_database(Database::connect_in_memory().await.unwrap());
         state.config.media.root = root.to_string_lossy().into_owned();
         state.database().create_table::<ImageItem>().await.unwrap();
         let old = ImageField::new("items/blocked.png");
@@ -1392,7 +1392,7 @@ mod tests {
 
     #[tokio::test]
     async fn media_route_requires_authentication() {
-        let state = AppState::from_database(Database::connect_in_memory().unwrap());
+        let state = AppState::from_database(Database::connect_in_memory().await.unwrap());
         let router = Router::new()
             .route("/media/{*key}", get(download_image))
             .layer(Extension(state));
@@ -1411,7 +1411,7 @@ mod tests {
     #[tokio::test]
     async fn declared_image_field_uploads_replaces_and_clears() {
         let root = std::env::temp_dir().join(format!("che-rest-media-{}", rand::random::<u64>()));
-        let mut state = AppState::from_database(Database::connect_in_memory().unwrap());
+        let mut state = AppState::from_database(Database::connect_in_memory().await.unwrap());
         state.config.media.root = root.to_string_lossy().into_owned();
         state.database().create_table::<ImageItem>().await.unwrap();
         let item = state
@@ -1563,7 +1563,7 @@ mod tests {
     #[tokio::test]
     async fn declared_image_creation_checks_domain_data_and_cleans_failed_uploads() {
         let root = std::env::temp_dir().join(format!("che-rest-media-{}", rand::random::<u64>()));
-        let mut state = AppState::from_database(Database::connect_in_memory().unwrap());
+        let mut state = AppState::from_database(Database::connect_in_memory().await.unwrap());
         state.config.media.root = root.to_string_lossy().into_owned();
         let mut config = ViewSetConfig::<ImageViewSet>::new("/image-items");
         config

@@ -680,9 +680,9 @@ mod tests {
         assert!(!csrf_valid(&request, &session));
     }
 
-    #[test]
-    fn session_is_renewed_only_in_the_renewal_window() {
-        let state = AppState::from_database(che_orm::Database::connect(":memory:").unwrap());
+    #[tokio::test]
+    async fn session_is_renewed_only_in_the_renewal_window() {
+        let state = AppState::from_database(che_orm::Database::connect(":memory:").await.unwrap());
         let now = OffsetDateTime::now_utc();
         let session = CurrentSession {
             id: 1,
@@ -702,9 +702,9 @@ mod tests {
         assert!(renewed_expiry(&state, &session, now).is_none());
     }
 
-    #[test]
-    fn session_renewal_does_not_exceed_absolute_ttl() {
-        let state = AppState::from_database(che_orm::Database::connect(":memory:").unwrap());
+    #[tokio::test]
+    async fn session_renewal_does_not_exceed_absolute_ttl() {
+        let state = AppState::from_database(che_orm::Database::connect(":memory:").await.unwrap());
         let now = OffsetDateTime::now_utc();
         let created_at = now - time::Duration::days(29);
         let session = CurrentSession {
@@ -734,9 +734,9 @@ mod tests {
         assert_eq!(cookie(&request, "missing"), None);
     }
 
-    #[test]
-    fn admin_permission_requires_admin_or_superuser() {
-        let state = AppState::from_database(che_orm::Database::connect(":memory:").unwrap());
+    #[tokio::test]
+    async fn admin_permission_requires_admin_or_superuser() {
+        let state = AppState::from_database(che_orm::Database::connect(":memory:").await.unwrap());
         let regular = CurrentUser {
             id: 1,
             username: "regular".into(),
@@ -779,7 +779,7 @@ mod tests {
     #[tokio::test]
     async fn resolver_builds_principal_with_framework_and_application_users() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let state = AppState::from_database(che_orm::Database::connect_in_memory().unwrap())
+        let state = AppState::from_database(che_orm::Database::connect_in_memory().await.unwrap())
             .with_current_user_resolver(profile_resolver(calls.clone()));
         let user = User {
             id: 42,
@@ -805,7 +805,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolver_returning_none_keeps_framework_authentication() {
-        let state = AppState::from_database(che_orm::Database::connect_in_memory().unwrap())
+        let state = AppState::from_database(che_orm::Database::connect_in_memory().await.unwrap())
             .with_current_user_resolver(no_profile_resolver);
         let user = User {
             id: 42,
@@ -834,7 +834,7 @@ mod tests {
 
     #[tokio::test]
     async fn admin_user_creation_is_mounted_under_api_prefix() {
-        let state = AppState::from_database(che_orm::Database::connect_in_memory().unwrap());
+        let state = AppState::from_database(che_orm::Database::connect_in_memory().await.unwrap());
         setup_auth(&state).await;
         let app = auth_app(state).await;
         let request = Request::builder()
@@ -851,7 +851,7 @@ mod tests {
 
     #[tokio::test]
     async fn custom_permissions_and_viewset_hooks_can_access_application_user() {
-        let state = AppState::from_database(che_orm::Database::connect_in_memory().unwrap())
+        let state = AppState::from_database(che_orm::Database::connect_in_memory().await.unwrap())
             .with_current_user_resolver(profile_resolver(Arc::new(AtomicUsize::new(0))));
         let principal = current_principal(
             &state,
@@ -888,7 +888,7 @@ mod tests {
     #[tokio::test]
     async fn token_and_session_authentication_resolve_application_user() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let state = AppState::from_database(che_orm::Database::connect_in_memory().unwrap())
+        let state = AppState::from_database(che_orm::Database::connect_in_memory().await.unwrap())
             .with_current_user_resolver(profile_resolver(calls.clone()));
         let user = setup_auth(&state).await;
         let token = "token";
@@ -949,7 +949,7 @@ mod tests {
 
     #[tokio::test]
     async fn authentication_succeeds_without_a_profile_or_resolver() {
-        let state = AppState::from_database(che_orm::Database::connect_in_memory().unwrap());
+        let state = AppState::from_database(che_orm::Database::connect_in_memory().await.unwrap());
         let user = setup_auth(&state).await;
         state
             .database()

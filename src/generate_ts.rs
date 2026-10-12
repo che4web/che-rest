@@ -261,6 +261,10 @@ fn api(endpoints: &[ApiEndpoint]) -> String {
                         "    async {}(id: number): Promise<{}> {{ return (await apiClient.get<{}>(`{}`)).data; }},\n",
                         client.name, response, response, path
                     )),
+                    (None, crate::HttpMethod::Get) => out.push_str(&format!(
+                        "    async {}(): Promise<{}> {{ return (await apiClient.get<{}>(`{}`)).data; }},\n",
+                        client.name, response, response, path
+                    )),
                     (None, crate::HttpMethod::Post) if has_id => out.push_str(&format!(
                         "    async {}(id: number): Promise<{}> {{ return (await apiClient.post<{}>(`{}`)).data; }},\n",
                         client.name, response, response, path
@@ -287,10 +291,15 @@ fn field_ts_type(endpoint: &ApiEndpoint, field: &che_orm::SerializerField) -> St
                 .iter()
                 .find(|column| column.name == field.source || column.field_name == field.source)
                 .is_some_and(|column| column.nullable);
-            return if nullable {
-                "number | null".into()
+            let scalar = if field.rust_type.contains("Uuid") {
+                "string"
             } else {
-                "number".into()
+                "number"
+            };
+            return if nullable {
+                format!("{scalar} | null")
+            } else {
+                scalar.into()
             };
         }
         let ty = last_path_part(model);
@@ -323,6 +332,7 @@ fn field_ts_type(endpoint: &ApiEndpoint, field: &che_orm::SerializerField) -> St
             if value.contains("i64")
                 || value.contains("i32")
                 || value.contains("u64")
+                || value.contains("f64")
                 || value.contains("usize") =>
         {
             "number".into()
@@ -330,6 +340,7 @@ fn field_ts_type(endpoint: &ApiEndpoint, field: &che_orm::SerializerField) -> St
         "bool" => "boolean".into(),
         "String" | "&str" | "Option<String>" => "string".into(),
         value if value.contains("ImageField") => "string".into(),
+        value if value.contains("Uuid") => "string".into(),
         value if value.contains("OffsetDateTime") => "string".into(),
         _ => "unknown".into(),
     };
@@ -431,15 +442,15 @@ fn api_client() -> String {
     out.push_str(&
         r##"import axios from "axios";
 
-export interface BaseEntity { id?: number; }
+export interface BaseEntity { id?: number | string; }
 export interface ListParams {{ ordering?: string; limit?: number; offset?: number; [key: string]: string | number | boolean | null | undefined; }}
 export interface PaginatedResponse<T> {{ count: number; results: T[]; }}
 export interface ModelApi<T extends BaseEntity, CreateDTO = Partial<T>, UpdateDTO = Partial<T>, Params extends ListParams = ListParams, ListItem extends BaseEntity = T> {{
   list: (params?: Params) => Promise<PaginatedResponse<ListItem>>;
-  retrieve: (id: number) => Promise<T>;
+  retrieve: (id: number | string) => Promise<T>;
   create: (payload: CreateDTO) => Promise<T>;
-  update: (id: number, payload: UpdateDTO) => Promise<T>;
-  remove: (id: number) => Promise<void>;
+  update: (id: number | string, payload: UpdateDTO) => Promise<T>;
+  remove: (id: number | string) => Promise<void>;
 }}
  export const apiClient = axios.create({{ baseURL: import.meta.env.VITE_API_BASE_URL ?? "/api", withCredentials: true, xsrfCookieName: "csrf_token", xsrfHeaderName: "X-CSRF-Token", headers: {{ "Content-Type": "application/json" }} }});
 let authToken: string | null = null;
@@ -557,7 +568,7 @@ export function useModelList<T extends BaseEntity, CreateDTO = Partial<T>, Updat
      try {{ const response = await api.list(cleanParams(filters) as Params); if (request !== requestSequence) return null; items.value = response.results; count.value = response.count; return response; }}
      catch (err) {{ if (request === requestSequence) handleError(err, "Unable to load objects"); return null; }} finally {{ if (request === requestSequence) loading.value = false; }}
    }}
-  async function remove(id: number) {{ loading.value = true; try {{ await api.remove(id); await load(); return true; }} catch (err) {{ handleError(err, "Unable to delete object"); return false; }} finally {{ loading.value = false; }} }}
+  async function remove(id: number | string) {{ loading.value = true; try {{ await api.remove(id); await load(); return true; }} catch (err) {{ handleError(err, "Unable to delete object"); return false; }} finally {{ loading.value = false; }} }}
   if (options.reloadOnFilterChange) watch(filters, () => {{ if (skipNextFilterReload) {{ skipNextFilterReload = false; return; }} clearTimeout(loadTimer); loadTimer = setTimeout(() => load(), options.debounceMs ?? 250); }});
   if (options.autoLoad) onMounted(() => load());
   function handleError(err: unknown, fallback: string) {{ const message = errorMessage(err, fallback); error.value = message; options.onError?.(message, err); }}
@@ -575,10 +586,10 @@ import type {{ BaseEntity, ListParams, ModelApi }} from "./api_client";
 export interface UseModelItemOptions {{ onError?: (message: string, error: unknown) => void; }}
 export function useModelItem<T extends BaseEntity, CreateDTO = Partial<T>, UpdateDTO = Partial<T>, Params extends ListParams = ListParams, ListItem extends BaseEntity = T>(api: ModelApi<T, CreateDTO, UpdateDTO, Params, ListItem>, options: UseModelItemOptions = {{}}) {{
   const item = shallowRef<T | null>(null); const loading = ref(false); const error = ref("");
-  async function retrieve(id: number) {{ return run(() => api.retrieve(id), "Unable to load object"); }}
+  async function retrieve(id: number | string) {{ return run(() => api.retrieve(id), "Unable to load object"); }}
   async function create(payload: CreateDTO) {{ return run(() => api.create(payload), "Unable to create object"); }}
-  async function update(id: number, payload: UpdateDTO) {{ return run(() => api.update(id, payload), "Unable to update object"); }}
-  async function remove(id: number) {{ return run(async () => {{ await api.remove(id); item.value = null; return true; }}, "Unable to delete object"); }}
+  async function update(id: number | string, payload: UpdateDTO) {{ return run(() => api.update(id, payload), "Unable to update object"); }}
+  async function remove(id: number | string) {{ return run(async () => {{ await api.remove(id); item.value = null; return true; }}, "Unable to delete object"); }}
   async function run<R>(operation: () => Promise<R>, fallback: string): Promise<R | null> {{ loading.value = true; error.value = ""; try {{ const value = await operation(); if (typeof value === "object" && value !== null) item.value = value as T; return value; }} catch (err) {{ error.value = err instanceof Error ? err.message : fallback; options.onError?.(error.value, err); return null; }} finally {{ loading.value = false; }} }}
   return {{ item, loading, error, retrieve, create, update, remove }};
 }}

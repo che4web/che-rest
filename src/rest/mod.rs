@@ -12,7 +12,8 @@ pub mod viewset;
 
 pub use extensions::{
     ApiExtension, ApiOperation, ApiSchema, ApiSchemaDefinition, ClientMethod, ExtensionContext,
-    HttpMethod, MutationHook, OperationSpec, ViewSetConfig, ViewSetExtension,
+    HttpMethod, MutationBackend, MutationFuture, MutationHook, OperationSpec, ViewSetConfig,
+    ViewSetExtension,
 };
 pub use filters::{Filter, FilterError, FilterSet, FilterSetSpec, FilterValue, Lookup};
 pub use openapi::{openapi_column_schema, openapi_json_for};

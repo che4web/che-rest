@@ -3,8 +3,8 @@ use std::{collections::HashMap, future::Future, marker::PhantomData, pin::Pin, s
 use axum::{
     Extension, Json, Router,
     extract::{Path, Query},
-    http::StatusCode,
-    response::IntoResponse,
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
     routing::get,
 };
 use che_orm::{
@@ -22,6 +22,50 @@ use crate::{AppError, AppResult, AppState, auth::CurrentPrincipal};
 pub struct MutationHooks<V: ViewSet>(Vec<Arc<dyn MutationHook<V>>>);
 
 impl<V: ViewSet> MutationHooks<V> {
+    async fn rest(
+        &self,
+        state: &AppState,
+        principal: Option<&CurrentPrincipal>,
+        action: ViewAction,
+        id: Option<<V::Model as Model>::PrimaryKey>,
+        headers: &HeaderMap,
+        data: serde_json::Value,
+    ) -> AppResult<Option<Response>> {
+        if let Some(backend) = self.0.iter().find_map(|hook| hook.backend()) {
+            backend
+                .rest(state, principal, action, id, headers, data)
+                .await
+        } else {
+            Ok(None)
+        }
+    }
+    async fn save(
+        &self,
+        state: &AppState,
+        principal: Option<&CurrentPrincipal>,
+        write: ValidatedWrite<V::Model>,
+    ) -> AppResult<Option<V::Model>> {
+        if let Some(backend) = self.0.iter().find_map(|hook| hook.backend()) {
+            backend.save(state, principal, write).await
+        } else {
+            write.save(state.database()).await.map_err(error_write)
+        }
+    }
+
+    async fn delete(
+        &self,
+        state: &AppState,
+        principal: Option<&CurrentPrincipal>,
+        id: <V::Model as Model>::PrimaryKey,
+    ) -> AppResult<()> {
+        if let Some(backend) = self.0.iter().find_map(|hook| hook.backend()) {
+            backend.delete(state, principal, id).await
+        } else {
+            state.database().delete::<V::Model>(id).await?;
+            Ok(())
+        }
+    }
+
     fn after_commit(
         &self,
         state: &AppState,
@@ -441,33 +485,35 @@ where
     }
 }
 
-impl<M, R, Relation> RestQuerySet for SelectRelatedQuery<M, R, Relation, i64>
+macro_rules! required_select_related {
+    ($key:ty) => {
+impl<M, R, Relation> RestQuerySet for SelectRelatedQuery<M, R, Relation, $key>
 where
     M: Model + Send + Sync + 'static,
-    R: Model + Send + Sync + 'static,
+    R: Model<PrimaryKey = $key> + Send + Sync + 'static,
     Relation: Send + Sync + 'static,
 {
     type Model = M;
-    type Item = WithOne<M, R, Relation>;
+    type Item = WithOne<M, R, Relation, $key>;
 
     fn item_model(item: &Self::Item) -> &Self::Model {
         &item.model
     }
 
     fn filter(self, expr: che_orm::Expr) -> Self {
-        SelectRelatedQuery::<M, R, Relation, i64>::filter(self, expr)
+        SelectRelatedQuery::<M, R, Relation, $key>::filter(self, expr)
     }
 
     fn order_by(self, order: che_orm::OrderBy) -> Self {
-        SelectRelatedQuery::<M, R, Relation, i64>::order_by(self, order)
+        SelectRelatedQuery::<M, R, Relation, $key>::order_by(self, order)
     }
 
     fn limit(self, limit: u64) -> Self {
-        SelectRelatedQuery::<M, R, Relation, i64>::limit(self, limit)
+        SelectRelatedQuery::<M, R, Relation, $key>::limit(self, limit)
     }
 
     fn offset(self, offset: u64) -> Self {
-        SelectRelatedQuery::<M, R, Relation, i64>::offset(self, offset)
+        SelectRelatedQuery::<M, R, Relation, $key>::offset(self, offset)
     }
 
     fn all<'a>(
@@ -477,7 +523,7 @@ where
     where
         Self: 'a,
     {
-        Box::pin(SelectRelatedQuery::<M, R, Relation, i64>::all(
+        Box::pin(SelectRelatedQuery::<M, R, Relation, $key>::all(
             self, database,
         ))
     }
@@ -489,16 +535,23 @@ where
     where
         Self: 'a,
     {
-        Box::pin(SelectRelatedQuery::<M, R, Relation, i64>::count(
+        Box::pin(SelectRelatedQuery::<M, R, Relation, $key>::count(
             self, database,
         ))
     }
 }
 
-impl<M, R, Relation> RestQuerySet for SelectRelatedQuery<M, R, Relation, Option<i64>>
+    };
+}
+required_select_related!(i64);
+required_select_related!(che_orm::Uuid);
+
+macro_rules! optional_select_related {
+    ($key:ty) => {
+impl<M, R, Relation> RestQuerySet for SelectRelatedQuery<M, R, Relation, Option<$key>>
 where
     M: Model + Send + Sync + 'static,
-    R: Model + Send + Sync + 'static,
+    R: Model<PrimaryKey = $key> + Send + Sync + 'static,
     Relation: Send + Sync + 'static,
 {
     type Model = M;
@@ -509,19 +562,19 @@ where
     }
 
     fn filter(self, expr: che_orm::Expr) -> Self {
-        SelectRelatedQuery::<M, R, Relation, Option<i64>>::filter(self, expr)
+        SelectRelatedQuery::<M, R, Relation, Option<$key>>::filter(self, expr)
     }
 
     fn order_by(self, order: che_orm::OrderBy) -> Self {
-        SelectRelatedQuery::<M, R, Relation, Option<i64>>::order_by(self, order)
+        SelectRelatedQuery::<M, R, Relation, Option<$key>>::order_by(self, order)
     }
 
     fn limit(self, limit: u64) -> Self {
-        SelectRelatedQuery::<M, R, Relation, Option<i64>>::limit(self, limit)
+        SelectRelatedQuery::<M, R, Relation, Option<$key>>::limit(self, limit)
     }
 
     fn offset(self, offset: u64) -> Self {
-        SelectRelatedQuery::<M, R, Relation, Option<i64>>::offset(self, offset)
+        SelectRelatedQuery::<M, R, Relation, Option<$key>>::offset(self, offset)
     }
 
     fn all<'a>(
@@ -531,7 +584,7 @@ where
     where
         Self: 'a,
     {
-        Box::pin(SelectRelatedQuery::<M, R, Relation, Option<i64>>::all(
+        Box::pin(SelectRelatedQuery::<M, R, Relation, Option<$key>>::all(
             self, database,
         ))
     }
@@ -543,15 +596,22 @@ where
     where
         Self: 'a,
     {
-        Box::pin(SelectRelatedQuery::<M, R, Relation, Option<i64>>::count(
+        Box::pin(SelectRelatedQuery::<M, R, Relation, Option<$key>>::count(
             self, database,
         ))
     }
 }
 
-impl<M, R, Relation> RestQuerySet for PrefetchRelatedQuery<M, R, Relation, i64>
+    };
+}
+optional_select_related!(i64);
+optional_select_related!(che_orm::Uuid);
+
+macro_rules! prefetch_related {
+    ($key:ty, $primary:ty) => {
+impl<M, R, Relation> RestQuerySet for PrefetchRelatedQuery<M, R, Relation, $key>
 where
-    M: Model + Send + Sync + 'static,
+    M: Model<PrimaryKey = $primary> + Send + Sync + 'static,
     R: Model + Send + Sync + 'static,
     Relation: Send + Sync + 'static,
 {
@@ -599,8 +659,19 @@ where
     }
 }
 
+    };
+}
+prefetch_related!(i64, i64);
+prefetch_related!(Option<i64>, i64);
+prefetch_related!(che_orm::Uuid, che_orm::Uuid);
+prefetch_related!(Option<che_orm::Uuid>, che_orm::Uuid);
+
+pub trait RestKey: che_orm::PrimaryKey + serde::Serialize + serde::de::DeserializeOwned {}
+impl RestKey for i64 {}
+impl RestKey for che_orm::Uuid {}
+
 pub trait ViewSet: Clone + Send + Sync + 'static {
-    type Model: Model + Send + Sync + 'static;
+    type Model: Model<PrimaryKey: RestKey> + Send + Sync + 'static;
     type Serializer: ModelSerializer<Model = Self::Model>
         + ModelWriteSerializer<Model = Self::Model>
         + Serialize
@@ -672,7 +743,7 @@ pub trait ViewSet: Clone + Send + Sync + 'static {
 ///
 /// JSON responses remain RFC 3339. A date without a time is interpreted as UTC
 /// midnight, so clients can submit the value emitted by `input[type=date]`.
-fn normalize_datetime_fields(data: &mut serde_json::Value, fields: &[SerializerField]) {
+pub(crate) fn normalize_datetime_fields(data: &mut serde_json::Value, fields: &[SerializerField]) {
     let Some(object) = data.as_object_mut() else {
         return;
     };
@@ -727,7 +798,7 @@ impl<M, S> CrudViewSet<M, S> {
 }
 impl<M, S> ViewSet for CrudViewSet<M, S>
 where
-    M: Model + Send + Sync + 'static,
+    M: Model<PrimaryKey: RestKey> + Send + Sync + 'static,
     S: ModelSerializer<Model = M, Input = M>
         + ModelWriteSerializer<Model = M>
         + Serialize
@@ -766,6 +837,9 @@ where
     V::Serializer: Serialize,
 {
     let path = viewset.path().trim_end_matches('/');
+    for hook in &hooks {
+        hook.installed(&state, &viewset, &hooks);
+    }
     Router::new()
         .route(&format!("{path}/"), get(list::<V>).post(create::<V>))
         .route(
@@ -976,6 +1050,7 @@ where
                 "post": {"security": [{"TokenAuth": []}, {"SessionCookie": [], "CsrfToken": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": schema_ref(&create)}}}, "responses": {"201": response_with_ref(&response), "400": response_with_ref_value(&error), "401": response_with_ref_value(&error), "403": response_with_ref_value(&error)}}
             },
             detail: {
+                "parameters": [{"in":"path","name":"id","required":true,"schema":openapi_column_schema(schema.columns.iter().find(|column| column.primary_key).expect("model primary key"))}],
                 "get": {"responses": {"200": response_with_ref(&response), "401": response_with_ref_value(&error), "403": response_with_ref_value(&error), "404": response_with_ref_value(&error)}},
                 "put": {"security": [{"TokenAuth": []}, {"SessionCookie": [], "CsrfToken": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": schema_ref(&update)}}}, "responses": {"200": response_with_ref(&response), "400": response_with_ref_value(&error), "401": response_with_ref_value(&error), "403": response_with_ref_value(&error), "404": response_with_ref_value(&error)}},
                 "patch": {"security": [{"TokenAuth": []}, {"SessionCookie": [], "CsrfToken": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": schema_ref(&patch)}}}, "responses": {"200": response_with_ref(&response), "400": response_with_ref_value(&error), "401": response_with_ref_value(&error), "403": response_with_ref_value(&error), "404": response_with_ref_value(&error)}},
@@ -1020,6 +1095,8 @@ fn schema_ref(name: &str) -> serde_json::Value {
 pub fn openapi_column_schema(column: &che_orm::ColumnSchema) -> serde_json::Value {
     let mut schema = match column.column_type {
         che_orm::ColumnType::Integer => json!({"type": "integer", "format": "int64"}),
+        che_orm::ColumnType::Real => json!({"type": "number", "format": "double"}),
+        che_orm::ColumnType::Uuid => json!({"type": "string", "format": "uuid"}),
         che_orm::ColumnType::Text => json!({"type": "string"}),
         che_orm::ColumnType::Binary => json!({"type": "string", "format": "byte"}),
         che_orm::ColumnType::Boolean => json!({"type": "boolean"}),
@@ -1044,7 +1121,7 @@ fn current(ext: &Option<Extension<CurrentPrincipal>>) -> Option<&CurrentPrincipa
 fn error_filter(e: FilterError) -> AppError {
     AppError::BadRequest(e.to_string())
 }
-fn error_validation(e: che_orm::ValidationErrors) -> AppError {
+pub(crate) fn error_validation(e: che_orm::ValidationErrors) -> AppError {
     AppError::BadRequest(e.detail)
 }
 fn error_write(e: che_orm::OrmError) -> AppError {
@@ -1112,7 +1189,7 @@ async fn retrieve<V: ViewSet>(
     Extension(state): Extension<AppState>,
     Extension(viewset): Extension<V>,
     who: Option<Extension<CurrentPrincipal>>,
-    Path(id): Path<i64>,
+    Path(id): Path<<V::Model as Model>::PrimaryKey>,
 ) -> AppResult<impl IntoResponse>
 where
     V::Serializer: Serialize,
@@ -1139,9 +1216,23 @@ async fn destroy<V: ViewSet>(
     Extension(viewset): Extension<V>,
     Extension(hooks): Extension<MutationHooks<V>>,
     who: Option<Extension<CurrentPrincipal>>,
-    Path(id): Path<i64>,
-) -> AppResult<impl IntoResponse> {
+    Path(id): Path<<V::Model as Model>::PrimaryKey>,
+    headers: HeaderMap,
+) -> AppResult<Response> {
     let principal = current(&who);
+    if let Some(response) = hooks
+        .rest(
+            &state,
+            principal,
+            ViewAction::Delete,
+            Some(id),
+            &headers,
+            serde_json::Value::Null,
+        )
+        .await?
+    {
+        return Ok(response);
+    }
     V::Permission::default().check(&state, principal, ViewAction::Delete)?;
     {
         let item = viewset
@@ -1166,14 +1257,14 @@ async fn destroy<V: ViewSet>(
     for hook in &hooks.0 {
         values.push(hook.prepare_delete_async(&state, &model).await?);
     }
-    state.database().delete::<V::Model>(id).await?;
+    hooks.delete(&state, principal, id).await?;
     hooks.after_delete(&state, &values);
     if let Some(signal) = viewset.signal_name(ViewAction::Delete) {
         if viewset.signal_access(ViewAction::Delete).is_some() {
             state.signals().publish(signal, json!({"id": id}));
         }
     }
-    Ok(StatusCode::NO_CONTENT)
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 async fn create<V: ViewSet>(
@@ -1181,21 +1272,34 @@ async fn create<V: ViewSet>(
     Extension(viewset): Extension<V>,
     Extension(hooks): Extension<MutationHooks<V>>,
     who: Option<Extension<CurrentPrincipal>>,
+    headers: HeaderMap,
     Json(data): Json<serde_json::Value>,
-) -> AppResult<impl IntoResponse>
+) -> AppResult<Response>
 where
     V::Serializer: Serialize,
 {
     let principal = current(&who);
+    if let Some(response) = hooks
+        .rest(
+            &state,
+            principal,
+            ViewAction::Create,
+            None,
+            &headers,
+            data.clone(),
+        )
+        .await?
+    {
+        return Ok(response);
+    }
     V::Permission::default().check(&state, principal, ViewAction::Create)?;
     let mut data = data;
     normalize_datetime_fields(&mut data, V::Serializer::fields());
     let write = V::Serializer::is_valid(data, WriteMode::Create).map_err(error_validation)?;
-    let model = viewset
-        .prepare_create(&state, principal, write)?
-        .save(state.database())
-        .await
-        .map_err(error_write)?
+    let write = viewset.prepare_create(&state, principal, write)?;
+    let model = hooks
+        .save(&state, principal, write)
+        .await?
         .ok_or(AppError::BadRequest("create did not return a model".into()))?;
     hooks.after_commit(&state, principal, ViewAction::Create, &model)?;
     let item = viewset
@@ -1212,7 +1316,7 @@ where
                 .publish(signal, json!({"id": model.primary_key_value()}));
         }
     }
-    Ok((StatusCode::CREATED, Json(payload)))
+    Ok((StatusCode::CREATED, Json(payload)).into_response())
 }
 
 async fn patch<V: ViewSet>(
@@ -1220,13 +1324,27 @@ async fn patch<V: ViewSet>(
     Extension(viewset): Extension<V>,
     Extension(hooks): Extension<MutationHooks<V>>,
     who: Option<Extension<CurrentPrincipal>>,
-    Path(id): Path<i64>,
+    Path(id): Path<<V::Model as Model>::PrimaryKey>,
+    headers: HeaderMap,
     Json(data): Json<serde_json::Value>,
-) -> AppResult<impl IntoResponse>
+) -> AppResult<Response>
 where
     V::Serializer: Serialize,
 {
     let principal = current(&who);
+    if let Some(response) = hooks
+        .rest(
+            &state,
+            principal,
+            ViewAction::Patch,
+            Some(id),
+            &headers,
+            data.clone(),
+        )
+        .await?
+    {
+        return Ok(response);
+    }
     V::Permission::default().check(&state, principal, ViewAction::Patch)?;
     let write = {
         let current = viewset
@@ -1247,10 +1365,9 @@ where
             V::Serializer::is_valid(data, WriteMode::Patch { id }).map_err(error_validation)?;
         viewset.prepare_patch(&state, principal, V::QuerySet::item_model(&current), write)?
     };
-    let model = write
-        .save(state.database())
-        .await
-        .map_err(error_write)?
+    let model = hooks
+        .save(&state, principal, write)
+        .await?
         .ok_or(AppError::NotFound)?;
     hooks.after_commit(&state, principal, ViewAction::Patch, &model)?;
     let item = viewset
@@ -1267,7 +1384,7 @@ where
                 .publish(signal, json!({"id": model.primary_key_value()}));
         }
     }
-    Ok(Json(payload))
+    Ok(Json(payload).into_response())
 }
 
 async fn update<V: ViewSet>(
@@ -1275,13 +1392,27 @@ async fn update<V: ViewSet>(
     Extension(viewset): Extension<V>,
     Extension(hooks): Extension<MutationHooks<V>>,
     who: Option<Extension<CurrentPrincipal>>,
-    Path(id): Path<i64>,
+    Path(id): Path<<V::Model as Model>::PrimaryKey>,
+    headers: HeaderMap,
     Json(data): Json<serde_json::Value>,
-) -> AppResult<impl IntoResponse>
+) -> AppResult<Response>
 where
     V::Serializer: Serialize,
 {
     let principal = current(&who);
+    if let Some(response) = hooks
+        .rest(
+            &state,
+            principal,
+            ViewAction::Update,
+            Some(id),
+            &headers,
+            data.clone(),
+        )
+        .await?
+    {
+        return Ok(response);
+    }
     V::Permission::default().check(&state, principal, ViewAction::Update)?;
     let write = {
         let current = viewset
@@ -1302,10 +1433,9 @@ where
             V::Serializer::is_valid(data, WriteMode::Update { id }).map_err(error_validation)?;
         viewset.prepare_update(&state, principal, V::QuerySet::item_model(&current), write)?
     };
-    let model = write
-        .save(state.database())
-        .await
-        .map_err(error_write)?
+    let model = hooks
+        .save(&state, principal, write)
+        .await?
         .ok_or(AppError::NotFound)?;
     hooks.after_commit(&state, principal, ViewAction::Update, &model)?;
     let item = viewset
@@ -1322,5 +1452,5 @@ where
                 .publish(signal, json!({"id": model.primary_key_value()}));
         }
     }
-    Ok(Json(payload))
+    Ok(Json(payload).into_response())
 }

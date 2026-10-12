@@ -7,7 +7,7 @@ license = "MIT"
 repository = "https://github.com/che4web/che-rest"
 homepage = "https://github.com/che4web/che-rest"
 documentation = "https://docs.rs/che-rest"
-rust-version = "1.85"
+rust-version = "1.88"
 keywords = ["rest", "api", "orm", "sqlite"]
 categories = ["web-programming", "database"]
 exclude = ["benchmarks/**"]
@@ -17,7 +17,8 @@ axum = { version = "0.8", features = ["ws", "multipart"] }
 image = { version = "=0.25.5", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 argon2 = "0.5"
 clap = { version = "4", features = ["derive"] }
-che-orm = { version = "0.2.3", path = "../che-orm" }
+che-orm = { version = "0.3.0", path = "../che-orm" }
+che-sync = { version = "0.1.0", path = "../che-orm/che-sync" }
 hex = "0.4"
 futures-util = "0.3"
 rand = "0.8"
@@ -31,3 +32,4 @@ toml = "0.8"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

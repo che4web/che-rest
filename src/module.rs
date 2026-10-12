@@ -17,6 +17,12 @@ pub trait AppModule: Send + Sync + 'static {
     fn migrations(&self) -> Vec<Migration> {
         Vec::new()
     }
+    /// Register server synchronization tables in the desired migration state.
+    /// Several modules may expose their registries; shared server metadata
+    /// tables are included once per database.
+    fn sync_registry(&self) -> Option<che_sync::Registry> {
+        None
+    }
     /// Triggers and views owned by this application. Their `app` field is
     /// assigned from [`Self::name`] while collecting migration state.
     fn schema_objects(&self) -> Vec<SchemaObjectState> {
@@ -104,7 +110,14 @@ impl InstalledApps {
             .collect();
         let mut state =
             ProjectState::from_app_schemas(schemas.iter().map(|(name, schema)| (*name, schema)))?;
+        let mut sync_schema_added = false;
         for module in self.iter() {
+            if let Some(registry) = module.sync_registry() {
+                if !sync_schema_added {
+                    registry.extend_migration_state(&mut state, che_sync::SchemaRole::Server)?;
+                    sync_schema_added = true;
+                }
+            }
             for mut object in module.schema_objects() {
                 object.app = module.name().into();
                 state.add_schema_object(object)?;
@@ -194,7 +207,7 @@ impl ModuleContext {
 
     pub fn viewset<M, S>(&mut self, viewset: CrudViewSet<M, S>)
     where
-        M: Model + Send + Sync + 'static,
+        M: Model<PrimaryKey: crate::rest::router::RestKey> + Send + Sync + 'static,
         S: ModelSerializer<Model = M, Input = M>
             + che_orm::ModelWriteSerializer<Model = M>
             + serde::Serialize
@@ -275,6 +288,9 @@ impl ModuleContext {
             V::ListSerializer::fields(),
         );
         let mut document = document;
+        if extensions.iter().any(|extension| extension.id == "sync") {
+            crate::sync::add_rest_openapi(&mut document);
+        }
         add_filter_parameters::<V>(&mut document, &viewset);
         let extension_openapi = crate::rest::extensions::extension_openapi(&extensions);
         if let Some(action_paths) = extension_openapi.get("paths").and_then(Value::as_object) {
@@ -439,9 +455,9 @@ mod tests {
         assert_eq!(state.objects()[0].app, "schema_object_app");
     }
 
-    #[test]
-    fn lifecycle_signals_are_opt_in() {
-        let state = AppState::from_database(che_orm::Database::connect_in_memory().unwrap());
+    #[tokio::test]
+    async fn lifecycle_signals_are_opt_in() {
+        let state = AppState::from_database(che_orm::Database::connect_in_memory().await.unwrap());
         let mut context = ModuleContext::new(state.clone());
 
         context.viewset_with(crate::auth::AdminUserViewSet);
@@ -449,9 +465,9 @@ mod tests {
         assert!(state.signals().public_signals().is_empty());
     }
 
-    #[test]
-    fn viewset_path_drives_metadata_and_openapi() {
-        let state = AppState::from_database(che_orm::Database::connect_in_memory().unwrap());
+    #[tokio::test]
+    async fn viewset_path_drives_metadata_and_openapi() {
+        let state = AppState::from_database(che_orm::Database::connect_in_memory().await.unwrap());
         let mut context = ModuleContext::new(state);
 
         context.viewset_with(crate::auth::AdminUserViewSet);

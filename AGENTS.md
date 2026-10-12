@@ -41,3 +41,4 @@
 - Typed REST CRUD, filtering, pagination, relation loading, response reloads, writable FK metadata, and OpenAPI/Swagger integration use the ORM2 API.
 - `examples/cli_fullstack` demonstrates nested server-owned `Task.author` plus writable nullable `Task.assignee_id` through REST and the generated admin relation picker.
 - Keep `cargo fmt --check`, `cargo test`, frontend builds, and the `cli_fullstack` smoke test passing when changing this surface.
+- SyncViewSet writes use the ordinary POST/PATCH/PUT/DELETE routes with serializer validation and preparation. Conditional sync headers carry revision, offline UUID and receipt identity; there is no sync/push route. RestSyncRequest encodes single-record writes, and HTTP transports advertise max_mutations() == 1. Preserve canonical sync-mode responses, transactional receipts/journal and independently retryable lifecycle effects.

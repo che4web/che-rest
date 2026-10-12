@@ -23,6 +23,20 @@ The minimal migrated example is available under `todo_api`:
 cargo run --manifest-path todo_api/Cargo.toml
 ```
 
+## Offline Todo synchronization
+
+`SyncViewSet` and `SyncEndpoints` add authenticated pull and snapshot
+routes to a ViewSet. Writes use ordinary REST CRUD with conditional revisions
+and idempotency keys, independent model cursors/queues, automatic FK parent
+synchronization and journal-aware persistence. Run the two-device
+HTTP example:
+
+```bash
+cargo run --example todo_sync
+```
+
+See [`docs/sync.md`](docs/sync.md) for registration, migrations and access rules.
+
 ## Start a Project
 
 Create a new runnable `che-rest` application:
