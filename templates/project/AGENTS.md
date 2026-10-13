@@ -7,15 +7,17 @@ and compiled migrations in this project; do not create tables during startup.
 
 ```bash
 cargo run --bin manage -- startapp tasks --model Task
-cargo run --bin manage -- makemigrations --dir src/migrations --name initial
+cargo run --bin manage -- makemigrations --name initial
 cargo run --bin manage -- migrate
 cargo check --all-targets
 cargo run
 ```
 
 `src/apps/mod.rs` registers applications; each application owns models,
-serializers, filters and ViewSets. `src/migrations/mod.rs` registers compiled
-history. Preserve generator markers and applied migration identities/checksums.
+serializers, filters, ViewSets and `migrations/`. Each AppModule exposes its
+compiled history through `migrations()` and the writable source directory through
+`migration_path()`. Installing an app registers its history automatically.
+Preserve generator markers and applied migration identities/checksums.
 Register model APIs with `ModuleContext::viewset_with`, not only `route`.
 Database operations are async. Serializers convert materialized data and must
 not query the database; load relations in the ViewSet queryset.

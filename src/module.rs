@@ -12,10 +12,15 @@ use crate::{
 pub trait AppModule: Send + Sync + 'static {
     fn name(&self) -> &'static str;
     fn schema(&self) -> SchemaSet;
-    /// Migrations shipped by this library application. Project-owned
-    /// migrations are registered separately by the management binary.
+    /// Compiled migrations owned by this application, including portable
+    /// project modules. Legacy project registries may still be passed to Management.
     fn migrations(&self) -> Vec<Migration> {
         Vec::new()
+    }
+    /// Writable source directory for makemigrations. None denotes a library
+    /// application whose migration sources are not managed by this project.
+    fn migration_path(&self) -> Option<&'static str> {
+        None
     }
     /// Register server synchronization tables in the desired migration state.
     /// Several modules may expose their registries; shared server metadata
@@ -135,7 +140,8 @@ impl InstalledApps {
         history.diff(&self.migration_state()?)
     }
 
-    /// Collects migrations owned by installed library applications.
+    /// Collects migrations owned by all installed applications. The name is
+    /// retained for compatibility with the original library-only API.
     pub fn library_migrations(&self) -> Vec<Migration> {
         self.iter().flat_map(AppModule::migrations).collect()
     }

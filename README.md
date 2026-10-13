@@ -837,7 +837,7 @@ Defaults:
 ```
 
 `makemigrations` compares installed app schemas with the compiled migration history and writes
-reviewable Rust migration modules under `src/migrations/<app>/`. It does not invoke an external
+reviewable Rust migration modules under `src/apps/<app>/migrations/`. It does not invoke an external
 migration tool:
 
 ```bash
@@ -847,7 +847,7 @@ cargo run --bin manage -- makemigrations
 Generated migrations are stored under:
 
 ```text
-src/migrations/<app>/
+src/apps/<app>/migrations/
 ```
 
 The database URL is read from `[database].url` in `app.toml`. Apply all project migrations with the
@@ -862,9 +862,18 @@ SQL migrations.
 
 ### Compiled forward-only migrations
 
-`Management::migrations(...)` supplies the project registry, usually through
-`Management::new(apps).migrations(project::migrations::all())`. An empty registry is valid while
-generating the first migration. Management has no SQL-file migration fallback.
+Each app exposes `AppModule::migrations()` and a writable `migration_path()`;
+`Management::new(apps)` collects the histories automatically. Generated apps use
+`concat!(env!("CARGO_MANIFEST_DIR"), "/src/apps/<app>/migrations")` for their path,
+which is recompiled when the module moves to another project. Library apps omit
+the writable path. The default `makemigrations` command handles all writable apps;
+`makemigrations tasks --name add_title` targets one app.
+
+`Management::migrations(...)` remains available for legacy explicit registries.
+When moving an existing registry into an app, retain migration IDs, dependencies,
+operations and checksums, and remove its duplicate registration from the old
+registry. An empty registry is valid before the first migration. Management has
+no SQL-file migration fallback.
 
 Preview pending compiled migrations before applying them:
 

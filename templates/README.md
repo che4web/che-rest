@@ -31,3 +31,8 @@ is enabled by default; pass `--define with_auth=false` to omit it.
 After generation, follow the project's README to create an app and migrate it.
 The template retains startapp and compiled migration registry markers. Generated
 models are ordinary CRUD models; the project guide documents sync integration.
+
+New apps keep migrations under `src/apps/<app>/migrations/` and expose them through
+AppModule. `makemigrations` selects these directories automatically; no shared
+`src/migrations` registry or `--dir` is needed. Copy an app with its migrations and
+register its module in the destination project's installed apps.
