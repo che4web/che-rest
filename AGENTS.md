@@ -8,6 +8,7 @@
 ## Verification Commands
 - `cargo fmt --check` passes and is the fastest formatting check.
 - `cargo test` is the main library and integration test check, including media storage, route authorization, and ViewSet image cleanup tests.
+- After changing project templates, run `cargo test --lib project::tests::generated_project_builds_and_migrates -- --ignored`; it builds a generated authenticated application and verifies initial/repeated compiled migrations.
 - `cargo clippy --all-targets -- -D warnings` currently fails on existing lints in `src/management.rs` (`single_match`) and `src/module.rs` (`should_implement_trait`); do not present a change as clippy-clean unless those baseline lints are fixed.
 
 ## Framework Gotchas
@@ -28,6 +29,8 @@
 - Installing `che_rest::auth::module()` enables token auth middleware for all routes under the API prefix and separately adds `/api-token-auth/` outside the prefix.
 - Installing `che_rest::channels::module()` adds `/api/ws/` for declared public signals. CRUD lifecycle signals are opt-in via `ViewSet::signal_access`, use default dotted names like `tasks.created`, and publish `{ "id": ... }` payloads. Use `ModuleContext::signal(...)` for custom public signals. `AppState::app_channels()` remains internal-only.
 - Management migrations live in `src/migrations/<app>/`; `makemigrations` derives operations from installed app schemas and writes Rust modules, while `migrate` applies the compiled registry.
+- `src/project.rs` owns the startproject/startapp templates. Generated dependency requirements must match the current framework and ORM versions; include a compilable empty `all()` registry before the first migration. The initial migration name is passed as `makemigrations --name initial`, not as the positional application argument.
+- `templates/project` is the cargo-generate template. Keep its skeleton and AGENTS.md aligned with `src/project.rs`; use `makemigrations --dir src/migrations` to update the compiled project registry rather than the default root migrations directory. See `templates/README.md` for generation commands.
 - Every `ViewSet` declares `type ListSerializer`: use `Self::Serializer` for matching list/detail shapes or a separate `ModelSerializer` with the same model and queryset input. Its fields drive list responses, OpenAPI, generated TypeScript list items and admin table columns. After serializer changes, regenerate clients.
 - Table-rebuild migrations temporarily remove and restore historically declared dependent triggers/views even when another app owns them; review the generated operations and keep unmanaged SQLite objects subject to executor checks.
 - Config loads `[database] url = "..."` and optional `[media] root = "uploads"`; use `migrate --config PATH` to select another database configuration. There is no `--database-url` flag in the current CLI.

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.5
+
+- Add a cargo-generate project template with optional authentication and local dependency paths.
+- Update generated dependencies and declare Rust 1.88 as the minimum version.
+- Fix startapp's empty compiled migration registry so a new project builds before its first migration.
+- Correct initial migration commands and target src/migrations for project-owned compiled history.
+- Update generated agent guidance for async ORM access and role-aware synchronization.
+- Add a downstream project build and migration smoke test.
+
 ## 0.2.4
 
 - Add validated image storage, authenticated media delivery, and declarative image actions with generated multipart clients.
