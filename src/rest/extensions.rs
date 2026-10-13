@@ -503,6 +503,13 @@ fn operation_json(spec: &OperationSpec, method: HttpMethod) -> Value {
 }
 
 pub fn extension_openapi(extensions: &[ApiExtension]) -> Value {
+    extension_openapi_with_id_schema(extensions, json!({"type": "integer", "format": "int64"}))
+}
+
+pub(crate) fn extension_openapi_with_id_schema(
+    extensions: &[ApiExtension],
+    id_schema: Value,
+) -> Value {
     let mut paths = Map::<String, Value>::new();
     for extension in extensions {
         for operation in &extension.operations {
@@ -513,7 +520,7 @@ pub fn extension_openapi(extensions: &[ApiExtension]) -> Value {
                 .as_object_mut()
                 .expect("OpenAPI path must be an object");
             if !object.contains_key("parameters") {
-                let parameters = path_parameters(&operation.path);
+                let parameters = path_parameters(&operation.path, &id_schema);
                 if !parameters.is_empty() {
                     object.insert("parameters".into(), Value::Array(parameters));
                 }
@@ -527,14 +534,14 @@ pub fn extension_openapi(extensions: &[ApiExtension]) -> Value {
     json!({"paths": paths})
 }
 
-fn path_parameters(path: &str) -> Vec<Value> {
+fn path_parameters(path: &str, id_schema: &Value) -> Vec<Value> {
     path.split('{')
         .skip(1)
         .filter_map(|segment| segment.split('}').next())
         .filter(|name| !name.is_empty())
         .map(|name| {
             let schema = if name == "id" {
-                json!({"type": "integer", "format": "int64"})
+                id_schema.clone()
             } else {
                 json!({"type": "string"})
             };
@@ -546,6 +553,18 @@ fn path_parameters(path: &str) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uuid_extension_paths_preserve_id_type() {
+        let parameters = path_parameters(
+            "/rules/{id}/run/",
+            &json!({"type":"string","format":"uuid"}),
+        );
+        assert_eq!(
+            parameters[0]["schema"],
+            json!({"type":"string","format":"uuid"})
+        );
+    }
     use crate::{
         AllowAny,
         auth::{AdminUserFilterSet, AdminUserSerializer},

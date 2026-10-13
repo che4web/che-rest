@@ -180,6 +180,15 @@ impl FilterValue for String {
         Ok(v.to_owned())
     }
 }
+impl FilterValue for che_orm::Uuid {
+    const EXPECTED: &'static str = "UUID";
+    fn parse(value: &str) -> Result<Self, FilterError> {
+        che_orm::Uuid::parse_str(value).map_err(|_| FilterError::InvalidValue {
+            field: String::new(),
+            expected: Self::EXPECTED,
+        })
+    }
+}
 impl FilterValue for time::OffsetDateTime {
     const EXPECTED: &'static str = "RFC3339 datetime";
     fn parse(v: &str) -> Result<Self, FilterError> {
@@ -859,6 +868,50 @@ where
 mod tests {
     use super::*;
 
+    #[derive(Debug, che_orm::Model)]
+    #[orm(table = "json_schema_items")]
+    struct JsonSchemaItem {
+        #[orm(primary_key)]
+        id: i64,
+        config: che_orm::JsonField,
+    }
+    #[derive(che_orm::ModelSerializer)]
+    #[serializer(model = JsonSchemaItem)]
+    struct JsonSchemaSerializer {
+        #[serializer(read_only)]
+        id: i64,
+        config: che_orm::JsonField,
+    }
+    #[test]
+    fn json_field_openapi_is_json_in_writes_responses_and_lists() {
+        let document = openapi_json_for::<JsonSchemaItem, JsonSchemaSerializer>("/items");
+        for name in [
+            "JsonSchemaSerializerCreate",
+            "JsonSchemaSerializerResponse",
+            "JsonSchemaSerializerListItem",
+            "JsonSchemaSerializerPatch",
+        ] {
+            assert_eq!(
+                document["components"]["schemas"][name]["properties"]["config"],
+                json!({})
+            );
+        }
+    }
+
+    #[test]
+    fn uuid_filter_values_parse_and_reject_invalid_ids() {
+        let id = che_orm::Uuid::parse_str("1d997e81-5d63-4c7c-8a35-de054878cd76").unwrap();
+        assert_eq!(
+            <che_orm::Uuid as FilterValue>::parse(&id.to_string()).unwrap(),
+            id
+        );
+        assert!(<che_orm::Uuid as FilterValue>::parse("12").is_err());
+        assert_eq!(
+            <Option<che_orm::Uuid> as FilterValue>::parse(&id.to_string()).unwrap(),
+            Some(id)
+        );
+    }
+
     #[test]
     fn default_signal_names_normalize_nested_paths() {
         let viewset =
@@ -988,7 +1041,9 @@ where
         let property = column
             .map(openapi_column_schema)
             .unwrap_or_else(|| json!({"type": "object"}));
-        let property = if field.related_model.is_some() {
+        let property = if field.rust_type.contains("JsonField") {
+            json!({})
+        } else if field.related_model.is_some() {
             json!({"type": "object"})
         } else {
             property
@@ -1022,7 +1077,9 @@ where
             .columns
             .iter()
             .find(|column| column.name == field.source || column.field_name == field.source);
-        let property = if field.related_model.is_some() {
+        let property = if field.rust_type.contains("JsonField") {
+            json!({})
+        } else if field.related_model.is_some() {
             json!({"type": "object"})
         } else {
             column

@@ -37,6 +37,7 @@ pub fn generate(
 fn models(endpoints: &[ApiEndpoint]) -> String {
     let mut out = HEADER.to_owned();
     out.push_str("import type { ListParams } from \"./api_client\";\n\n");
+    out.push_str("export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };\n\n");
     let mut related = BTreeMap::new();
     for endpoint in unique_models(endpoints) {
         out.push_str(&format!("export interface {} {{\n", endpoint.model_name));
@@ -190,6 +191,12 @@ fn api(endpoints: &[ApiEndpoint]) -> String {
     out.push_str("} from \"./models\";\n\n");
     for endpoint in endpoints {
         let name = api_name(endpoint, endpoints);
+        let id_type = endpoint
+            .fields
+            .iter()
+            .find(|field| field.source == "id")
+            .map(|field| field_ts_type(endpoint, field))
+            .unwrap_or_else(|| "number".into());
         let list_item = if endpoint.list_fields == endpoint.fields {
             endpoint.model_name.clone()
         } else {
@@ -233,7 +240,7 @@ fn api(endpoints: &[ApiEndpoint]) -> String {
                     let extras = "if (fields) for (const [key, value] of Object.entries(fields)) data.append(key, value);";
                     match (operation.method, has_id) {
                         (crate::HttpMethod::Put | crate::HttpMethod::Post, true) => out.push_str(&format!(
-                            "    async {}(id: number, file: Blob, fields?: Record<string, string | Blob>): Promise<{}> {{ const data = new FormData(); data.append(\"file\", file, file instanceof File ? file.name : \"image.png\"); {extras} return (await apiClient.{}<{}>(`{}`, data, {{ headers: {{ \"Content-Type\": undefined }} }})).data; }},\n",
+                            "    async {}(id: {id_type}, file: Blob, fields?: Record<string, string | Blob>): Promise<{}> {{ const data = new FormData(); data.append(\"file\", file, file instanceof File ? file.name : \"image.png\"); {extras} return (await apiClient.{}<{}>(`{}`, data, {{ headers: {{ \"Content-Type\": undefined }} }})).data; }},\n",
                             client.name, response, operation.method.openapi_key(), response, path
                         )),
                         (crate::HttpMethod::Post, false) => out.push_str(&format!(
@@ -241,7 +248,7 @@ fn api(endpoints: &[ApiEndpoint]) -> String {
                             client.name, response, response, path
                         )),
                         (crate::HttpMethod::Delete, true) => out.push_str(&format!(
-                            "    async {}(id: number, fields?: Record<string, string | Blob>): Promise<void> {{ const data = new FormData(); {extras} await apiClient.delete(`{}`, {{ data, headers: {{ \"Content-Type\": undefined }} }}); }},\n",
+                            "    async {}(id: {id_type}, fields?: Record<string, string | Blob>): Promise<void> {{ const data = new FormData(); {extras} await apiClient.delete(`{}`, {{ data, headers: {{ \"Content-Type\": undefined }} }}); }},\n",
                             client.name, path
                         )),
                         _ => {}
@@ -250,7 +257,7 @@ fn api(endpoints: &[ApiEndpoint]) -> String {
                 }
                 match (&operation.request, operation.method) {
                     (Some(request), crate::HttpMethod::Post | crate::HttpMethod::Put | crate::HttpMethod::Patch) if has_id => out.push_str(&format!(
-                        "    async {}(id: number, payload: {}): Promise<{}> {{ return (await apiClient.{}<{}>(`{}`, payload)).data; }},\n",
+                        "    async {}(id: {id_type}, payload: {}): Promise<{}> {{ return (await apiClient.{}<{}>(`{}`, payload)).data; }},\n",
                         client.name, request.name, response, operation.method.openapi_key(), response, path
                     )),
                     (Some(request), crate::HttpMethod::Post | crate::HttpMethod::Put | crate::HttpMethod::Patch) => out.push_str(&format!(
@@ -258,7 +265,7 @@ fn api(endpoints: &[ApiEndpoint]) -> String {
                         client.name, request.name, response, operation.method.openapi_key(), response, path
                     )),
                     (None, crate::HttpMethod::Get) if has_id => out.push_str(&format!(
-                        "    async {}(id: number): Promise<{}> {{ return (await apiClient.get<{}>(`{}`)).data; }},\n",
+                        "    async {}(id: {id_type}): Promise<{}> {{ return (await apiClient.get<{}>(`{}`)).data; }},\n",
                         client.name, response, response, path
                     )),
                     (None, crate::HttpMethod::Get) => out.push_str(&format!(
@@ -266,7 +273,7 @@ fn api(endpoints: &[ApiEndpoint]) -> String {
                         client.name, response, response, path
                     )),
                     (None, crate::HttpMethod::Post) if has_id => out.push_str(&format!(
-                        "    async {}(id: number): Promise<{}> {{ return (await apiClient.post<{}>(`{}`)).data; }},\n",
+                        "    async {}(id: {id_type}): Promise<{}> {{ return (await apiClient.post<{}>(`{}`)).data; }},\n",
                         client.name, response, response, path
                     )),
                     (None, crate::HttpMethod::Post) => out.push_str(&format!(
@@ -340,6 +347,7 @@ fn field_ts_type(endpoint: &ApiEndpoint, field: &che_orm::SerializerField) -> St
         "bool" => "boolean".into(),
         "String" | "&str" | "Option<String>" => "string".into(),
         value if value.contains("ImageField") => "string".into(),
+        value if value.contains("JsonField") => "JsonValue".into(),
         value if value.contains("Uuid") => "string".into(),
         value if value.contains("OffsetDateTime") => "string".into(),
         _ => "unknown".into(),
@@ -655,7 +663,7 @@ mod tests {
             multipart: true,
             openapi: serde_json::json!({}),
         };
-        let endpoint = ApiEndpoint {
+        let mut endpoint = ApiEndpoint {
             app_name: "boards",
             model_name: "Board".into(),
             resource: "boards".into(),
@@ -682,11 +690,23 @@ mod tests {
                 ],
             }],
         };
-        let output = api(&[endpoint]);
+        let output = api(&[endpoint.clone()]);
         assert!(output.contains("async replace(id: number, file: Blob"));
         assert!(output.contains("data.append(\"file\", file"));
         assert!(output.contains("async clear(id: number, fields?"));
         assert!(output.contains("apiClient.delete(`boards/${id}/images/preview/`"));
+        endpoint.fields.push(che_orm::SerializerField {
+            name: "id",
+            source: "id",
+            read_only: true,
+            write_only: false,
+            rust_type: "che_orm::Uuid",
+            related_model: None,
+            many: false,
+        });
+        let uuid_output = api(&[endpoint]);
+        assert!(uuid_output.contains("async replace(id: string, file: Blob"));
+        assert!(uuid_output.contains("async clear(id: string, fields?"));
     }
 
     #[test]
@@ -762,6 +782,15 @@ mod tests {
                     related_model: None,
                     many: false,
                 },
+                che_orm::SerializerField {
+                    name: "config",
+                    source: "config",
+                    read_only: false,
+                    write_only: false,
+                    rust_type: "che_orm::JsonField",
+                    related_model: None,
+                    many: false,
+                },
             ],
             list_fields: vec![],
             columns: vec![crate::module::ApiColumn {
@@ -788,6 +817,7 @@ mod tests {
 
         let generated = models(&[endpoint]);
         assert!(generated.contains("author: User;"));
+        assert!(generated.contains("config: JsonValue;"));
         assert!(generated.contains("name: string;"));
         assert!(generated.contains("status: \"draft\" | \"in_progress\" | \"done\";"));
         assert!(generated.contains("name__contains?: string;"));

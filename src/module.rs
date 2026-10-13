@@ -298,7 +298,16 @@ impl ModuleContext {
             crate::sync::add_rest_openapi(&mut document);
         }
         add_filter_parameters::<V>(&mut document, &viewset);
-        let extension_openapi = crate::rest::extensions::extension_openapi(&extensions);
+        let model_schema = V::Model::schema();
+        let primary_key = model_schema
+            .columns
+            .iter()
+            .find(|column| column.primary_key)
+            .expect("model primary key");
+        let extension_openapi = crate::rest::extensions::extension_openapi_with_id_schema(
+            &extensions,
+            crate::rest::router::openapi_column_schema(primary_key),
+        );
         if let Some(action_paths) = extension_openapi.get("paths").and_then(Value::as_object) {
             if let Some(paths) = document["paths"].as_object_mut() {
                 for (path, item) in action_paths {
