@@ -77,7 +77,9 @@ cargo run --bin manage -- makemigrations
 cargo run --bin manage -- migrate
 ```
 
-Migrations are stored in `src/migrations/<app>/` as compiled Rust modules. `makemigrations` and
+New generated apps store migrations in `src/apps/<app>/migrations/` as compiled Rust modules.
+AppModule exposes the history and writable source path; Management collects installed apps.
+Legacy explicit project registries remain supported. `makemigrations` and
 `migrate` use the built-in forward-only migration system. Run these commands after every model
 schema change; starting the server does not create tables.
 

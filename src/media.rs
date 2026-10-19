@@ -209,7 +209,7 @@ impl<V: ViewSet> ImageFieldEndpoint<V> {
         state: &AppState,
         viewset: &V,
         principal: Option<&CurrentPrincipal>,
-        id: i64,
+        id: <V::Model as Model>::PrimaryKey,
     ) -> AppResult<V::Model> {
         if self.authorize.is_none() {
             V::Permission::default().check(state, principal, ViewAction::Update)?;
@@ -246,7 +246,7 @@ impl<V: ViewSet> ImageFieldEndpoint<V> {
         state: AppState,
         viewset: V,
         principal: Option<CurrentPrincipal>,
-        id: i64,
+        id: <V::Model as Model>::PrimaryKey,
         multipart: Multipart,
     ) -> AppResult<axum::Json<ImageUploadResponse>> {
         let form = parse_image_form(multipart, self.policy.max_bytes).await?;
@@ -284,7 +284,7 @@ impl<V: ViewSet> ImageFieldEndpoint<V> {
         state: AppState,
         viewset: V,
         principal: Option<CurrentPrincipal>,
-        id: i64,
+        id: <V::Model as Model>::PrimaryKey,
         multipart: Multipart,
     ) -> AppResult<StatusCode> {
         let form = parse_image_form(multipart, self.policy.max_bytes).await?;
@@ -343,7 +343,7 @@ impl<V: ViewSet> ViewSetExtension<V> for ImageFieldEndpoint<V> {
                 move |Extension(state): Extension<AppState>,
                       Extension(viewset): Extension<V>,
                       who: Option<Extension<CurrentPrincipal>>,
-                      AxumPath(id): AxumPath<i64>,
+                      AxumPath(id): AxumPath<<V::Model as Model>::PrimaryKey>,
                       form: Multipart| {
                     let endpoint = upload.clone();
                     async move {
@@ -364,7 +364,7 @@ impl<V: ViewSet> ViewSetExtension<V> for ImageFieldEndpoint<V> {
                 move |Extension(state): Extension<AppState>,
                       Extension(viewset): Extension<V>,
                       who: Option<Extension<CurrentPrincipal>>,
-                      AxumPath(id): AxumPath<i64>,
+                      AxumPath(id): AxumPath<<V::Model as Model>::PrimaryKey>,
                       form: Multipart| {
                     let endpoint = clear.clone();
                     async move {
@@ -512,10 +512,10 @@ impl ImageStorage {
 
     /// Store and attach a replacement only after validation succeeds. If the
     /// database write fails, discard the new file and leave the old one intact.
-    pub async fn replace<M: Model<PrimaryKey = i64> + Send + 'static>(
+    pub async fn replace<M: Model + Send + 'static>(
         &self,
         state: &AppState,
-        id: i64,
+        id: M::PrimaryKey,
         column: ModelField<M, Option<ImageField>>,
         previous: Option<&ImageField>,
         bytes: &[u8],
@@ -542,7 +542,7 @@ impl ImageStorage {
     pub async fn replace_with<M, F>(
         &self,
         state: &AppState,
-        id: i64,
+        id: M::PrimaryKey,
         column: ModelField<M, Option<ImageField>>,
         previous: Option<&ImageField>,
         bytes: &[u8],
@@ -550,7 +550,7 @@ impl ImageStorage {
         prepare: F,
     ) -> AppResult<ImageField>
     where
-        M: Model<PrimaryKey = i64> + Send + 'static,
+        M: Model + Send + 'static,
         F: FnOnce(&ImageField, ValidatedWrite<M>) -> AppResult<ValidatedWrite<M>>,
     {
         let next = self.save(bytes, policy)?;
@@ -592,10 +592,10 @@ impl ImageStorage {
         Ok(next)
     }
 
-    pub async fn clear<M: Model<PrimaryKey = i64> + Send + 'static>(
+    pub async fn clear<M: Model + Send + 'static>(
         &self,
         state: &AppState,
-        id: i64,
+        id: M::PrimaryKey,
         column: ModelField<M, Option<ImageField>>,
         previous: Option<&ImageField>,
     ) -> AppResult<()> {
@@ -605,13 +605,13 @@ impl ImageStorage {
     pub async fn clear_with<M, F>(
         &self,
         state: &AppState,
-        id: i64,
+        id: M::PrimaryKey,
         column: ModelField<M, Option<ImageField>>,
         previous: Option<&ImageField>,
         prepare: F,
     ) -> AppResult<()>
     where
-        M: Model<PrimaryKey = i64> + Send + 'static,
+        M: Model + Send + 'static,
         F: FnOnce(ValidatedWrite<M>) -> AppResult<ValidatedWrite<M>>,
     {
         let reference = column.column();
@@ -832,9 +832,9 @@ impl ImageStorage {
     }
 }
 
-async fn image_update_conflict<M: Model<PrimaryKey = i64> + Send + 'static>(
+async fn image_update_conflict<M: Model + Send + 'static>(
     state: &AppState,
-    id: i64,
+    id: M::PrimaryKey,
 ) -> AppResult<AppError> {
     Ok(if state.database().get::<M>(id).await?.is_some() {
         AppError::Conflict("image has changed".into())

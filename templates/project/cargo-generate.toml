@@ -1,0 +1,17 @@
+[template]
+cargo_generate_version = ">=0.23.0"
+
+[placeholders.che_rest_path]
+type = "string"
+prompt = "Local che-rest path (empty for crates.io)"
+default = ""
+
+[placeholders.che_orm_path]
+type = "string"
+prompt = "Local che-orm path (empty for crates.io)"
+default = ""
+
+[placeholders.with_auth]
+type = "bool"
+prompt = "Install authentication?"
+default = true

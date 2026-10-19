@@ -24,7 +24,7 @@ export function useModelList<T extends BaseEntity, CreateDTO = Partial<T>, Updat
      try { const response = await api.list(cleanParams(filters) as Params); if (request !== requestSequence) return null; items.value = response.results; count.value = response.count; return response; }
      catch (err) { if (request === requestSequence) handleError(err, "Unable to load objects"); return null; } finally { if (request === requestSequence) loading.value = false; }
    }
-  async function remove(id: number) { loading.value = true; try { await api.remove(id); await load(); return true; } catch (err) { handleError(err, "Unable to delete object"); return false; } finally { loading.value = false; } }
+  async function remove(id: number | string) { loading.value = true; try { await api.remove(id); await load(); return true; } catch (err) { handleError(err, "Unable to delete object"); return false; } finally { loading.value = false; } }
   if (options.reloadOnFilterChange) watch(filters, () => { if (skipNextFilterReload) { skipNextFilterReload = false; return; } clearTimeout(loadTimer); loadTimer = setTimeout(() => load(), options.debounceMs ?? 250); });
   if (options.autoLoad) onMounted(() => load());
   function handleError(err: unknown, fallback: string) { const message = errorMessage(err, fallback); error.value = message; options.onError?.(message, err); }

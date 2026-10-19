@@ -10,6 +10,7 @@
 - `cargo test` is the main library and integration test check, including media storage, route authorization, and ViewSet image cleanup tests.
 - `cargo clippy --all-targets -- -D warnings` passes and is required for release verification.
 - The minimum supported Rust version is 1.88; verify packaged builds on that toolchain when changing dependencies.
+- After changing project templates, run `cargo test --lib project::tests::generated_project_builds_and_migrates -- --ignored`; it builds a generated authenticated application and verifies initial/repeated compiled migrations.
 
 ## Framework Gotchas
 - `CrudViewSet::<Model, Serializer>::new("/resource")` uses serializer types; no serializer instance is constructed.
@@ -28,7 +29,9 @@
 - `examples/cli_fullstack` exposes optional writable `Task.assignee_id`; `/auth/users/` is a read-only admin relation endpoint and requires an admin user.
 - Installing `che_rest::auth::module()` enables token auth middleware for all routes under the API prefix and separately adds `/api-token-auth/` outside the prefix.
 - Installing `che_rest::channels::module()` adds `/api/ws/` for declared public signals. CRUD lifecycle signals are opt-in via `ViewSet::signal_access`, use default dotted names like `tasks.created`, and publish `{ "id": ... }` payloads. Use `ModuleContext::signal(...)` for custom public signals. `AppState::app_channels()` remains internal-only.
-- Management migrations live in `src/migrations/<app>/`; `makemigrations` derives operations from installed app schemas and writes Rust modules, while `migrate` applies the compiled registry.
+- New project migrations live in `src/apps/<app>/migrations/`. AppModule::migrations exposes compiled history; migration_path exposes its writable source directory. Management collects installed histories automatically. Library modules omit migration_path. Keep legacy Management::migrations registries compatible.
+- `src/project.rs` owns the startproject/startapp templates. Generated dependency requirements must match the current framework and ORM versions; include a compilable empty `all()` registry before the first migration. The initial migration name is passed as `makemigrations --name initial`, not as the positional application argument.
+- `templates/project` is the cargo-generate template. Keep its skeleton and AGENTS.md aligned with `src/project.rs`. Default makemigrations routes to app-owned directories; an explicit non-default --dir preserves legacy directory behavior. See `templates/README.md` for generation commands.
 - Every `ViewSet` declares `type ListSerializer`: use `Self::Serializer` for matching list/detail shapes or a separate `ModelSerializer` with the same model and queryset input. Its fields drive list responses, OpenAPI, generated TypeScript list items and admin table columns. After serializer changes, regenerate clients.
 - Table-rebuild migrations temporarily remove and restore historically declared dependent triggers/views even when another app owns them; review the generated operations and keep unmanaged SQLite objects subject to executor checks.
 - Config loads `[database] url = "..."` and optional `[media] root = "uploads"`; use `migrate --config PATH` to select another database configuration. There is no `--database-url` flag in the current CLI.
@@ -42,3 +45,4 @@
 - Typed REST CRUD, filtering, pagination, relation loading, response reloads, writable FK metadata, and OpenAPI/Swagger integration use the ORM2 API.
 - `examples/cli_fullstack` demonstrates nested server-owned `Task.author` plus writable nullable `Task.assignee_id` through REST and the generated admin relation picker.
 - Keep `cargo fmt --check`, `cargo test`, frontend builds, and the `cli_fullstack` smoke test passing when changing this surface.
+- SyncViewSet writes use the ordinary POST/PATCH/PUT/DELETE routes with serializer validation and preparation. Conditional sync headers carry revision, offline UUID and receipt identity; there is no sync/push route. RestSyncRequest encodes single-record writes, and HTTP transports advertise max_mutations() == 1. Preserve canonical sync-mode responses, transactional receipts/journal and independently retryable lifecycle effects.

@@ -3,15 +3,15 @@
 
 import axios from "axios";
 
-export interface BaseEntity { id?: number; }
+export interface BaseEntity { id?: number | string; }
 export interface ListParams { ordering?: string; limit?: number; offset?: number; [key: string]: string | number | boolean | null | undefined; }
 export interface PaginatedResponse<T> { count: number; results: T[]; }
 export interface ModelApi<T extends BaseEntity, CreateDTO = Partial<T>, UpdateDTO = Partial<T>, Params extends ListParams = ListParams, ListItem extends BaseEntity = T> {
   list: (params?: Params) => Promise<PaginatedResponse<ListItem>>;
-  retrieve: (id: number) => Promise<T>;
+  retrieve: (id: number | string) => Promise<T>;
   create: (payload: CreateDTO) => Promise<T>;
-  update: (id: number, payload: UpdateDTO) => Promise<T>;
-  remove: (id: number) => Promise<void>;
+  update: (id: number | string, payload: UpdateDTO) => Promise<T>;
+  remove: (id: number | string) => Promise<void>;
 }
  export const apiClient = axios.create({ baseURL: import.meta.env.VITE_API_BASE_URL ?? "/api", withCredentials: true, xsrfCookieName: "csrf_token", xsrfHeaderName: "X-CSRF-Token", headers: { "Content-Type": "application/json" } });
 let authToken: string | null = null;

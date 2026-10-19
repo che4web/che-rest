@@ -132,8 +132,42 @@ pub struct ApiExtension {
     pub operations: Vec<ApiOperation>,
 }
 
+pub type MutationFuture<'a, T> = Pin<Box<dyn Future<Output = AppResult<T>> + Send + 'a>>;
+
+/// Replaces ORM persistence while retaining validation and lifecycle hooks.
+pub trait MutationBackend<V: ViewSet>: Send + Sync + 'static {
+    /// Optional conditional/idempotent handling on the ordinary CRUD routes.
+    fn rest<'a>(
+        &'a self,
+        _state: &'a AppState,
+        _principal: Option<&'a CurrentPrincipal>,
+        _action: ViewAction,
+        _id: Option<<V::Model as che_orm::Model>::PrimaryKey>,
+        _headers: &'a axum::http::HeaderMap,
+        _data: Value,
+    ) -> MutationFuture<'a, Option<axum::response::Response>> {
+        Box::pin(async { Ok(None) })
+    }
+    fn save<'a>(
+        &'a self,
+        state: &'a AppState,
+        principal: Option<&'a CurrentPrincipal>,
+        write: crate::ValidatedWrite<V::Model>,
+    ) -> MutationFuture<'a, Option<V::Model>>;
+    fn delete<'a>(
+        &'a self,
+        state: &'a AppState,
+        principal: Option<&'a CurrentPrincipal>,
+        id: <V::Model as che_orm::Model>::PrimaryKey,
+    ) -> MutationFuture<'a, ()>;
+}
+
 pub trait MutationHook<V: ViewSet>: Send + Sync + 'static {
     fn id(&self) -> &'static str;
+    fn installed(&self, _state: &AppState, _viewset: &V, _hooks: &[Arc<dyn MutationHook<V>>]) {}
+    fn backend(&self) -> Option<&dyn MutationBackend<V>> {
+        None
+    }
     fn prepare_delete(&self, _model: &V::Model) -> serde_json::Value {
         serde_json::Value::Null
     }
@@ -197,6 +231,16 @@ impl<V: ViewSet> ViewSetConfig<V> {
     where
         E: ViewSetExtension<V>,
     {
+        // Media's direct CAS writes need a journal-aware adapter before they can
+        // share a sync ViewSet. Reject either installation order.
+        let media = |id: &str| matches!(id, "image-field" | "image-create");
+        if (E::ID == "sync" && self.extensions.iter().any(|item| media(item.id)))
+            || (media(E::ID) && self.extensions.iter().any(|item| item.id == "sync"))
+        {
+            return Err(AppError::BadRequest(
+                "sync and direct-write media endpoints cannot share a ViewSet".into(),
+            ));
+        }
         if E::ID != "image-field" && self.extensions.iter().any(|item| item.id == E::ID) {
             return Err(AppError::BadRequest(format!(
                 "extension `{}` is already installed for {}",
@@ -218,6 +262,9 @@ impl<V: ViewSet> ViewSetConfig<V> {
     }
 
     pub fn mutation_hook<H: MutationHook<V>>(&mut self, hook: H) -> AppResult<()> {
+        if hook.backend().is_some() && self.hooks.iter().any(|item| item.backend().is_some()) {
+            return Err(AppError::BadRequest("multiple mutation backends".into()));
+        }
         if self.hooks.iter().any(|item| item.id() == hook.id()) {
             return Err(AppError::BadRequest(format!(
                 "mutation hook `{}` is already installed for {}",
@@ -456,6 +503,13 @@ fn operation_json(spec: &OperationSpec, method: HttpMethod) -> Value {
 }
 
 pub fn extension_openapi(extensions: &[ApiExtension]) -> Value {
+    extension_openapi_with_id_schema(extensions, json!({"type": "integer", "format": "int64"}))
+}
+
+pub(crate) fn extension_openapi_with_id_schema(
+    extensions: &[ApiExtension],
+    id_schema: Value,
+) -> Value {
     let mut paths = Map::<String, Value>::new();
     for extension in extensions {
         for operation in &extension.operations {
@@ -466,7 +520,7 @@ pub fn extension_openapi(extensions: &[ApiExtension]) -> Value {
                 .as_object_mut()
                 .expect("OpenAPI path must be an object");
             if !object.contains_key("parameters") {
-                let parameters = path_parameters(&operation.path);
+                let parameters = path_parameters(&operation.path, &id_schema);
                 if !parameters.is_empty() {
                     object.insert("parameters".into(), Value::Array(parameters));
                 }
@@ -480,14 +534,14 @@ pub fn extension_openapi(extensions: &[ApiExtension]) -> Value {
     json!({"paths": paths})
 }
 
-fn path_parameters(path: &str) -> Vec<Value> {
+fn path_parameters(path: &str, id_schema: &Value) -> Vec<Value> {
     path.split('{')
         .skip(1)
         .filter_map(|segment| segment.split('}').next())
         .filter(|name| !name.is_empty())
         .map(|name| {
             let schema = if name == "id" {
-                json!({"type": "integer", "format": "int64"})
+                id_schema.clone()
             } else {
                 json!({"type": "string"})
             };
@@ -499,6 +553,18 @@ fn path_parameters(path: &str) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uuid_extension_paths_preserve_id_type() {
+        let parameters = path_parameters(
+            "/rules/{id}/run/",
+            &json!({"type":"string","format":"uuid"}),
+        );
+        assert_eq!(
+            parameters[0]["schema"],
+            json!({"type":"string","format":"uuid"})
+        );
+    }
     use crate::{
         AllowAny,
         auth::{AdminUserFilterSet, AdminUserSerializer},

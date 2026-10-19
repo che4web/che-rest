@@ -269,6 +269,7 @@ dependencies = [
  "argon2",
  "axum",
  "che-orm",
+ "che-sync",
  "clap",
  "futures-util",
  "hex",
@@ -281,6 +282,26 @@ dependencies = [
  "time",
  "tokio",
  "toml",
+]
+
+[[package]]
+name = "che-sync"
+version = "0.1.0"
+dependencies = [
+ "che-orm",
+ "che-sync-protocol",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "che-sync-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "time",
+ "uuid",
 ]
 
 [[package]]

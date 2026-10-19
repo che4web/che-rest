@@ -14,6 +14,7 @@ pub mod project;
 pub mod rest;
 pub mod signals;
 pub mod state;
+pub mod sync;
 
 pub use app_channels::AppChannels;
 pub use auth::{CurrentPrincipal, CurrentUser, IsAdminUser, IsAuthenticated};
@@ -30,8 +31,10 @@ pub use project::{StartAppOptions, StartProjectOptions, startapp, startproject};
 pub use rest::{
     AllowAny, ApiExtension, ApiOperation, ApiSchema, ApiSchemaDefinition, ClientMethod,
     CrudViewSet, ExtensionContext, Filter, FilterError, FilterSet, FilterSetSpec, FilterValue,
-    HttpMethod, Lookup, MutationHook, OperationSpec, Permission, RestQuerySet, ViewAction, ViewSet,
-    ViewSetConfig, ViewSetExtension, openapi_column_schema, openapi_json_for, router,
+    HttpMethod, Lookup, MutationBackend, MutationFuture, MutationHook, OperationSpec, Permission,
+    RestQuerySet, ViewAction, ViewSet, ViewSetConfig, ViewSetExtension, openapi_column_schema,
+    openapi_json_for, router,
 };
 pub use signals::{SignalAccess, SignalBus, SignalEvent};
 pub use state::{AppState, CurrentUserResolverFuture};
+pub use sync::{RestSyncRequest, SyncEndpoints, SyncViewSet};

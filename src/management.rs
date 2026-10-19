@@ -211,6 +211,14 @@ impl Management {
                 dry_run,
                 merge,
             } => {
+                if dir == std::path::Path::new("migrations")
+                    && self
+                        .apps
+                        .iter()
+                        .any(|module| module.migration_path().is_some())
+                {
+                    return self.generate_app_migrations(app, name, empty, check, dry_run, merge);
+                }
                 if merge {
                     let Some(app) = app else {
                         return Err("compiled --merge requires an application name".into());
@@ -391,6 +399,104 @@ impl Management {
                     out.display()
                 );
             }
+        }
+        Ok(())
+    }
+
+    fn generate_app_migrations(
+        &self,
+        app: Option<String>,
+        name: Option<String>,
+        empty: bool,
+        check: bool,
+        dry_run: bool,
+        merge: bool,
+    ) -> ManageResult<()> {
+        if app.is_none() && (empty || merge) {
+            return Err("--empty and --merge require an application name".into());
+        }
+        let modules: Vec<_> = match app.as_deref() {
+            Some(name) => vec![
+                self.apps
+                    .find(name)
+                    .ok_or_else(|| format!("unknown installed application `{name}`"))?,
+            ],
+            None => self
+                .apps
+                .iter()
+                .filter(|module| module.migration_path().is_some())
+                .collect(),
+        };
+        let mut directories = BTreeMap::new();
+        for module in &modules {
+            let path = module.migration_path().ok_or_else(|| format!("application {} has no writable migration_path; use an explicit --dir for legacy registries", module.name()))?;
+            let dir = self.project_root.join(path);
+            ensure_compiled_registry_matches(&dir, &self.migrations, module.name())?;
+            directories.insert(module.name().to_owned(), dir);
+        }
+        let mut generated = Vec::new();
+        let no_local_history = self
+            .migrations
+            .iter()
+            .all(|migration| !directories.contains_key(&migration.id.app));
+        if app.is_none() && no_local_history {
+            generated = build_initial_cycle_batch_with_history(
+                &self.apps,
+                name.as_deref().unwrap_or("initial"),
+                &self.migrations,
+            )?;
+        } else {
+            let mut history = self.migrations.clone();
+            for module in modules {
+                let label = name.clone().unwrap_or_else(|| {
+                    if merge {
+                        "merge".into()
+                    } else {
+                        generated_migration_label()
+                    }
+                });
+                let migration = if merge {
+                    Some(build_operation_merge_migration(
+                        &history,
+                        module.name(),
+                        &label,
+                    )?)
+                } else {
+                    build_operation_migration(&self.apps, &history, module.name(), &label, empty)?
+                };
+                if let Some(migration) = migration {
+                    history.push(migration.clone());
+                    generated.push(migration);
+                }
+            }
+        }
+        if generated.is_empty() {
+            println!("No model changes detected.");
+            return Ok(());
+        }
+        for migration in &generated {
+            if !directories.contains_key(&migration.id.app) {
+                return Err(format!(
+                    "application {} needs a writable migration_path",
+                    migration.id.app
+                )
+                .into());
+            }
+        }
+        if check {
+            return Err("model changes need migrations".into());
+        }
+        if dry_run {
+            for migration in generated {
+                print!("{}", render_migration_rust(&migration));
+            }
+            return Ok(());
+        }
+        let paths = write_operation_migration_batch_to(&generated, |migration| {
+            directories[&migration.id.app].clone()
+        })?;
+        for path in paths {
+            println!("wrote operation migration to {}", path.display());
         }
         Ok(())
     }
@@ -1134,9 +1240,16 @@ fn write_operation_migration_batch(
     root: &std::path::Path,
     migrations: &[Migration],
 ) -> ManageResult<Vec<PathBuf>> {
+    write_operation_migration_batch_to(migrations, |migration| root.join(&migration.id.app))
+}
+
+fn write_operation_migration_batch_to(
+    migrations: &[Migration],
+    directory: impl Fn(&Migration) -> PathBuf,
+) -> ManageResult<Vec<PathBuf>> {
     for migration in migrations {
         validate_operation_migration_name(&migration.id.name)?;
-        let dir = root.join(&migration.id.app);
+        let dir = directory(migration);
         let source = dir.join(format!("m{}.rs", migration.id.name));
         if source.exists() {
             return Err(format!("migration source {} already exists", source.display()).into());
@@ -1156,7 +1269,7 @@ fn write_operation_migration_batch(
 
     let mut written = Vec::new();
     for migration in migrations {
-        let dir = root.join(&migration.id.app);
+        let dir = directory(migration);
         let created_dir = !dir.exists();
         let registry = dir.join("mod.rs");
         let previous_registry = match fs::read(&registry) {
@@ -1924,11 +2037,13 @@ async fn operation_migration_status(
     let pending = pending_operation_migrations(&graph, &applied)
         .map_err(|error| error as Box<dyn std::error::Error>)?;
     for migration in graph.ordered() {
-        if applied.contains_key(&(migration.id.app.clone(), migration.id.name.clone())) {
-            println!("applied {}:{}", migration.id.app, migration.id.name);
+        let status = if applied.contains_key(&(migration.id.app.clone(), migration.id.name.clone()))
+        {
+            "applied"
         } else {
-            println!("pending {}:{}", migration.id.app, migration.id.name);
-        }
+            "pending"
+        };
+        println!("{status} {}:{}", migration.id.app, migration.id.name);
     }
     Ok(pending.len())
 }

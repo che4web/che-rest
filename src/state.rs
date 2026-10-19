@@ -22,6 +22,12 @@ pub struct AppState {
     app_channels: AppChannels,
     signals: SignalBus,
     current_user_resolver: Option<CurrentUserResolver>,
+    pub(crate) sync_effects_lock: Arc<tokio::sync::Mutex<()>>,
+    pub(crate) sync_lifecycle: Arc<
+        std::sync::RwLock<
+            std::collections::HashMap<String, Vec<Arc<dyn crate::sync::SyncLifecycle>>>,
+        >,
+    >,
 }
 
 impl AppState {
@@ -32,6 +38,8 @@ impl AppState {
             app_channels: AppChannels::new(),
             signals: SignalBus::new(),
             current_user_resolver: None,
+            sync_effects_lock: Arc::default(),
+            sync_lifecycle: Arc::default(),
         }
     }
 
@@ -44,6 +52,8 @@ impl AppState {
             app_channels: AppChannels::new(),
             signals: SignalBus::new(),
             current_user_resolver: None,
+            sync_effects_lock: Arc::default(),
+            sync_lifecycle: Arc::default(),
         })
     }
 

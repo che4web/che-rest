@@ -3,6 +3,8 @@
 
 import type { ListParams } from "./api_client";
 
+export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+
 export interface Task {
   id: number;
   author: User;

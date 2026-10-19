@@ -1,0 +1,262 @@
+//! Run: cargo run --example todo_sync
+#[path = "todo_sync/support.rs"]
+mod todo;
+
+use che_orm::{OrmError, Uuid};
+use che_rest::Server;
+use che_sync::{SchemaRole, SyncClient, SyncEngine, SyncTransport, TransportFuture, protocol::*};
+use serde::{Serialize, de::DeserializeOwned};
+
+struct HttpTransport {
+    http: reqwest::Client,
+    base: String,
+    token: String,
+}
+
+impl HttpTransport {
+    async fn write(&self, request: PushRequest) -> Result<PushResult, OrmError> {
+        let model = request
+            .operation
+            .mutations
+            .first()
+            .ok_or_else(|| OrmError::Configuration("empty operation".into()))?
+            .model
+            .clone();
+        let (resource, write) = match model.as_str() {
+            "projects.project" => (
+                "projects",
+                che_rest::RestSyncRequest::new::<todo::Project, todo::ProjectSerializer>(request)?,
+            ),
+            "todo.todo" => (
+                "todos",
+                che_rest::RestSyncRequest::new::<todo::Todo, todo::TodoSerializer>(request)?,
+            ),
+            _ => return Err(OrmError::Configuration("unknown sync model".into())),
+        };
+        let base = self
+            .base
+            .replace("/todos/sync", &format!("/{resource}"))
+            .replace("/projects/sync", &format!("/{resource}"));
+        let url = if write.method == reqwest::Method::POST {
+            format!("{base}/")
+        } else {
+            format!("{base}/{}/", write.entity_id)
+        };
+        let response = self
+            .http
+            .request(write.method, url)
+            .headers(write.headers)
+            .header("Authorization", format!("Token {}", self.token))
+            .json(&write.body)
+            .send()
+            .await
+            .map_err(network)?;
+        if response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            == Some("application/vnd.che-sync+json")
+        {
+            response.json().await.map_err(network)
+        } else {
+            let status = response.status();
+            if status.is_client_error() {
+                Ok(PushResult::Rejected {
+                    reason: response.text().await.map_err(network)?,
+                })
+            } else {
+                Err(OrmError::Interaction(format!(
+                    "unexpected REST response {status}"
+                )))
+            }
+        }
+    }
+    async fn post<Q: Serialize, R: DeserializeOwned>(
+        &self,
+        action: &str,
+        request: Q,
+    ) -> Result<R, OrmError> {
+        self.http
+            .post(format!("{}/{action}/", self.base))
+            .header("Authorization", format!("Token {}", self.token))
+            .json(&request)
+            .send()
+            .await
+            .map_err(network)?
+            .error_for_status()
+            .map_err(network)?
+            .json()
+            .await
+            .map_err(network)
+    }
+}
+fn network(error: reqwest::Error) -> OrmError {
+    OrmError::Interaction(error.to_string())
+}
+impl SyncTransport for HttpTransport {
+    fn max_mutations(&self) -> usize {
+        1
+    }
+    fn full_load(&self) -> TransportFuture<'_, Snapshot> {
+        Box::pin(async move {
+            match self
+                .post(
+                    "pull",
+                    PullRequest {
+                        protocol_version: PROTOCOL_VERSION,
+                        cursor: None,
+                        limit: 100,
+                    },
+                )
+                .await?
+            {
+                PullResult::Full(snapshot) => Ok(snapshot),
+                _ => Err(OrmError::Interaction("expected full load".into())),
+            }
+        })
+    }
+    fn push_model(&self, _model: &str, request: PushRequest) -> TransportFuture<'_, PushResult> {
+        Box::pin(self.write(request))
+    }
+    fn push(&self, request: PushRequest) -> TransportFuture<'_, PushResult> {
+        Box::pin(self.write(request))
+    }
+    fn pull(&self, request: PullRequest) -> TransportFuture<'_, PullResult> {
+        Box::pin(self.post("pull", request))
+    }
+    fn snapshot(&self) -> TransportFuture<'_, Snapshot> {
+        Box::pin(async move {
+            self.http
+                .get(format!("{}/snapshot/", self.base))
+                .header("Authorization", format!("Token {}", self.token))
+                .send()
+                .await
+                .map_err(network)?
+                .error_for_status()
+                .map_err(network)?
+                .json()
+                .await
+                .map_err(network)
+        })
+    }
+}
+
+async fn drain(engine: &SyncEngine<HttpTransport>) -> Result<(), OrmError> {
+    loop {
+        let report = engine.sync_once().await?;
+        if report.conflicts > 0 || report.blocked {
+            return Err(OrmError::Configuration(
+                "resolve conflicts before continuing".into(),
+            ));
+        }
+        if !report.has_more {
+            return Ok(());
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let (state, token) = todo::demo_state().await?;
+    let router = Server::new(state).install(todo::apps()).build().await?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let base = format!("http://{}/api/todos/sync", listener.local_addr()?);
+    let server = tokio::spawn(async move { axum::serve(listener, router).await });
+    let a = SyncClient::open(
+        todo::database(SchemaRole::Client).await?,
+        todo::registry()?,
+        "todo-board",
+    )
+    .await?;
+    let b = SyncClient::open(
+        todo::database(SchemaRole::Client).await?,
+        todo::registry()?,
+        "todo-board",
+    )
+    .await?;
+    let transport = || HttpTransport {
+        http: reqwest::Client::new(),
+        base: base.clone(),
+        token: token.clone(),
+    };
+    let ea = SyncEngine::for_model::<todo::Todo>(a.clone(), transport())?;
+    let eb = SyncEngine::for_model::<todo::Todo>(b.clone(), transport())?;
+
+    let project = todo::Project {
+        id: Uuid::now_v7(),
+        title: "Errands".into(),
+        ..Default::default()
+    };
+    a.save(&project).await?;
+    let item = todo::Todo {
+        id: Uuid::now_v7(),
+        title: "Buy milk".into(),
+        done: false,
+        project_id: Some(project.id),
+        ..Default::default()
+    };
+    a.save(&item).await?; // Entirely offline; no HTTP request.
+    println!(
+        "Created offline: {:?}",
+        a.database().get::<todo::Todo>(item.id).await?
+    );
+    drain(&ea).await?;
+    drain(&eb).await?;
+    println!(
+        "FK parent synchronized automatically: {:?}",
+        b.database().get::<todo::Project>(project.id).await?
+    );
+
+    // Independent edits made offline on two devices merge automatically.
+    a.save(&todo::Todo {
+        title: "Buy milk and bread".into(),
+        ..item
+    })
+    .await?;
+    b.save(&todo::Todo {
+        id: item.id,
+        title: "Buy milk".into(),
+        done: true,
+        project_id: Some(project.id),
+        ..Default::default()
+    })
+    .await?;
+    drain(&ea).await?;
+    drain(&eb).await?;
+    drain(&ea).await?;
+    println!(
+        "Merged over HTTP: {:?}",
+        a.database().get::<todo::Todo>(item.id).await?
+    );
+
+    // Project has its own endpoint, cursor and outgoing queue. Existing parent
+    // edits are sent by its own engine, rather than by the Todo engine.
+    a.save(&todo::Project {
+        id: project.id,
+        title: "Home errands".into(),
+        ..Default::default()
+    })
+    .await?;
+    let ep = SyncEngine::for_model::<todo::Project>(
+        a.clone(),
+        HttpTransport {
+            http: reqwest::Client::new(),
+            base: base.replace("/todos/", "/projects/"),
+            token: token.clone(),
+        },
+    )?;
+    drain(&ep).await?;
+    drain(&eb).await?;
+    println!(
+        "Independent Project feed: {:?}",
+        b.database().get::<todo::Project>(project.id).await?
+    );
+
+    b.delete::<todo::Todo>(item.id).await?;
+    drain(&eb).await?;
+    drain(&ea).await?;
+    assert!(a.database().get::<todo::Todo>(item.id).await?.is_none());
+    println!("Offline delete synchronized to both devices.");
+    server.abort();
+    Ok(())
+}

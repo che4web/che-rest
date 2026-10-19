@@ -7,8 +7,6 @@ type ProjectResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 const APP_MODULES_MARKER: &str = "// che-rest:startapp modules";
 const APP_INSTALL_MARKER: &str = "// che-rest:startapp installed apps";
-const MIGRATION_MODULES_MARKER: &str = "// che-rest:migrations modules";
-const MIGRATION_INSTALL_MARKER: &str = "// che-rest:migrations installed apps";
 
 #[derive(Debug, Clone)]
 pub struct StartProjectOptions {
@@ -58,17 +56,13 @@ pub fn startproject(options: StartProjectOptions) -> ProjectResult<()> {
         &project_dir.join("src/apps/mod.rs"),
         &apps_mod_template(options.with_auth),
     )?;
-    write_file(
-        &project_dir.join("src/migrations/mod.rs"),
-        migrations_mod_template(),
-    )?;
 
     println!("Created project {}", project_dir.display());
     println!("Next steps:");
     println!("  cd {}", project_dir.display());
     println!("  cargo run --bin manage -- startapp tasks --model Task");
     println!("  cargo run --bin manage -- schema");
-    println!("  cargo run --bin manage -- makemigrations initial");
+    println!("  cargo run --bin manage -- makemigrations --name initial");
     println!("  cargo run --bin manage -- migrate");
     println!("  cargo run");
 
@@ -104,7 +98,10 @@ pub fn startapp(options: StartAppOptions) -> ProjectResult<()> {
         &app_mod_template(&options.name, &models),
     )?;
     register_app(&options.root.join("src/apps/mod.rs"), &options.name)?;
-    register_migration_app(&options.root.join("src/migrations"), &options.name)?;
+    write_file(
+        &app_dir.join("migrations/mod.rs"),
+        "// che-orm: migrations begin\npub fn all() -> Vec<che_orm::Migration> { vec![] }\n// che-orm: migrations end\n",
+    )?;
 
     println!("Created app {}", app_dir.display());
     println!("Next steps:");
@@ -235,6 +232,7 @@ fn cargo_toml_template(name: &str, che_rest_path: &str, che_orm_path: &str) -> S
 name = "{name}"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
 default-run = "{name}"
 
 [dependencies]
@@ -285,14 +283,18 @@ application startup.
 
 ```bash
 cargo run --bin manage -- schema
-cargo run --bin manage -- makemigrations initial
+cargo run --bin manage -- makemigrations --name initial
 cargo run --bin manage -- migrate
 cargo run
 ```
 
 `makemigrations` compares installed schemas with the compiled migration registry and writes Rust
-migration modules under `src/migrations/<app>/`. `migrate` applies that registry through the built-in
-forward-only SQLite executor. It is the only command that creates or changes database tables;
+migration modules under `src/apps/<app>/migrations/`. Apps expose their compiled
+history through `AppModule::migrations()` and their source directory through
+`migration_path()`. `migrate` collects installed app histories through the built-in
+forward-only SQLite executor used by this che-rest build. The ORM also supports PostgreSQL
+in separately configured builds; changing only the database URL does not select a backend.
+`migrate` is the deployment command that creates or changes database tables;
 `Server::build()` does not alter the schema.
 
 ## App Structure
@@ -303,6 +305,7 @@ forward-only SQLite executor. It is the only command that creates or changes dat
 - `src/apps/<app>/filters.rs`: list query filters.
 - `src/apps/<app>/views.rs`: typed CRUD viewsets and permissions.
 - `src/bin/manage.rs`: management command entrypoint.
+- `src/apps/<app>/migrations/`: portable application-owned compiled history.
 
 Register CRUD with `ctx.viewset_with(views::UserViewSet)`. This registers the model
 schema, API metadata, and router together. Do not use only `ctx.route(...)` for a model API.
@@ -311,12 +314,45 @@ schema, API metadata, and router together. Do not use only `ctx.route(...)` for 
 
 - Assign server-owned fields in `ViewSet::prepare_create()` or a custom serializer validation flow.
 - Mark server-owned serializer fields read-only so clients cannot supply them.
+- Database operations are async. Use awaited methods and transaction callbacks
+  `|tx| Box::pin(async move {{ ... }})`.
+- Keep serializers database-independent; load relations in the ViewSet queryset.
+- Preserve applied migration identities and checksums. Review generated operations
+  and use explicit data migrations when existing values need conversion.
 - Use `IsAuthenticated` for resources that require the current user.
 - Application events use `AppState::app_channels()` and `AppModule::subscribe()`.
 - `AppState::app_channels()` is for internal application events and is never a public WebSocket channel.
 - Public WebSocket signals use `AppState::signals()` and must be declared with `ModuleContext::signal(...)`; CRUD lifecycle signals are opt-in via `ViewSet::signal_access` and publish `{{ "id": ... }}` payloads.
 - Generated admin uses session cookies and the readable `csrf_token` cookie.
 {auth_note}
+## Synchronization
+
+Generated apps use ordinary CRUD models by default. For local-first models, use
+UUID keys and `#[orm(sync, sync_name = "app.model")]` with shared business fields.
+Register server models with `SchemaSet::server_model` and client models with
+`SchemaSet::client_model`; only clients create shadow tables. Keep stable wire
+names with field-level `#[orm(sync_name = "stable_name")]` when renaming fields.
+
+Implement `SyncViewSet` and install `SyncEndpoints::new(...)` in `ViewSet::configure`.
+Provide a registry containing the model and its dependencies, select scope from
+trusted context, and enforce access with `AccessPolicy`. Sync endpoints require
+authentication. A constant scope with `AllowAll` represents a shared partition,
+not per-user isolation. Ordinary POST/PATCH/PUT/DELETE handle sync delivery;
+there is no separate sync/push route.
+
+Apply compiled migrations for sync infrastructure before serving requests. Writes
+outside the ViewSet adapter must use the configured `SyncServer::database()` or
+`SyncClient::database()` handle, or an explicit sync facade; raw SQL and original
+unconfigured handles bypass capture. Configured server reads authorize scope and
+filter scope/tombstones, including SELECT ASTs and transaction reads.
+
+Clients call `pull()` to download, `flush()` to deliver and `full_load()` explicitly
+for initial loading or expired cursors. Pending operations retry with their original
+IDs. `sync_once()` is a compatibility cycle that can load snapshots automatically.
+Clients target one persistent server history; database replacement/history rewind
+is unsupported. Preserve receipts, tombstones and record revisions when pruning
+journals. Clone one SyncClient to share locks for a client database.
+
 ## Verification
 
 After changing a model, run:
@@ -336,7 +372,7 @@ OpenAPI metadata is available from the running server at `/api/openapi.json` by 
 }
 
 fn lib_rs_template() -> &'static str {
-    "pub mod apps;\npub mod migrations;\n"
+    "pub mod apps;\n"
 }
 
 fn main_rs_template(crate_name: &str) -> String {
@@ -370,23 +406,12 @@ fn manage_rs_template(crate_name: &str) -> String {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {{
     Management::new({crate_name}::apps::installed_apps())
-        .migrations({crate_name}::migrations::all())
         .project_root(env!("CARGO_MANIFEST_DIR"))
         .run()
         .await
 }}
 "#
     )
-}
-
-fn migrations_mod_template() -> &'static str {
-    "/// Compiled migration registry. `makemigrations` creates one module per application here.\n\
-// che-rest:migrations modules\n\
-pub fn all() -> Vec<che_orm::Migration> {\n\
-    let mut migrations = Vec::new();\n\
-    // che-rest:migrations installed apps\n\
-    migrations\n\
-}\n"
 }
 
 fn apps_mod_template(with_auth: bool) -> String {
@@ -445,43 +470,6 @@ fn register_app(apps_mod_path: &Path, app_name: &str) -> ProjectResult<()> {
     };
 
     fs::write(apps_mod_path, with_install)?;
-    Ok(())
-}
-
-fn register_migration_app(migrations_root: &Path, app_name: &str) -> ProjectResult<()> {
-    let app_registry = migrations_root.join(app_name).join("mod.rs");
-    write_file(
-        &app_registry,
-        "// che-orm: migrations begin\n// che-orm: migrations end\n",
-    )?;
-    let root = migrations_root.join("mod.rs");
-    let content = fs::read_to_string(&root)?;
-    if !content.contains(MIGRATION_MODULES_MARKER) || !content.contains(MIGRATION_INSTALL_MARKER) {
-        return Err(format!(
-            "{} has no che-rest migration registry markers",
-            root.display()
-        )
-        .into());
-    }
-    let module = format!("pub mod {app_name};");
-    let extend = format!("    migrations.extend({app_name}::all());");
-    let content = if content.contains(&module) {
-        content
-    } else {
-        content.replace(
-            MIGRATION_MODULES_MARKER,
-            &format!("{MIGRATION_MODULES_MARKER}\n{module}"),
-        )
-    };
-    let content = if content.contains(&extend) {
-        content
-    } else {
-        content.replace(
-            MIGRATION_INSTALL_MARKER,
-            &format!("{extend}\n    {MIGRATION_INSTALL_MARKER}"),
-        )
-    };
-    fs::write(root, content)?;
     Ok(())
 }
 
@@ -675,6 +663,7 @@ fn app_mod_template(app_name: &str, models: &[String]) -> String {
     format!(
         r#"pub mod filters;
 pub mod models;
+pub mod migrations;
 pub mod serializers;
 pub mod views;
 
@@ -687,6 +676,13 @@ pub fn module() -> {module_type} {{
 pub struct {module_type};
 
 impl AppModule for {module_type} {{
+    fn migrations(&self) -> Vec<che_orm::Migration> {{
+        migrations::all()
+    }}
+
+    fn migration_path(&self) -> Option<&'static str> {{
+        Some(concat!(env!("CARGO_MANIFEST_DIR"), "/src/apps/{app_name}/migrations"))
+    }}
     fn name(&self) -> &'static str {{
         "{app_name}"
     }}
@@ -732,16 +728,31 @@ mod tests {
 
         let project = out.join("todo_api");
         assert!(project.join("src/bin/manage.rs").exists());
-        assert!(project.join("src/migrations/mod.rs").exists());
+        assert!(!project.join("src/migrations").exists());
         assert!(
             std::fs::read_to_string(project.join("src/bin/manage.rs"))
                 .unwrap()
-                .contains(".migrations(todo_api::migrations::all())")
+                .contains(".project_root(env!(\"CARGO_MANIFEST_DIR\"))")
         );
         let apps_mod = std::fs::read_to_string(project.join("src/apps/mod.rs")).unwrap();
         assert!(apps_mod.contains("che_rest::auth::module()"));
         assert!(apps_mod.contains("che-rest:startapp modules"));
         assert!(apps_mod.contains("che-rest:startapp installed apps"));
+        let manifest: toml::Value =
+            toml::from_str(&std::fs::read_to_string(project.join("Cargo.toml")).unwrap()).unwrap();
+        let framework: toml::Value = toml::from_str(include_str!("../Cargo.toml")).unwrap();
+        assert_eq!(
+            manifest["dependencies"]["che-rest"]["version"].as_str(),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(
+            manifest["dependencies"]["che-orm"]["version"],
+            framework["dependencies"]["che-orm"]["version"]
+        );
+        assert_eq!(manifest["package"]["rust-version"].as_str(), Some("1.88"));
+        let guide = std::fs::read_to_string(project.join("AGENTS.md")).unwrap();
+        assert!(guide.contains("SyncEndpoints::new"));
+        assert!(guide.contains("database replacement/history rewind"));
 
         let _ = std::fs::remove_dir_all(out);
     }
@@ -772,11 +783,10 @@ mod tests {
         let apps_mod = std::fs::read_to_string(project.join("src/apps/mod.rs")).unwrap();
         assert!(apps_mod.contains("pub mod tasks;"));
         assert!(apps_mod.contains(".add(tasks::module())"));
-        let migrations_mod =
-            std::fs::read_to_string(project.join("src/migrations/mod.rs")).unwrap();
-        assert!(migrations_mod.contains("pub mod tasks;"));
-        assert!(migrations_mod.contains("migrations.extend(tasks::all());"));
-        assert!(project.join("src/migrations/tasks/mod.rs").exists());
+        let app_mod = std::fs::read_to_string(project.join("src/apps/tasks/mod.rs")).unwrap();
+        assert!(app_mod.contains("pub mod migrations;"));
+        assert!(app_mod.contains("fn migration_path"));
+        assert!(project.join("src/apps/tasks/migrations/mod.rs").exists());
         let models = std::fs::read_to_string(project.join("src/apps/tasks/models.rs")).unwrap();
         assert!(models.contains("pub struct Task"));
         assert!(models.contains("pub struct Comment"));
@@ -810,5 +820,170 @@ mod tests {
         assert!(models.contains("pub struct Task"));
 
         let _ = std::fs::remove_dir_all(out);
+    }
+
+    #[test]
+    #[ignore = "builds a generated downstream project and executes its migration CLI"]
+    fn generated_project_builds_and_migrates() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let out = std::env::temp_dir()
+            .join("opencode")
+            .join(format!("che_rest_template_{suffix}"));
+        let framework = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        startproject(StartProjectOptions {
+            name: "template_smoke".into(),
+            out: out.clone(),
+            che_rest_path: framework.display().to_string(),
+            che_orm_path: framework
+                .join("../che-orm")
+                .canonicalize()
+                .unwrap()
+                .display()
+                .to_string(),
+            with_auth: true,
+            force: false,
+        })
+        .unwrap();
+        let project = out.join("template_smoke");
+        startapp(StartAppOptions {
+            name: "tasks".into(),
+            models: vec!["Task".into(), "Comment".into()],
+            root: project.clone(),
+            force: false,
+        })
+        .unwrap();
+        let run = |args: &[&str]| {
+            let output = std::process::Command::new(env!("CARGO"))
+                .args(args)
+                .current_dir(&project)
+                .env("CARGO_TARGET_DIR", framework.join("target"))
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "cargo {args:?} failed in {}\n{}\n{}",
+                project.display(),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap()
+        };
+        run(&["check", "--all-targets"]);
+        let schema = run(&["run", "--bin", "manage", "--", "schema"]);
+        assert!(schema.contains("tasks_task"));
+        run(&[
+            "run",
+            "--bin",
+            "manage",
+            "--",
+            "makemigrations",
+            "--name",
+            "initial",
+        ]);
+        assert!(
+            project
+                .join("src/apps/tasks/migrations/m0001_initial.rs")
+                .exists()
+        );
+        run(&["run", "--bin", "manage", "--", "migrate"]);
+        run(&["run", "--bin", "manage", "--", "migrate"]);
+        let status = run(&["run", "--bin", "manage", "--", "migrate", "status"]);
+        assert!(status.contains("tasks"), "{status}");
+        run(&["run", "--bin", "manage", "--", "makemigrations", "--check"]);
+        let models_path = project.join("src/apps/tasks/models.rs");
+        let models = std::fs::read_to_string(&models_path).unwrap();
+        std::fs::write(
+            &models_path,
+            models.replace(
+                "pub name: String,",
+                "pub name: String,\n    pub detail: Option<String>,",
+            ),
+        )
+        .unwrap();
+        run(&[
+            "run",
+            "--bin",
+            "manage",
+            "--",
+            "makemigrations",
+            "--name",
+            "detail",
+        ]);
+        assert!(
+            project
+                .join("src/apps/tasks/migrations/m0002_detail.rs")
+                .exists()
+        );
+        run(&["run", "--bin", "manage", "--", "migrate"]);
+        run(&[
+            "run",
+            "--bin",
+            "manage",
+            "--",
+            "makemigrations",
+            "tasks",
+            "--check",
+        ]);
+
+        // Copy the complete module unchanged into an independently named project.
+        // Its env!(CARGO_MANIFEST_DIR) source path is recompiled at the destination.
+        let destination = out.join("transferred_app");
+        startproject(StartProjectOptions {
+            name: "transferred_app".into(),
+            out: out.clone(),
+            che_rest_path: framework.display().to_string(),
+            che_orm_path: framework
+                .join("../che-orm")
+                .canonicalize()
+                .unwrap()
+                .display()
+                .to_string(),
+            with_auth: true,
+            force: false,
+        })
+        .unwrap();
+        fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+            std::fs::create_dir_all(to).unwrap();
+            for entry in std::fs::read_dir(from).unwrap() {
+                let entry = entry.unwrap();
+                let target = to.join(entry.file_name());
+                if entry.file_type().unwrap().is_dir() {
+                    copy_tree(&entry.path(), &target);
+                } else {
+                    std::fs::copy(entry.path(), target).unwrap();
+                }
+            }
+        }
+        copy_tree(
+            &project.join("src/apps/tasks"),
+            &destination.join("src/apps/tasks"),
+        );
+        super::register_app(&destination.join("src/apps/mod.rs"), "tasks").unwrap();
+        let output = std::process::Command::new(env!("CARGO"))
+            .args(["run", "--bin", "manage", "--", "migrate"])
+            .current_dir(&destination)
+            .env("CARGO_TARGET_DIR", framework.join("target"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let output = std::process::Command::new(env!("CARGO"))
+            .args(["run", "--bin", "manage", "--", "makemigrations", "--check"])
+            .current_dir(&destination)
+            .env("CARGO_TARGET_DIR", framework.join("target"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        std::fs::remove_dir_all(out).unwrap();
     }
 }

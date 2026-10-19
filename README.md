@@ -3,7 +3,7 @@
 Breaking v2 REST layer for `che-orm` applications.
 
 The library targets `che-orm 0.3`. Database connection methods are async;
-REST viewsets and image actions currently require models with `i64` primary keys.
+REST viewsets and image actions support models with `i64` or UUID primary keys.
 
 The current v2 surface is the typed ORM2 CRUD router. A viewset builds its
 database-independent queryset in `get_queryset`; database access happens only
@@ -25,6 +25,20 @@ The minimal migrated example is available under `todo_api`:
 ```bash
 cargo run --manifest-path todo_api/Cargo.toml
 ```
+
+## Offline Todo synchronization
+
+`SyncViewSet` and `SyncEndpoints` add authenticated pull and snapshot
+routes to a ViewSet. Writes use ordinary REST CRUD with conditional revisions
+and idempotency keys, independent model cursors/queues, automatic FK parent
+synchronization and journal-aware persistence. Run the two-device
+HTTP example:
+
+```bash
+cargo run --example todo_sync
+```
+
+See [`docs/sync.md`](docs/sync.md) for registration, migrations and access rules.
 
 ## Start a Project
 
@@ -826,7 +840,7 @@ Defaults:
 ```
 
 `makemigrations` compares installed app schemas with the compiled migration history and writes
-reviewable Rust migration modules under `src/migrations/<app>/`. It does not invoke an external
+reviewable Rust migration modules under `src/apps/<app>/migrations/`. It does not invoke an external
 migration tool:
 
 ```bash
@@ -836,7 +850,7 @@ cargo run --bin manage -- makemigrations
 Generated migrations are stored under:
 
 ```text
-src/migrations/<app>/
+src/apps/<app>/migrations/
 ```
 
 The database URL is read from `[database].url` in `app.toml`. Apply all project migrations with the
@@ -851,9 +865,18 @@ SQL migrations.
 
 ### Compiled forward-only migrations
 
-`Management::migrations(...)` supplies the project registry, usually through
-`Management::new(apps).migrations(project::migrations::all())`. An empty registry is valid while
-generating the first migration. Management has no SQL-file migration fallback.
+Each app exposes `AppModule::migrations()` and a writable `migration_path()`;
+`Management::new(apps)` collects the histories automatically. Generated apps use
+`concat!(env!("CARGO_MANIFEST_DIR"), "/src/apps/<app>/migrations")` for their path,
+which is recompiled when the module moves to another project. Library apps omit
+the writable path. The default `makemigrations` command handles all writable apps;
+`makemigrations tasks --name add_title` targets one app.
+
+`Management::migrations(...)` remains available for legacy explicit registries.
+When moving an existing registry into an app, retain migration IDs, dependencies,
+operations and checksums, and remove its duplicate registration from the old
+registry. An empty registry is valid before the first migration. Management has
+no SQL-file migration fallback.
 
 Preview pending compiled migrations before applying them:
 

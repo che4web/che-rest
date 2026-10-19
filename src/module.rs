@@ -12,10 +12,21 @@ use crate::{
 pub trait AppModule: Send + Sync + 'static {
     fn name(&self) -> &'static str;
     fn schema(&self) -> SchemaSet;
-    /// Migrations shipped by this library application. Project-owned
-    /// migrations are registered separately by the management binary.
+    /// Compiled migrations owned by this application, including portable
+    /// project modules. Legacy project registries may still be passed to Management.
     fn migrations(&self) -> Vec<Migration> {
         Vec::new()
+    }
+    /// Writable source directory for makemigrations. None denotes a library
+    /// application whose migration sources are not managed by this project.
+    fn migration_path(&self) -> Option<&'static str> {
+        None
+    }
+    /// Register server synchronization tables in the desired migration state.
+    /// Several modules may expose their registries; shared server metadata
+    /// tables are included once per database.
+    fn sync_registry(&self) -> Option<che_sync::Registry> {
+        None
     }
     /// Triggers and views owned by this application. Their `app` field is
     /// assigned from [`Self::name`] while collecting migration state.
@@ -104,7 +115,14 @@ impl InstalledApps {
             .collect();
         let mut state =
             ProjectState::from_app_schemas(schemas.iter().map(|(name, schema)| (*name, schema)))?;
+        let mut sync_schema_added = false;
         for module in self.iter() {
+            if let Some(registry) = module.sync_registry()
+                && !sync_schema_added
+            {
+                registry.extend_migration_state(&mut state, che_sync::SchemaRole::Server)?;
+                sync_schema_added = true;
+            }
             for mut object in module.schema_objects() {
                 object.app = module.name().into();
                 state.add_schema_object(object)?;
@@ -122,7 +140,8 @@ impl InstalledApps {
         history.diff(&self.migration_state()?)
     }
 
-    /// Collects migrations owned by installed library applications.
+    /// Collects migrations owned by all installed applications. The name is
+    /// retained for compatibility with the original library-only API.
     pub fn library_migrations(&self) -> Vec<Migration> {
         self.iter().flat_map(AppModule::migrations).collect()
     }
@@ -194,7 +213,7 @@ impl ModuleContext {
 
     pub fn viewset<M, S>(&mut self, viewset: CrudViewSet<M, S>)
     where
-        M: Model<PrimaryKey = i64> + Send + Sync + 'static,
+        M: Model<PrimaryKey: crate::rest::router::RestKey> + Send + Sync + 'static,
         S: ModelSerializer<Model = M, Input = M>
             + che_orm::ModelWriteSerializer<Model = M>
             + serde::Serialize
@@ -275,8 +294,20 @@ impl ModuleContext {
             V::ListSerializer::fields(),
         );
         let mut document = document;
+        if extensions.iter().any(|extension| extension.id == "sync") {
+            crate::sync::add_rest_openapi(&mut document);
+        }
         add_filter_parameters::<V>(&mut document, &viewset);
-        let extension_openapi = crate::rest::extensions::extension_openapi(&extensions);
+        let model_schema = V::Model::schema();
+        let primary_key = model_schema
+            .columns
+            .iter()
+            .find(|column| column.primary_key)
+            .expect("model primary key");
+        let extension_openapi = crate::rest::extensions::extension_openapi_with_id_schema(
+            &extensions,
+            crate::rest::router::openapi_column_schema(primary_key),
+        );
         if let Some(action_paths) = extension_openapi.get("paths").and_then(Value::as_object)
             && let Some(paths) = document["paths"].as_object_mut()
         {

@@ -6,10 +6,10 @@ import type { BaseEntity, ListParams, ModelApi } from "./api_client";
 export interface UseModelItemOptions { onError?: (message: string, error: unknown) => void; }
 export function useModelItem<T extends BaseEntity, CreateDTO = Partial<T>, UpdateDTO = Partial<T>, Params extends ListParams = ListParams, ListItem extends BaseEntity = T>(api: ModelApi<T, CreateDTO, UpdateDTO, Params, ListItem>, options: UseModelItemOptions = {}) {
   const item = shallowRef<T | null>(null); const loading = ref(false); const error = ref("");
-  async function retrieve(id: number) { return run(() => api.retrieve(id), "Unable to load object"); }
+  async function retrieve(id: number | string) { return run(() => api.retrieve(id), "Unable to load object"); }
   async function create(payload: CreateDTO) { return run(() => api.create(payload), "Unable to create object"); }
-  async function update(id: number, payload: UpdateDTO) { return run(() => api.update(id, payload), "Unable to update object"); }
-  async function remove(id: number) { return run(async () => { await api.remove(id); item.value = null; return true; }, "Unable to delete object"); }
+  async function update(id: number | string, payload: UpdateDTO) { return run(() => api.update(id, payload), "Unable to update object"); }
+  async function remove(id: number | string) { return run(async () => { await api.remove(id); item.value = null; return true; }, "Unable to delete object"); }
   async function run<R>(operation: () => Promise<R>, fallback: string): Promise<R | null> { loading.value = true; error.value = ""; try { const value = await operation(); if (typeof value === "object" && value !== null) item.value = value as T; return value; } catch (err) { error.value = err instanceof Error ? err.message : fallback; options.onError?.(error.value, err); return null; } finally { loading.value = false; } }
   return { item, loading, error, retrieve, create, update, remove };
 }
