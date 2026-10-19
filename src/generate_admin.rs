@@ -150,7 +150,7 @@ fn admin_schema(endpoints: &[ApiEndpoint]) -> String {
 
 fn static_files(endpoints: &[ApiEndpoint]) -> Vec<(String, String)> {
     let mut files = vec![
-        ("package.json".into(), r#"{"name":"che-rest-admin","private":true,"version":"0.1.0","type":"module","scripts":{"build":"vue-tsc --noEmit && vite build","dev":"vite"},"dependencies":{"@vitejs/plugin-vue":"^5.2.1","axios":"^1.7.9","typescript":"^5.7.2","vite":"^6.0.3","vue":"^3.5.13","vue-router":"^4.5.0","vue-tsc":"^2.1.10"}}"#.into()),
+        ("package.json".into(), r#"{"name":"che-rest-admin","private":true,"version":"0.1.0","type":"module","scripts":{"build":"vue-tsc --noEmit && vite build","dev":"vite"},"dependencies":{"@vitejs/plugin-vue":"^5.2.1","axios":"^1.20.0","typescript":"^5.7.2","vite":"^6.0.3","vue":"^3.5.44","vue-router":"^4.5.0","vue-tsc":"^2.1.10"}}"#.into()),
         ("index.html".into(), "<!doctype html><html><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"><title>che-rest admin</title></head><body><div id=\"app\"></div><script type=\"module\" src=\"/src/main.ts\"></script></body></html>".into()),
         ("vite.config.ts".into(), "import vue from \"@vitejs/plugin-vue\";\nimport { defineConfig } from \"vite\";\nexport default defineConfig({ plugins: [vue()] });\n".into()),
         ("tsconfig.json".into(), r#"{"compilerOptions":{"target":"ES2020","useDefineForClassFields":true,"module":"ESNext","lib":["ES2020","DOM","DOM.Iterable"],"skipLibCheck":true,"moduleResolution":"Bundler","allowImportingTsExtensions":true,"resolveJsonModule":true,"isolatedModules":true,"noEmit":true,"jsx":"preserve","strict":true,"types":["vite/client"]},"include":["src/**/*.ts","src/**/*.vue"]}"#.into()),
