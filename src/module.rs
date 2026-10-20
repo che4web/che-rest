@@ -66,6 +66,7 @@ pub struct ApiSignal {
 pub struct ApiColumn {
     pub name: &'static str,
     pub field_name: &'static str,
+    pub column_type: che_orm::ColumnType,
     pub nullable: bool,
     pub has_default: bool,
     pub choices: Option<Vec<&'static str>>,
@@ -115,13 +116,9 @@ impl InstalledApps {
             .collect();
         let mut state =
             ProjectState::from_app_schemas(schemas.iter().map(|(name, schema)| (*name, schema)))?;
-        let mut sync_schema_added = false;
         for module in self.iter() {
-            if let Some(registry) = module.sync_registry()
-                && !sync_schema_added
-            {
+            if let Some(registry) = module.sync_registry() {
                 registry.extend_migration_state(&mut state, che_sync::SchemaRole::Server)?;
-                sync_schema_added = true;
             }
             for mut object in module.schema_objects() {
                 object.app = module.name().into();
@@ -251,6 +248,7 @@ impl ModuleContext {
                 .map(|column| ApiColumn {
                     name: column.name,
                     field_name: column.field_name,
+                    column_type: column.column_type,
                     nullable: column.nullable,
                     has_default: column.default.is_some() || column.auto_now || column.auto_now_add,
                     choices: column.choices.clone(),
@@ -296,6 +294,12 @@ impl ModuleContext {
         let mut document = document;
         if extensions.iter().any(|extension| extension.id == "sync") {
             crate::sync::add_rest_openapi(&mut document);
+        }
+        if extensions
+            .iter()
+            .any(|extension| extension.id == "model-sync")
+        {
+            crate::sync::add_model_rest_openapi(&mut document);
         }
         add_filter_parameters::<V>(&mut document, &viewset);
         let model_schema = V::Model::schema();

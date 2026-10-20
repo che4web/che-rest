@@ -136,6 +136,9 @@ pub type MutationFuture<'a, T> = Pin<Box<dyn Future<Output = AppResult<T>> + Sen
 
 /// Replaces ORM persistence while retaining validation and lifecycle hooks.
 pub trait MutationBackend<V: ViewSet>: Send + Sync + 'static {
+    fn filter_read(&self, queryset: V::QuerySet) -> V::QuerySet {
+        queryset
+    }
     /// Optional conditional/idempotent handling on the ordinary CRUD routes.
     fn rest<'a>(
         &'a self,
@@ -234,8 +237,9 @@ impl<V: ViewSet> ViewSetConfig<V> {
         // Media's direct CAS writes need a journal-aware adapter before they can
         // share a sync ViewSet. Reject either installation order.
         let media = |id: &str| matches!(id, "image-field" | "image-create");
-        if (E::ID == "sync" && self.extensions.iter().any(|item| media(item.id)))
-            || (media(E::ID) && self.extensions.iter().any(|item| item.id == "sync"))
+        let sync = |id: &str| matches!(id, "sync" | "model-sync");
+        if (sync(E::ID) && self.extensions.iter().any(|item| media(item.id)))
+            || (media(E::ID) && self.extensions.iter().any(|item| sync(item.id)))
         {
             return Err(AppError::BadRequest(
                 "sync and direct-write media endpoints cannot share a ViewSet".into(),
@@ -262,6 +266,11 @@ impl<V: ViewSet> ViewSetConfig<V> {
     }
 
     pub fn mutation_hook<H: MutationHook<V>>(&mut self, hook: H) -> AppResult<()> {
+        if hook.id().starts_with('@') {
+            return Err(AppError::BadRequest(
+                "mutation hook IDs beginning with @ are reserved".into(),
+            ));
+        }
         if hook.backend().is_some() && self.hooks.iter().any(|item| item.backend().is_some()) {
             return Err(AppError::BadRequest("multiple mutation backends".into()));
         }

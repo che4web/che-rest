@@ -4,6 +4,7 @@ import { useRoute, useRouter } from "vue-router";
 import { adminModels } from "../generated/adminSchema";
 import type { AdminField, AdminModel } from "../generated/adminSchema";
 import AsyncRelationSelect from "./AsyncRelationSelect.vue";
+import { recordId, routeIdentity, type RecordId } from "../recordIdentity";
 
 const props = defineProps<{
   model: AdminModel;
@@ -16,8 +17,8 @@ const loading = ref(false);
 const saving = ref(false);
 const error = ref("");
 
-const id = computed(() => Number(route.params.id));
-const isEdit = computed(() => Number.isFinite(id.value));
+const id = computed(() => routeIdentity(route.params.id, props.model));
+const isEdit = computed(() => id.value !== undefined);
 const fields = computed(() => props.model.fields.filter((field) => !field.readOnly));
 
 function modelFor(field: AdminField) {
@@ -26,10 +27,10 @@ function modelFor(field: AdminField) {
 
 function relationValue(field: AdminField) {
   const value = form.value[field.name];
-  return typeof value === "number" ? value : null;
+  return recordId(value);
 }
 
-function setRelationValue(field: AdminField, value: number | null) {
+function setRelationValue(field: AdminField, value: RecordId | null) {
   form.value[field.name] = value;
 }
 
@@ -44,7 +45,7 @@ function inputType(field: AdminField) {
 async function loadObject() {
   form.value = Object.fromEntries(fields.value.map((field) => [field.name, emptyValue(field)]));
 
-  if (!isEdit.value) {
+  if (id.value === undefined) {
     return;
   }
 
@@ -107,7 +108,7 @@ async function submit() {
   }
 
   try {
-    if (isEdit.value) {
+    if (id.value !== undefined) {
       await props.model.api.update(id.value, payload);
     } else {
       await props.model.api.create(payload);

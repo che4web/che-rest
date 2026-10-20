@@ -226,6 +226,10 @@ fn api(endpoints: &[ApiEndpoint]) -> String {
             let namespace = operations[0].1.namespace;
             out.push_str(&format!("  {namespace}: {{\n"));
             for (operation, client) in operations {
+                if extension.id == "model-sync" && client.name == "changes" {
+                    out.push_str(&format!("    async changes(after: string = '0', limit: number = 100): Promise<ModelChanges> {{ return (await apiClient.get<ModelChanges>(`{}`, {{ params: {{ after, limit }} }})).data; }},\n", operation.path.trim_start_matches('/')));
+                    continue;
+                }
                 let path = operation
                     .path
                     .trim_start_matches('/')
@@ -381,11 +385,17 @@ fn filter_ts_type(endpoint: &ApiEndpoint, source: &str) -> String {
             .collect::<Vec<_>>()
             .join(" | ");
     }
-    if source.ends_with("id") || source == "id" {
-        "number".into()
-    } else {
-        "string".into()
+    match endpoint
+        .columns
+        .iter()
+        .find(|column| column.name == source || column.field_name == source)
+        .map(|column| column.column_type)
+    {
+        Some(che_orm::ColumnType::Integer | che_orm::ColumnType::Real) => "number",
+        Some(che_orm::ColumnType::Boolean) => "boolean",
+        _ => "string",
     }
+    .into()
 }
 
 fn last_path_part(value: &str) -> &str {
@@ -729,6 +739,7 @@ mod tests {
             columns: vec![crate::module::ApiColumn {
                 name: "preview_storage_name",
                 field_name: "preview",
+                column_type: che_orm::ColumnType::Text,
                 nullable: true,
                 has_default: false,
                 choices: None,
@@ -796,6 +807,7 @@ mod tests {
             columns: vec![crate::module::ApiColumn {
                 name: "status",
                 field_name: "status",
+                column_type: che_orm::ColumnType::Text,
                 nullable: false,
                 has_default: false,
                 choices: Some(vec!["draft", "in_progress", "done"]),

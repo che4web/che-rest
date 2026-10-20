@@ -13,6 +13,8 @@
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
+cargo test --example todo_sync
+node --experimental-strip-types --test tests/admin_identity.mjs
 cargo test --manifest-path examples/cli_fullstack/Cargo.toml --test smoke
 npm --prefix examples/cli_fullstack/frontend/client ci
 npm --prefix examples/cli_fullstack/frontend/client run build

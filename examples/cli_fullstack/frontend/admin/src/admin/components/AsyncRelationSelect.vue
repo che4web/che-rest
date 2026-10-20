@@ -1,18 +1,19 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from "vue";
 import type { AdminField, AdminModel } from "../generated/adminSchema";
+import { recordId, selectedIdentity, type RecordId } from "../recordIdentity";
 
-type RelationOption = { id: number; label: string };
+type RelationOption = { id: RecordId; label: string };
 
 const props = defineProps<{
   field: AdminField;
   model: AdminModel;
-  modelValue: number | null | undefined;
+  modelValue: RecordId | null | undefined;
   nullable: boolean;
 }>();
 
 const emit = defineEmits<{
-  "update:modelValue": [value: number | null];
+  "update:modelValue": [value: RecordId | null];
 }>();
 
 const search = ref("");
@@ -46,12 +47,12 @@ async function loadOptions() {
     const params = search.value && parameter ? { [parameter]: search.value } : {};
     const response = await props.model.api.list({ limit: 20, ...params });
     options.value = response.results
-      .filter((value) => typeof value.id === "number")
-      .map((value) => ({ id: value.id as number, label: labelFor(value) }));
+      .filter((value) => recordId(value.id) !== null)
+      .map((value) => ({ id: value.id as RecordId, label: labelFor(value) }));
 
-    if (typeof props.modelValue === "number" && !options.value.some((option) => option.id === props.modelValue)) {
+    if (props.modelValue !== undefined && props.modelValue !== null && !options.value.some((option) => option.id === props.modelValue)) {
       const selected = await props.model.api.retrieve(props.modelValue);
-      if (typeof selected.id === "number") {
+      if (recordId(selected.id) !== null) {
         mergeOption({ id: selected.id, label: labelFor(selected) });
       }
     }
@@ -71,7 +72,7 @@ function scheduleLoad() {
 
 function selectValue(event: Event) {
   const value = (event.target as HTMLSelectElement | null)?.value;
-  emit("update:modelValue", value ? Number(value) : null);
+  emit("update:modelValue", selectedIdentity(value ?? "", options.value));
 }
 
 watch(() => props.model.resource, loadOptions);

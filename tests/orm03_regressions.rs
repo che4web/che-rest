@@ -98,17 +98,53 @@ async fn generators_preserve_real_and_uuid_types_from_model_metadata() {
     let directory = TestDirectory::new("generators");
     let state = AppState::from_database(che_orm::Database::connect_in_memory().await.unwrap());
     let endpoints = InstalledApps::new().add(Products).api_endpoints(state);
+    let mut endpoints = endpoints;
+    endpoints[0].filters = vec![
+        che_rest::module::ApiFilter {
+            name: "external_id",
+            source: "external_id",
+            lookup: che_rest::Lookup::Exact,
+        },
+        che_rest::module::ApiFilter {
+            name: "tracking_id",
+            source: "tracking_key",
+            lookup: che_rest::Lookup::Exact,
+        },
+        che_rest::module::ApiFilter {
+            name: "price",
+            source: "price",
+            lookup: che_rest::Lookup::Gte,
+        },
+    ];
     let client = directory.0.join("client");
     let admin = directory.0.join("admin");
     che_rest::generate_ts::generate(&client, &endpoints, &[], false).unwrap();
     che_rest::generate_admin::generate(&admin, &endpoints, false).unwrap();
 
     let models = fs::read_to_string(client.join("models.ts")).unwrap();
+    assert!(models.contains("external_id?: string;"));
+    assert!(models.contains("tracking_id?: string;"));
+    assert!(models.contains("price__gte?: number;"));
     assert!(models.contains("export interface Product {\n  id: number;\n  price: number;\n  discount: number | null;\n  external_id: string;\n  tracking_id: string | null;\n}"));
     assert!(models.contains("export interface ProductCreate {\n  price: number;\n  discount?: number | null;\n  external_id: string;\n  tracking_id?: string | null;\n}"));
     assert!(models.contains("export interface ProductUpdate {\n  price?: number;\n  discount?: number | null;\n  external_id?: string;\n  tracking_id?: string | null;\n}"));
 
     let schema = fs::read_to_string(admin.join("src/admin/generated/adminSchema.ts")).unwrap();
+    for (name, ty) in [
+        ("external_id", "text"),
+        ("tracking_id", "text"),
+        ("price__gte", "real"),
+    ] {
+        let filter = schema
+            .lines()
+            .find(|line| {
+                line.contains(&format!("name: \"{name}\""))
+                    && line.contains("label:")
+                    && !line.contains("readOnly:")
+            })
+            .unwrap();
+        assert!(filter.contains(&format!("type: \"{ty}\"")), "{filter}");
+    }
     for (name, field_type, nullable) in [
         ("price", "real", false),
         ("discount", "real", true),

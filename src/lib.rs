@@ -15,6 +15,8 @@ pub mod rest;
 pub mod signals;
 pub mod state;
 pub mod sync;
+#[cfg(feature = "sync-http")]
+pub mod sync_http;
 
 pub use app_channels::AppChannels;
 pub use auth::{CurrentPrincipal, CurrentUser, IsAdminUser, IsAuthenticated};
@@ -37,4 +39,4 @@ pub use rest::{
 };
 pub use signals::{SignalAccess, SignalBus, SignalEvent};
 pub use state::{AppState, CurrentUserResolverFuture};
-pub use sync::{RestSyncRequest, SyncEndpoints, SyncViewSet};
+pub use sync::{ModelSyncEndpoints, RestSyncRequest, SyncEndpoints, SyncViewSet};

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Dispatch durable lifecycle hooks and cascade cleanup for both ordinary and conditional SyncViewSet writes; preserve successful responses when effects need retry.
+- Replay concurrent identical REST writes before applying stale UUID or revision checks.
+- Preserve offline operations on non-sync HTTP errors, including expired authentication and throttling.
+- Reject missing or ambiguous writable sync-to-serializer mappings during installation.
+- Preserve UUID keys in admin edit forms, relation pickers and generated filter types.
+
 ## 0.3.0
 
 - Upgrade to `che-orm 0.3.0`, using async database connections and the public migration API.

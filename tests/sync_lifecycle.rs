@@ -80,6 +80,7 @@ struct ParentSerializer {
     #[serializer(read_only)]
     approved: bool,
     count: i64,
+    public_approved: bool,
 }
 #[derive(ModelSerializer)]
 #[serializer(model = Parent)]
@@ -411,7 +412,7 @@ fn writable_server_owned_serializer_is_rejected_at_installation() {
 async fn failed_effect_is_durable_and_does_not_skip_other_handlers_on_replay() {
     let (state, router, token, events) = setup().await;
     events.lock().unwrap().push("@fail-once".into());
-    let body = json!({"protocol_version":1,"scope":"lifecycle","replica_id":Uuid::now_v7(),"operation":{"id":Uuid::now_v7(),"mutations":[{"model":"lifecycle.parent","id":Uuid::now_v7(),"schema_version":1,"base_revision":"0","changes":{"title":{"type":"text","value":"retry cleanup"},"count":{"type":"integer","value":"9223372036854775807"}}}]}});
+    let body = json!({"protocol_version":1,"scope":"lifecycle","replica_id":Uuid::now_v7(),"operation":{"id":Uuid::now_v7(),"mutations":[{"model":"lifecycle.parent","id":Uuid::now_v7(),"schema_version":1,"base_revision":"0","changes":{"title":{"type":"text","value":"retry cleanup"},"public_approved":{"type":"boolean","value":false},"count":{"type":"integer","value":"9223372036854775807"}}}]}});
     let (status, result) = post(&router, &token, "/api/parents/", body.clone()).await;
     assert_eq!(status, StatusCode::CREATED, "{result}");
     assert_eq!(
@@ -438,6 +439,26 @@ async fn failed_effect_is_durable_and_does_not_skip_other_handlers_on_replay() {
             .iter()
             .any(|e| e == "Create:lifecycle_parents")
     );
+    // Pending effects from the previous framework version used a bare optional
+    // delete payload. They must remain replayable across an upgrade.
+    let pending = state
+        .database()
+        .query_sql("SELECT id, payload FROM _sync_effects", vec![])
+        .await
+        .unwrap();
+    let mut legacy: Value = serde_json::from_str(&pending[0].get::<String>(1).unwrap()).unwrap();
+    legacy["prepared"]["payload"] = json!("null");
+    state
+        .database()
+        .execute_sql(
+            "UPDATE _sync_effects SET payload = $1 WHERE id = $2",
+            vec![
+                che_orm::DatabaseValue::Text(legacy.to_string()),
+                che_orm::DatabaseValue::Text(pending[0].get::<String>(0).unwrap()),
+            ],
+        )
+        .await
+        .unwrap();
     let (status, replay) = post(&router, &token, "/api/parents/", body.clone()).await;
     assert_eq!(status, StatusCode::CREATED);
     assert_eq!(replay, result);
@@ -480,6 +501,472 @@ fn generated_sync_contract_uses_lossless_integer_strings() {
         "string"
     );
 }
+
+#[tokio::test]
+async fn ordinary_writes_keep_effects_durable_and_preserve_put_action() {
+    let (state, router, token, events) = setup().await;
+    events.lock().unwrap().push("@fail-once".into());
+    assert_eq!(
+        post(
+            &router,
+            &token,
+            "/api/parents/",
+            json!({"title":"invalid", "count":"0", "public_approved":false})
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    let (status, parent) = post(
+        &router,
+        &token,
+        "/api/parents/",
+        json!({"title":"ordinary", "count":0, "public_approved":false}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{parent}");
+    assert!(
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event == "Create:lifecycle_parents")
+    );
+    assert_eq!(
+        state
+            .database()
+            .query_sql("SELECT id FROM _sync_effects", vec![])
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/parents/{}/", parent["id"].as_str().unwrap()))
+                .header("Authorization", format!("Token {token}"))
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    json!({"title":"updated", "count":1, "public_approved":false}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    {
+        let events = events.lock().unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| *event == "Create:lifecycle_parents")
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| *event == "Update:lifecycle_parents")
+                .count(),
+            1
+        );
+        assert!(events.iter().any(|event| event == "retry:success"));
+    }
+    assert!(
+        state
+            .database()
+            .query_sql("SELECT id FROM _sync_effects", vec![])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[derive(Clone)]
+struct HiddenParents;
+impl ViewSet for HiddenParents {
+    type Model = Parent;
+    type Serializer = ParentSerializer;
+    type ListSerializer = ParentSerializer;
+    type QuerySet = DatabaseQuery<Parent>;
+    type FilterSet = FilterSet<Parent>;
+    type Permission = IsAuthenticated;
+    fn path(&self) -> &'static str {
+        "/hidden"
+    }
+    fn get_queryset(&self) -> Self::QuerySet {
+        DatabaseQuery::new(Parent::query().filter(Parent::TITLE.eq("visible")))
+    }
+    fn configure(&self, config: &mut ViewSetConfig<Self>) -> AppResult<()> {
+        config.extend(SyncEndpoints::new(self.clone()))
+    }
+}
+impl SyncViewSet for HiddenParents {
+    fn sync_registry(&self) -> AppResult<Registry> {
+        Ok(registry())
+    }
+    fn sync_scope(&self, _: &AppState, _: &CurrentPrincipal) -> AppResult<String> {
+        Ok("lifecycle".into())
+    }
+    fn sync_policy(&self) -> Arc<dyn AccessPolicy> {
+        Arc::new(AllowAll)
+    }
+}
+struct HiddenApp;
+impl AppModule for HiddenApp {
+    fn name(&self) -> &'static str {
+        "hidden"
+    }
+    fn schema(&self) -> SchemaSet {
+        SchemaSet::new().model::<Parent>().model::<Child>()
+    }
+    fn init(&self, context: &mut ModuleContext) {
+        context.viewset_with(HiddenParents);
+    }
+}
+
+#[tokio::test]
+async fn stale_revisions_do_not_expose_records_outside_the_viewset_queryset() {
+    let (state, original, token, _) = setup().await;
+    let (_, parent) = post(
+        &original,
+        &token,
+        "/api/parents/",
+        json!({"title":"private", "count":0, "public_approved":false}),
+    )
+    .await;
+    let router = Server::new(state)
+        .install(InstalledApps::new().add(auth::module()).add(HiddenApp))
+        .build()
+        .await
+        .unwrap();
+    let request = json!({"protocol_version":1,"scope":"lifecycle","replica_id":Uuid::now_v7(),"operation":{"id":Uuid::now_v7(),"mutations":[{"model":"lifecycle.parent","id":parent["id"],"schema_version":1,"base_revision":"999","changes":{"title":{"type":"text","value":"edit"}}}]}});
+    let (status, body) = post(&router, &token, "/api/hidden/", request).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert!(
+        body.get("data").is_none(),
+        "canonical records must not leak in conflicts"
+    );
+}
+
+#[tokio::test]
+async fn ordinary_delete_dispatches_cascade_hooks_and_signals() {
+    let (state, router, token, events) = setup().await;
+    let (_, parent) = post(
+        &router,
+        &token,
+        "/api/parents/",
+        json!({"title":"parent", "count":0, "public_approved":false}),
+    )
+    .await;
+    let parent_id: Uuid = serde_json::from_value(parent["id"].clone()).unwrap();
+    let (status, child) = post(
+        &router,
+        &token,
+        "/api/children/",
+        json!({"title":"child", "parent_id":parent_id}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{child}");
+    let child_id: Uuid = serde_json::from_value(child["id"].clone()).unwrap();
+    events.lock().unwrap().clear();
+    let mut child_signal = state.signals().subscribe("children.deleted");
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/parents/{parent_id}/"))
+                .header("Authorization", format!("Token {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(
+        state
+            .database()
+            .get::<Child>(child_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .deleted_at
+            .is_some()
+    );
+    let events = events.lock().unwrap();
+    for table in ["lifecycle_parents", "lifecycle_children"] {
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| **event == format!("delete:{table}"))
+                .count(),
+            1
+        );
+    }
+    assert_eq!(child_signal.try_recv().unwrap(), json!({"id":child_id}));
+    assert!(child_signal.try_recv().is_err());
+}
+
+#[derive(ModelSerializer)]
+#[serializer(model = Parent)]
+struct IncompleteSerializer {
+    #[serializer(read_only)]
+    id: Uuid,
+    title: String,
+    count: i64,
+}
+#[derive(Clone)]
+struct IncompleteParents;
+viewset!(
+    IncompleteParents,
+    Parent,
+    IncompleteSerializer,
+    "/incomplete"
+);
+
+#[test]
+fn unmapped_writable_sync_fields_are_rejected_at_installation() {
+    let mut config = ViewSetConfig::<IncompleteParents>::new("/incomplete");
+    let error = IncompleteParents.configure(&mut config).unwrap_err();
+    assert!(error.to_string().contains("public_approved"), "{error}");
+}
+
+#[derive(Clone)]
+struct ConcurrentParents {
+    arrived: Arc<std::sync::atomic::AtomicUsize>,
+    committed: Arc<std::sync::atomic::AtomicBool>,
+}
+impl ConcurrentParents {
+    fn coordinate(&self) {
+        use std::sync::atomic::Ordering::SeqCst;
+        let second = self.arrived.fetch_add(1, SeqCst) == 1;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while if second {
+            !self.committed.load(SeqCst)
+        } else {
+            self.arrived.load(SeqCst) < 2
+        } {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "concurrent request stalled"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+}
+struct MarkCommitted(ConcurrentParents);
+impl MutationHook<ConcurrentParents> for MarkCommitted {
+    fn id(&self) -> &'static str {
+        "mark-committed"
+    }
+    fn after_commit(
+        &self,
+        _: &AppState,
+        _: Option<&CurrentPrincipal>,
+        _: ViewAction,
+        _: &Parent,
+    ) -> AppResult<()> {
+        self.0
+            .committed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+    fn prepare_delete_async<'a>(
+        &'a self,
+        _: &'a AppState,
+        _: &'a Parent,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = AppResult<Value>> + Send + 'a>> {
+        Box::pin(async move {
+            self.0.coordinate();
+            Ok(Value::Null)
+        })
+    }
+    fn after_delete(&self, _: &AppState, _: &Value) -> AppResult<()> {
+        self.0
+            .committed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+}
+impl ViewSet for ConcurrentParents {
+    type Model = Parent;
+    type Serializer = ParentSerializer;
+    type ListSerializer = ParentSerializer;
+    type QuerySet = DatabaseQuery<Parent>;
+    type FilterSet = FilterSet<Parent>;
+    type Permission = IsAuthenticated;
+    fn path(&self) -> &'static str {
+        "/concurrent"
+    }
+    fn get_queryset(&self) -> Self::QuerySet {
+        DatabaseQuery::new(Parent::query())
+    }
+    fn configure(&self, config: &mut ViewSetConfig<Self>) -> AppResult<()> {
+        config.mutation_hook(MarkCommitted(self.clone()))?;
+        config.extend(SyncEndpoints::new(self.clone()))
+    }
+    fn prepare_create(
+        &self,
+        _: &AppState,
+        _: Option<&CurrentPrincipal>,
+        write: ValidatedWrite<Parent>,
+    ) -> AppResult<ValidatedWrite<Parent>> {
+        self.coordinate();
+        Ok(write)
+    }
+    fn prepare_patch(
+        &self,
+        _: &AppState,
+        _: Option<&CurrentPrincipal>,
+        _: &Parent,
+        write: ValidatedWrite<Parent>,
+    ) -> AppResult<ValidatedWrite<Parent>> {
+        self.coordinate();
+        Ok(write)
+    }
+}
+
+fn spawn_concurrent_write(
+    router: Router,
+    token: String,
+    body: Value,
+) -> std::thread::JoinHandle<(StatusCode, Value)> {
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+        let result = runtime.block_on(post(&router, &token, "/api/concurrent/", body));
+        drop(router);
+        result
+    })
+}
+impl SyncViewSet for ConcurrentParents {
+    fn sync_registry(&self) -> AppResult<Registry> {
+        Ok(registry())
+    }
+    fn sync_scope(&self, _: &AppState, _: &CurrentPrincipal) -> AppResult<String> {
+        Ok("lifecycle".into())
+    }
+    fn sync_policy(&self) -> Arc<dyn AccessPolicy> {
+        Arc::new(AllowAll)
+    }
+}
+struct ConcurrentApp(ConcurrentParents);
+impl AppModule for ConcurrentApp {
+    fn name(&self) -> &'static str {
+        "concurrent"
+    }
+    fn schema(&self) -> SchemaSet {
+        SchemaSet::new().model::<Parent>().model::<Child>()
+    }
+    fn sync_registry(&self) -> Option<Registry> {
+        Some(registry())
+    }
+    fn init(&self, context: &mut ModuleContext) {
+        context.viewset_with(self.0.clone());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_identical_posts_replay_after_another_request_commits() {
+    let (state, _, token, _) = setup().await;
+    let router =
+        Server::new(state.clone())
+            .install(InstalledApps::new().add(auth::module()).add(ConcurrentApp(
+                ConcurrentParents {
+                    arrived: Arc::default(),
+                    committed: Arc::default(),
+                },
+            )))
+            .build()
+            .await
+            .unwrap();
+    let body = json!({"protocol_version":1,"scope":"lifecycle","replica_id":Uuid::now_v7(),"operation":{"id":Uuid::now_v7(),"mutations":[{"model":"lifecycle.parent","id":Uuid::now_v7(),"schema_version":1,"base_revision":"0","changes":{"title":{"type":"text","value":"same request"},"public_approved":{"type":"boolean","value":false},"count":{"type":"integer","value":"0"}}}]}});
+    // Separate runtimes let synchronous preparation hooks coordinate without
+    // blocking tasks in a single executor's local queue.
+    let a = spawn_concurrent_write(router.clone(), token.clone(), body.clone());
+    let b = spawn_concurrent_write(router.clone(), token.clone(), body.clone());
+    let a = a.join().unwrap();
+    let b = b.join().unwrap();
+    assert_eq!(a.0, StatusCode::CREATED, "{a:?}");
+    assert_eq!(b, a);
+    for table in ["lifecycle_parents", "_sync_receipts", "_sync_changes"] {
+        assert_eq!(
+            state
+                .database()
+                .query_sql(format!("SELECT * FROM {table}"), vec![])
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+    let mut changed = body;
+    changed["operation"]["mutations"][0]["changes"]["title"]["value"] = json!("changed");
+    assert_eq!(
+        post(&router, &token, "/api/concurrent/", changed).await.0,
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_patch_and_delete_replay_without_repeating_effects() {
+    for deleting in [false, true] {
+        let (state, original, token, _) = setup().await;
+        let (_, parent) = post(
+            &original,
+            &token,
+            "/api/parents/",
+            json!({"title":"parent", "count":0, "public_approved":false}),
+        )
+        .await;
+        let id = parent["id"].as_str().unwrap();
+        let router = Server::new(state.clone())
+            .install(InstalledApps::new().add(auth::module()).add(ConcurrentApp(
+                ConcurrentParents {
+                    arrived: Arc::default(),
+                    committed: Arc::default(),
+                },
+            )))
+            .build()
+            .await
+            .unwrap();
+        let body = json!({"protocol_version":1,"scope":"lifecycle","replica_id":Uuid::now_v7(),"operation":{"id":Uuid::now_v7(),"mutations":[{"model":"lifecycle.parent","id":id,"schema_version":1,"base_revision":"1","changes":if deleting { Value::Null } else { json!({"title":{"type":"text","value":"edited"}}) }}]}});
+        let a = spawn_concurrent_write(router.clone(), token.clone(), body.clone());
+        let b = spawn_concurrent_write(router.clone(), token.clone(), body.clone());
+        let a = a.join().unwrap();
+        let b = b.join().unwrap();
+        assert_eq!(a.0, StatusCode::OK, "{a:?}");
+        assert_eq!(b, a);
+        let mut stale = body;
+        stale["operation"]["id"] = json!(Uuid::now_v7());
+        assert_eq!(
+            post(&router, &token, "/api/concurrent/", stale).await.0,
+            StatusCode::PRECONDITION_FAILED
+        );
+        assert_eq!(
+            state
+                .database()
+                .query_sql("SELECT * FROM _sync_changes", vec![])
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(
+            state
+                .database()
+                .query_sql("SELECT * FROM _sync_effects", vec![])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
 #[tokio::test]
 async fn trusted_preparation_and_sync_cascade_hooks_work_without_duplicate_replay_events() {
     let (state, router, token, events) = setup().await;
@@ -487,7 +974,7 @@ async fn trusted_preparation_and_sync_cascade_hooks_work_without_duplicate_repla
         &router,
         &token,
         "/api/parents/",
-        json!({"title":"trusted create", "count":0}),
+        json!({"title":"trusted create", "count":0, "public_approved":false}),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);

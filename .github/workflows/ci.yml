@@ -29,6 +29,12 @@ jobs:
       - name: Rust tests
         run: cargo test
         working-directory: che-rest
+      - name: HTTP sync transport tests
+        run: cargo test --example todo_sync
+        working-directory: che-rest
+      - name: Admin UUID identity tests
+        run: node --experimental-strip-types --test tests/admin_identity.mjs
+        working-directory: che-rest
       - name: Rust documentation
         run: cargo doc --no-deps
         working-directory: che-rest

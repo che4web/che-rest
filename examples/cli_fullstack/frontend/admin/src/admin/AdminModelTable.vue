@@ -13,7 +13,7 @@ const error = ref("");
 
 const resource = computed(() => String(route.params.resource ?? ""));
 const model = computed(() => adminModels.find((item) => item.resource === resource.value));
-const columns = computed(() => model.value?.fields.filter((field) => !field.writeOnly) ?? []);
+const columns = computed(() => model.value?.fields.filter((field) => model.value?.listFields.includes(field.name)) ?? []);
 
 function initFilters() {
   filterValues.value = Object.fromEntries(
@@ -124,7 +124,11 @@ watch(resource, async () => {
         <div class="row g-3">
           <div v-for="filter in model.filters" :key="filter.name" class="col-12 col-md-6 col-xl-3">
             <label class="form-label">{{ filter.label }}</label>
-            <select v-if="filter.type === 'boolean'" v-model="filterValues[filter.name]" class="form-select">
+            <select v-if="filter.choices" v-model="filterValues[filter.name]" class="form-select">
+              <option value="">Any</option>
+              <option v-for="choice in filter.choices" :key="choice" :value="choice">{{ choice }}</option>
+            </select>
+            <select v-else-if="filter.type === 'boolean'" v-model="filterValues[filter.name]" class="form-select">
               <option :value="null">Any</option>
               <option :value="true">Yes</option>
               <option :value="false">No</option>

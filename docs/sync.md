@@ -148,7 +148,11 @@ tombstones for shadow reconciliation. Accepted POST returns 201, PATCH/PUT/DELET
 return 200 with an ETag revision; conflicts return 412. Ordinary CRUD without
 sync headers retains serializer responses and DELETE's 204 status. Validation
 errors use the ordinary REST error format. A transport decodes the sync envelope
-when its content type is present; 5xx/network errors preserve the outbox.
+when its content type is present. Non-sync HTTP errors (including 401, 408, 429
+and proxy errors) and network failures preserve the immutable outbox operation.
+Only a sync-envelope rejection is an authoritative business rejection. The example
+transport reports `Retry-After` in its error; the caller schedules retries and
+renews expired credentials without changing the operation ID or body.
 
 `RestSyncRequest::new::<Model, Serializer>(request)` converts an immutable native
 operation to method, headers and ordinary serializer JSON. The HTTP adapter
@@ -171,10 +175,12 @@ Updates must retain a single UUID-primary-key predicate; arbitrary extra SQL
 predicates are rejected instead of silently discarded.
 
 Installation checks serializer metadata: a sync server-owned column must be
-read-only in the CRUD serializer. Trusted values added by prepare_create or
+read-only in the CRUD serializer. Every writable sync field must have exactly one
+writable serializer mapping, including FK and `db_column` aliases; installation
+rejects missing or ambiguous mappings. Trusted values added by prepare_create or
 prepare_update remain writable by the server.
 
-Conditional REST writes dispatch after_commit/after_delete hooks and declared lifecycle
+Ordinary and conditional REST writes dispatch after_commit/after_delete hooks and declared lifecycle
 signals to installed SyncViewSets for the affected models, including cascades.
 Delete payloads are prepared before mutation. The server rechecks all prepared
 rows under its scope lock, so concurrent changes cannot invalidate cleanup

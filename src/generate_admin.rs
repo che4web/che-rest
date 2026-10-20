@@ -55,7 +55,7 @@ fn admin_schema(endpoints: &[ApiEndpoint]) -> String {
     out.push_str("} from \"../../generated/api\";\n\n");
     out.push_str("export type AdminFieldType = \"integer\" | \"text\" | \"boolean\" | \"real\" | \"datetime\" | \"image\";\n\n");
     out.push_str(
-        "export interface AdminField { name: string; source: string; type: AdminFieldType; label: string; readOnly: boolean; writeOnly: boolean; required: boolean; nullable: boolean; hasDefault: boolean; choices?: string[]; relatedModel?: string; relationField?: string; }\n\nexport interface AdminFilter { name: string; source: string; type: AdminFieldType; label: string; nullable: boolean; choices?: string[]; }\n\nexport interface AdminModelApi { list: (params?: any) => Promise<{ count: number; results: any[] }>; retrieve: (id: number) => Promise<any>; create: (payload: any) => Promise<any>; update: (id: number, payload: any) => Promise<any>; remove: (id: number) => Promise<void>; }\n\nexport interface AdminModel { appName: string; name: string; resource: string; api: AdminModelApi; fields: AdminField[]; listFields: string[]; filters: AdminFilter[]; }\nexport interface AdminApp { name: string; models: AdminModel[]; }\n\nexport const adminModels: AdminModel[] = [\n",
+        "export interface AdminField { name: string; source: string; type: AdminFieldType; label: string; readOnly: boolean; writeOnly: boolean; required: boolean; nullable: boolean; hasDefault: boolean; choices?: string[]; relatedModel?: string; relationField?: string; }\n\nexport interface AdminFilter { name: string; source: string; type: AdminFieldType; label: string; nullable: boolean; choices?: string[]; }\n\nexport interface AdminModelApi { list: (params?: any) => Promise<{ count: number; results: any[] }>; retrieve: (id: number | string) => Promise<any>; create: (payload: any) => Promise<any>; update: (id: number | string, payload: any) => Promise<any>; remove: (id: number | string) => Promise<void>; }\n\nexport interface AdminModel { appName: string; name: string; resource: string; api: AdminModelApi; fields: AdminField[]; listFields: string[]; filters: AdminFilter[]; }\nexport interface AdminApp { name: string; models: AdminModel[]; }\n\nexport const adminModels: AdminModel[] = [\n",
     );
     for endpoint in endpoints {
         out.push_str("  {\n");
@@ -121,7 +121,7 @@ fn admin_schema(endpoints: &[ApiEndpoint]) -> String {
                 "      {{ name: {}, source: {}, type: {}, label: {}, nullable: false{} }},\n",
                 js(&name),
                 js(filter.source),
-                js(filter_type(filter.source)),
+                js(filter_type(endpoint, filter.source)),
                 js(&label(&name)),
                 choices
             ));
@@ -308,6 +308,10 @@ fn static_files(endpoints: &[ApiEndpoint]) -> Vec<(String, String)> {
             .into(),
         ),
         (
+            "src/admin/recordIdentity.ts".into(),
+            include_str!("admin/templates/recordIdentity.ts").into(),
+        ),
+        (
             "src/admin/components/AsyncRelationSelect.vue".into(),
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
@@ -346,6 +350,8 @@ fn admin_type(rust_type: &str, relation: bool) -> &'static str {
         "image"
     } else if rust_type.contains("f64") {
         "real"
+    } else if rust_type.contains("Uuid") {
+        "text"
     } else if relation || rust_type.contains("i64") {
         "integer"
     } else if rust_type == "bool" {
@@ -443,13 +449,18 @@ fn label(value: &str) -> String {
         .join(" ")
 }
 
-fn filter_type(value: &str) -> &'static str {
-    if value == "id" || value.ends_with("_id") {
-        "integer"
-    } else if value.ends_with("_at") {
-        "datetime"
-    } else {
-        "text"
+fn filter_type(endpoint: &ApiEndpoint, source: &str) -> &'static str {
+    match endpoint
+        .columns
+        .iter()
+        .find(|column| column.name == source || column.field_name == source)
+        .map(|column| column.column_type)
+    {
+        Some(che_orm::ColumnType::Integer) => "integer",
+        Some(che_orm::ColumnType::Real) => "real",
+        Some(che_orm::ColumnType::Boolean) => "boolean",
+        Some(che_orm::ColumnType::DateTime) => "datetime",
+        _ => "text",
     }
 }
 fn js(value: &str) -> String {

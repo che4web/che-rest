@@ -2,6 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { adminModels, type AdminField } from "./generated/adminSchema";
+import { routeIdentity } from "./recordIdentity";
 
 const route = useRoute();
 const router = useRouter();
@@ -11,9 +12,9 @@ const saving = ref(false);
 const error = ref("");
 
 const resource = computed(() => String(route.params.resource ?? ""));
-const id = computed(() => Number(route.params.id));
-const isEdit = computed(() => Number.isFinite(id.value));
 const model = computed(() => adminModels.find((item) => item.resource === resource.value));
+const id = computed(() => routeIdentity(route.params.id, model.value));
+const isEdit = computed(() => id.value !== undefined);
 const fields = computed(() => model.value?.fields.filter((field) => !field.readOnly) ?? []);
 
 function emptyValue(field: AdminField) {
@@ -31,7 +32,7 @@ async function loadObject() {
 
   form.value = Object.fromEntries(fields.value.map((field) => [field.name, emptyValue(field)]));
 
-  if (!isEdit.value) {
+  if (id.value === undefined) {
     return;
   }
 
@@ -98,7 +99,7 @@ async function submit() {
   }
 
   try {
-    if (isEdit.value) {
+    if (id.value !== undefined) {
       await model.value.api.update(id.value, payload);
     } else {
       await model.value.api.create(payload);

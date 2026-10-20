@@ -12,7 +12,7 @@ export interface AdminField { name: string; source: string; type: AdminFieldType
 
 export interface AdminFilter { name: string; source: string; type: AdminFieldType; label: string; nullable: boolean; choices?: string[]; }
 
-export interface AdminModelApi { list: (params?: any) => Promise<{ count: number; results: any[] }>; retrieve: (id: number) => Promise<any>; create: (payload: any) => Promise<any>; update: (id: number, payload: any) => Promise<any>; remove: (id: number) => Promise<void>; }
+export interface AdminModelApi { list: (params?: any) => Promise<{ count: number; results: any[] }>; retrieve: (id: number | string) => Promise<any>; create: (payload: any) => Promise<any>; update: (id: number | string, payload: any) => Promise<any>; remove: (id: number | string) => Promise<void>; }
 
 export interface AdminModel { appName: string; name: string; resource: string; api: AdminModelApi; fields: AdminField[]; listFields: string[]; filters: AdminFilter[]; }
 export interface AdminApp { name: string; models: AdminModel[]; }

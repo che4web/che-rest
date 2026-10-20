@@ -55,20 +55,23 @@ impl HttpTransport {
             .headers()
             .get("content-type")
             .and_then(|v| v.to_str().ok())
+            .and_then(|value| value.split(';').next())
             == Some("application/vnd.che-sync+json")
         {
             response.json().await.map_err(network)
         } else {
             let status = response.status();
-            if status.is_client_error() {
-                Ok(PushResult::Rejected {
-                    reason: response.text().await.map_err(network)?,
-                })
-            } else {
-                Err(OrmError::Interaction(format!(
-                    "unexpected REST response {status}"
-                )))
-            }
+            // Only a sync envelope is an authoritative business rejection.
+            // Proxy, throttling and authentication errors leave the immutable
+            // operation in the outbox. The caller schedules retry/auth renewal.
+            let retry_after = response
+                .headers()
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("unspecified");
+            Err(OrmError::Interaction(format!(
+                "unexpected REST response {status}; Retry-After: {retry_after}"
+            )))
         }
     }
     async fn post<Q: Serialize, R: DeserializeOwned>(
@@ -88,6 +91,147 @@ impl HttpTransport {
             .json()
             .await
             .map_err(network)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU16, Ordering},
+    };
+
+    #[tokio::test]
+    async fn non_sync_http_errors_preserve_outbox_identity_until_retry() {
+        let (state, token) = todo::demo_state().await.unwrap();
+        let status = Arc::new(AtomicU16::new(200));
+        let failure = status.clone();
+        let router = Server::new(state.clone())
+            .install(todo::apps())
+            .build()
+            .await
+            .unwrap()
+            .layer(axum::middleware::from_fn(
+                move |request: axum::extract::Request, next: axum::middleware::Next| {
+                    let failure = failure.clone();
+                    async move {
+                        let code = failure.load(Ordering::SeqCst);
+                        if request.uri().path() == "/api/todos/" && code != 200 {
+                            if code == 422 {
+                                return axum::response::IntoResponse::into_response((
+                                    axum::http::StatusCode::BAD_REQUEST,
+                                    [(
+                                        "content-type",
+                                        "application/vnd.che-sync+json; charset=utf-8",
+                                    )],
+                                    axum::Json(PushResult::Rejected {
+                                        reason: "business validation failed".into(),
+                                    }),
+                                ));
+                            }
+                            return axum::response::IntoResponse::into_response((
+                                axum::http::StatusCode::from_u16(code).unwrap(),
+                                [("retry-after", "0")],
+                                "temporary HTTP error",
+                            ));
+                        }
+                        next.run(request).await
+                    }
+                },
+            ));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/api/todos/sync", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, router).await });
+        let client = SyncClient::open(
+            todo::database(SchemaRole::Client).await.unwrap(),
+            todo::registry().unwrap(),
+            "todo-board",
+        )
+        .await
+        .unwrap();
+        let engine = SyncEngine::for_model::<todo::Todo>(
+            client.clone(),
+            HttpTransport {
+                http: reqwest::Client::new(),
+                base,
+                token,
+            },
+        )
+        .unwrap();
+        engine.full_load().await.unwrap();
+        let item = todo::Todo {
+            id: Uuid::now_v7(),
+            title: "retry me".into(),
+            ..Default::default()
+        };
+        client.save(&item).await.unwrap();
+        let mut identity = None;
+        for code in [401, 408, 429, 503, 400] {
+            status.store(code, Ordering::SeqCst);
+            let error = engine.flush().await.unwrap_err();
+            assert!(error.to_string().contains("Retry-After: 0"));
+            let rows = client
+                .database()
+                .query_sql("SELECT operation_id, payload FROM _sync_outbox", vec![])
+                .await
+                .unwrap();
+            assert_eq!(rows.len(), 1);
+            let pending = (
+                rows[0].get::<String>(0).unwrap(),
+                rows[0].get::<String>(1).unwrap(),
+            );
+            if let Some(expected) = &identity {
+                assert_eq!(&pending, expected);
+            } else {
+                identity = Some(pending);
+            }
+        }
+        status.store(200, Ordering::SeqCst);
+        engine.flush().await.unwrap();
+        assert!(
+            client
+                .database()
+                .query_sql("SELECT operation_id FROM _sync_outbox", vec![])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            state
+                .database()
+                .get::<todo::Todo>(item.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .title,
+            "retry me"
+        );
+        let rejected = todo::Todo {
+            id: Uuid::now_v7(),
+            title: "rejected".into(),
+            ..Default::default()
+        };
+        client.save(&rejected).await.unwrap();
+        status.store(422, Ordering::SeqCst);
+        assert_eq!(engine.flush().await.unwrap().rejected_operations, 1);
+        assert!(
+            client
+                .database()
+                .query_sql("SELECT operation_id FROM _sync_outbox", vec![])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            state
+                .database()
+                .get::<todo::Todo>(rejected.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        server.abort();
     }
 }
 fn network(error: reqwest::Error) -> OrmError {

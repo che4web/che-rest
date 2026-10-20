@@ -16,7 +16,7 @@ const pageSize = 20;
 const loading = ref(false);
 const error = ref("");
 
-const columns = computed(() => props.model.fields.filter((field) => !field.writeOnly));
+const columns = computed(() => props.model.fields.filter((field) => props.model.listFields.includes(field.name)));
 const pageCount = computed(() => Math.max(1, Math.ceil(count.value / pageSize)));
 const firstRow = computed(() => (count.value === 0 ? 0 : (page.value - 1) * pageSize + 1));
 const lastRow = computed(() => Math.min(page.value * pageSize, count.value));
@@ -118,6 +118,12 @@ function displayValue(value: unknown) {
   return value;
 }
 
+function imageUrl(value: unknown) {
+  return typeof value === "string" && value
+    ? `${String(import.meta.env.VITE_API_BASE_URL ?? "/api").replace(/\/$/, "")}/media/${value}`
+    : "";
+}
+
 watch(() => props.model.resource, async () => {
   initFilters();
   page.value = 1;
@@ -149,7 +155,11 @@ watch(() => props.model.resource, async () => {
           <div class="d-grid gap-2">
             <div v-for="filter in model.filters" :key="filter.name">
               <label class="form-label">{{ filter.label }}</label>
-              <select v-if="filter.type === 'boolean'" v-model="filterValues[filter.name]" class="form-select">
+              <select v-if="filter.choices" v-model="filterValues[filter.name]" class="form-select">
+                <option value="">Any</option>
+                <option v-for="choice in filter.choices" :key="choice" :value="choice">{{ choice }}</option>
+              </select>
+              <select v-else-if="filter.type === 'boolean'" v-model="filterValues[filter.name]" class="form-select">
                 <option :value="null">Any</option>
                 <option :value="true">Yes</option>
                 <option :value="false">No</option>
@@ -190,7 +200,10 @@ watch(() => props.model.resource, async () => {
                   <td :colspan="columns.length + 1">No objects yet.</td>
                 </tr>
                 <tr v-for="row in rows" :key="String(row.id)">
-                  <td v-for="field in columns" :key="field.name">{{ displayValue(row[field.name]) }}</td>
+                  <td v-for="field in columns" :key="field.name">
+                    <img v-if="field.type === 'image' && imageUrl(row[field.name])" :src="imageUrl(row[field.name])" alt="" style="max-width: 7rem; max-height: 4rem; object-fit: contain" />
+                    <span v-else>{{ displayValue(row[field.name]) }}</span>
+                  </td>
                   <td>
                     <div class="d-flex gap-2">
                       <button class="btn btn-sm btn-outline-secondary" type="button" @click="router.push(`/admin/${model.resource}/${row.id}/edit`)">Edit</button>

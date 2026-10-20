@@ -124,7 +124,7 @@ watch(resource, async () => {
         <div class="row g-3">
           <div v-for="filter in model.filters" :key="filter.name" class="col-12 col-md-6 col-xl-3">
             <label class="form-label">{{ filter.label }}</label>
-            <select v-else-if="filter.choices" v-model="filterValues[filter.name]" class="form-select">
+            <select v-if="filter.choices" v-model="filterValues[filter.name]" class="form-select">
               <option value="">Any</option>
               <option v-for="choice in filter.choices" :key="choice" :value="choice">{{ choice }}</option>
             </select>

@@ -22,6 +22,13 @@ use crate::{AppError, AppResult, AppState, auth::CurrentPrincipal};
 pub struct MutationHooks<V: ViewSet>(Vec<Arc<dyn MutationHook<V>>>);
 
 impl<V: ViewSet> MutationHooks<V> {
+    fn queryset(&self, viewset: &V) -> V::QuerySet {
+        let queryset = viewset.get_queryset();
+        match self.0.iter().find_map(|hook| hook.backend()) {
+            Some(backend) => backend.filter_read(queryset),
+            None => queryset,
+        }
+    }
     async fn rest(
         &self,
         state: &AppState,
@@ -91,7 +98,7 @@ impl<V: ViewSet> MutationHooks<V> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ViewAction {
     List,
     Retrieve,
@@ -1207,6 +1214,7 @@ fn count_params(params: &HashMap<String, String>) -> HashMap<String, String> {
 async fn list<V: ViewSet>(
     Extension(state): Extension<AppState>,
     Extension(viewset): Extension<V>,
+    Extension(hooks): Extension<MutationHooks<V>>,
     who: Option<Extension<CurrentPrincipal>>,
     Query(params): Query<HashMap<String, String>>,
 ) -> AppResult<impl IntoResponse>
@@ -1218,7 +1226,7 @@ where
     let filter = viewset.filterset();
     let count_params = count_params(&params);
     let count = filter
-        .apply(viewset.get_queryset(), &count_params)
+        .apply(hooks.queryset(&viewset), &count_params)
         .map_err(error_filter)?
         .count(state.database())
         .await?;
@@ -1229,7 +1237,7 @@ where
         return Err(AppError::BadRequest("limit must not exceed 100".into()));
     }
     let rows = filter
-        .apply(viewset.get_queryset(), &params)
+        .apply(hooks.queryset(&viewset), &params)
         .map_err(error_filter)?
         .limit(limit)
         .offset(offset)
@@ -1245,6 +1253,7 @@ where
 async fn retrieve<V: ViewSet>(
     Extension(state): Extension<AppState>,
     Extension(viewset): Extension<V>,
+    Extension(hooks): Extension<MutationHooks<V>>,
     who: Option<Extension<CurrentPrincipal>>,
     Path(id): Path<<V::Model as Model>::PrimaryKey>,
 ) -> AppResult<impl IntoResponse>
@@ -1253,8 +1262,8 @@ where
 {
     let principal = current(&who);
     V::Permission::default().check(&state, principal, ViewAction::Retrieve)?;
-    let item = viewset
-        .get_queryset()
+    let item = hooks
+        .queryset(&viewset)
         .filter(V::Model::primary_key().eq(id))
         .first(state.database())
         .await?
