@@ -104,6 +104,63 @@ projection while preserving confirmed state and cursor. Clone one client to
 share its locks; independent concurrent clients/processes against the same
 local database are unsupported.
 
+### che-tauri managed state
+
+Enable `che-tauri/sync` alongside `che-rest/sync-http` in the application.
+The complete [Todo server and desktop client](../../che-tauri/examples/todo-sync/README.md)
+demonstrates two persistent SQLite clients, offline restart, field merging,
+conflict selection and deletion through these same REST endpoints.
+
+```rust,ignore
+use che_tauri::TauriSync;
+
+// The app modules registered client schemas with ctx.sync_model::<Note>().
+// Apply their frozen compiled migrations before opening the managed state.
+let sync = TauriSync::open(database, apps.sync_registry()?, transport).await?;
+tauri::Builder::default()
+    .manage(sync)
+    .invoke_handler(tauri::generate_handler![che_tauri::che_model_sync])
+    // Register application UUID CRUD commands in this same list.
+    .run(tauri::generate_context!())?;
+```
+
+Use fully qualified exported command paths so Tauri resolves their wrapper
+macros. `TauriSync` opens without network access; it supplies `save`, `delete`,
+`database`, `pull`, `flush`, `sync_once`, `conflicts` and `resolve`. Ordinary
+`che_api` resources use i64 IDs, so the application supplies UUID CRUD commands.
+The shared `che_orm::ModelSerializer` type used by `RestResource` describes the
+server's writable fields; it is distinct from the metadata serializer in
+`che-tauri`'s ordinary invoke resources.
+
+The transport takes a reqwest **0.12** client. Ordinary `che-tauri` REST proxies
+use reqwest 0.13; configure a matching application client, using a dependency
+alias when both versions are needed. Authentication and timeouts belong to this
+supplied client. TauriApi login/logout and `che_tauri::AppState` configuration
+changes do not update the sync transport's credentials. Renew credentials for the same account
+without discarding pending data, and use another database for another
+server/account history.
+
+Durable sync tables must not be registered as disposable remote cache tables.
+Cache invalidation uses raw deletes; overlap is currently prohibited by the
+application contract, without a registration-time guard. Apply this rule to
+direct table sharing and related cascade effects.
+
+With feature `sync`, the application's `che-tauri` management binary generates
+`sync.ts` with `modelSync` and typed reports/conflicts/resolutions. Edit its
+canonical `src/sync_client.ts` in che-tauri and regenerate application files.
+Do not add Tauri invoke or frontend client generation to the sync engine.
+
+The Todo workspace is verified separately:
+
+```bash
+cargo check --manifest-path ../che-tauri/examples/todo-sync/Cargo.toml --workspace
+cargo test --manifest-path ../che-tauri/examples/todo-sync/Cargo.toml -p todo-sync-server -p todo-sync-client --no-default-features
+```
+
+Run these from the che-rest root. Tests bind an ephemeral loopback port and use
+temporary files. Default-feature workspace checks include the desktop binary;
+they do not launch or inspect the window. The example README has manual steps.
+
 ## Wire format and history
 
 A changes page contains `model`, `history`, `operations`, `next_cursor` and
@@ -199,6 +256,7 @@ application database whose schema, ownership rules and data were not supplied.
 | `che-sync-protocol` | Model mutations, journal entries, canonical states and results |
 | `che-sync` | Capture, revisions, receipts, current/shadow data, outbox, cursors and merge; generic delivery interface |
 | `che-rest` | Resource routes, HTTP methods/status/headers, serializer field mapping, JSON request bodies and reqwest delivery |
+| `che-tauri` | Managed client state, invoke commands and frontend synchronization client generation |
 
 Dependencies point from `che-rest` through `che-sync` to `che-orm`. The data and
 sync crates do not depend on HTTP types or know resource paths. `ModelWrite`

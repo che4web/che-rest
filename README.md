@@ -41,6 +41,18 @@ See [`docs/model-sync.md`](docs/model-sync.md) for setup, migrations and access
 rules. The scoped pull/snapshot protocol and `todo_sync` example remain available
 for explicitly managed [legacy clients](docs/sync.md).
 
+For a desktop application, see the runnable
+[Todo server and che-tauri client](../che-tauri/examples/todo-sync/README.md).
+It has a shared UUID model, separate frozen server/client migrations, offline
+SQLite edits, manual synchronization and conflict selection. Its independent
+Cargo workspace lives in `che-tauri`; root `che-rest` tests do not run it.
+
+`che-rest` owns the protocol-2 HTTP transport and `RestModelWrite` DTO;
+`che-sync` owns durable state, outbox, receipts and merge through the generic
+`ModelLogTransport` interface. `che-tauri/sync` exposes that client as managed
+`TauriSync` and the `che_model_sync` invoke command. HTTP stays outside the ORM
+and sync crates. See [Tauri setup and authentication](docs/model-sync.md#che-tauri-managed-state).
+
 ## Start a Project
 
 Create a new runnable `che-rest` application:

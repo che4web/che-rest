@@ -118,6 +118,48 @@ MSRV checks run offline with patches only to the other extracted siblings.
 The helper seeds their workspace lock from the actual che-rest archive; Cargo
 package does not necessarily produce a lock at a temporary workspace root.
 
-This closes the verification gap left after the abstraction-boundary follow-up.
-The framework plan has no remaining implementation/verification steps;
-publication and migration of a supplied application's database are separate work.
+This records the successful archive run after the abstraction-boundary follow-up.
+It used a warmed Cargo cache; it does not prove a clean-machine helper run.
+
+### Known package-helper limitations
+
+Subsequent review identified two tooling issues that remain unfixed:
+
+- `cargo package` does not fetch every test/optional-feature dependency used by
+  the later `--all-targets --offline` checks. Without a warmed cache, an extracted
+  check can fail on a missing crate (reproduced with `trybuild`), even after
+  packaging succeeds. Fetch the complete check graph first; a successful cached
+  run must not be described as evidence that the helper bootstraps a clean cache.
+- Only explicit `--output` paths are checked to be outside the source repos.
+  Default `tempfile` output honors `TMPDIR`; if that points into a checkout, the
+  staged files can be copied back into the source snapshot. Until the guard is
+  fixed, use a new external `--output` directory, or keep `TMPDIR` outside both
+  repositories.
+
+Core protocol verification is complete; these packaging helper fixes, publication
+and migration of a supplied application's database are separate remaining work.
+
+## Downstream che-tauri integration
+
+The sibling `che-tauri` repository now exposes `TauriSync`, `che_model_sync`,
+client-schema registration and a generated `sync.ts` client. Its separate
+[Todo workspace](../../che-tauri/examples/todo-sync/README.md) shares a UUID model
+between a REST server and desktop client, using the same protocol-2 transport.
+The example's binaries were built and its repeated server/client CLI migrations
+were checked against temporary databases. The `two_clients` HTTP test verifies
+offline restart, two devices, independent-field merge, same-field conflict and
+explicit resolution, deletion and invalid credentials. This is a distinct
+downstream check; it is not part of the historical root test counts above.
+
+To repeat from the che-rest root:
+
+```bash
+cargo test --manifest-path ../che-tauri/Cargo.toml --features sync
+cargo check --manifest-path ../che-tauri/examples/todo-sync/Cargo.toml --workspace
+cargo test --manifest-path ../che-tauri/examples/todo-sync/Cargo.toml -p todo-sync-server -p todo-sync-client --no-default-features
+```
+
+HTTP tests need an ephemeral loopback port. The desktop binary compiled with
+default features; no GUI launch or visual inspection was performed in that run.
+The example README provides manual two-window scenarios. Framework validation
+does not validate an application's existing database migration or authorization.

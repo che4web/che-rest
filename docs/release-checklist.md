@@ -36,7 +36,7 @@ cargo publish --dry-run --allow-dirty
 Before dependency publication, verify all five sibling packages together:
 
 ```bash
-python3 scripts/verify_sync_packages.py
+python3 scripts/verify_sync_packages.py --output /tmp/che-sync-release-check
 ```
 
 This requires Python 3.11+, Git, Cargo and Rust 1.88.0. It snapshots the working
@@ -46,8 +46,25 @@ PostgreSQL. Packaging uses the registry; extracted-source checks run offline.
 Source repositories and their lock files stay unchanged. Logs, archives and
 SHA-256 hashes are retained in the printed verification directory. Use
 `--orm PATH`, `--output NEW_DIRECTORY` or `--toolchain VERSION` when needed.
+The output directory must be new. The current helper requires a warmed Cargo
+cache for all-target/optional-feature dependencies; packaging alone does not
+fetch every dependency needed by its offline checks. Keep TMPDIR outside both
+repositories when using default output. See the
+[known helper limitations](MODEL_SYNC_VERIFICATION.md#known-package-helper-limitations).
 
 See [MODEL_SYNC_VERIFICATION.md](MODEL_SYNC_VERIFICATION.md) for recorded results.
+
+When changing synchronization or serializer mapping, also verify the matching
+che-tauri Todo consumer from the che-rest root:
+
+```bash
+cargo check --manifest-path ../che-tauri/examples/todo-sync/Cargo.toml --workspace
+cargo test --manifest-path ../che-tauri/examples/todo-sync/Cargo.toml -p todo-sync-server -p todo-sync-client --no-default-features
+```
+
+The latter uses temporary SQLite files and an ephemeral HTTP port. Use the
+[example README](../../che-tauri/examples/todo-sync/README.md) for a manual GUI
+check; a successful desktop build only verifies compilation.
 
 ## Publish
 

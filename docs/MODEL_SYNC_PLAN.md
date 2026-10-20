@@ -89,3 +89,10 @@
 - Rechecked generated authenticated-project builds/repeated migrations and the cli_fullstack smoke against the transport-neutral APIs; both passed.
 - The current five-archive run passed, including extracted-source Rust 1.88 SQLite/HTTP and PostgreSQL checks. Its resolved dependency graph has zero RustSec vulnerabilities/warnings. Successful logs and hashes are recorded in MODEL_SYNC_VERIFICATION.md.
 - No framework implementation/verification items remain in this plan. Publication, version/tag decisions and migration of an actual supplied application database remain separate authorized work.
+
+### Downstream Tauri integration and review follow-up
+
+- The sibling che-tauri repository now provides optional `TauriSync`, the `che_model_sync` command, generated `sync.ts`, and client-role schema registration. HTTP delivery still uses che-rest; data capture, outbox and merge remain in che-sync.
+- A runnable [Todo server and desktop client](../../che-tauri/examples/todo-sync/README.md) has frozen role-specific migrations, offline SQLite writes, bounded manual sync and conflict selection. Its separate workspace check and two-device HTTP test complement root framework tests; desktop compilation is distinct from manual GUI inspection.
+- The snapshot/full_load rules documented for legacy `SyncEngine` do not apply to protocol-2 model journals. Keep the user guides and agent instructions explicit about this distinction.
+- The core protocol steps above remain complete. Subsequent review found two outstanding package-helper defects: offline checks rely on a warmed optional/dev-dependency cache, and default temporary output is not guarded against a TMPDIR inside a source checkout. See [the verification notes](MODEL_SYNC_VERIFICATION.md#known-package-helper-limitations) for the current workaround; the earlier successful cached archive run does not close these issues.

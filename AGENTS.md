@@ -4,6 +4,7 @@
 - This is a single Rust library crate, not a Cargo workspace; it depends on the sibling path `../che-orm`.
 - The ORM2 state/error and typed CRUD REST surface are implemented in this crate. Legacy ORM integrations are not part of the public build.
 - Public API is re-exported from `src/lib.rs`; the REST implementation lives under `src/rest`.
+- The runnable Todo desktop integration lives in the sibling `../che-tauri/examples/todo-sync` Cargo workspace. It is a downstream consumer, not a member of this crate's default checks.
 
 ## Verification Commands
 - `cargo fmt --check` passes and is the fastest formatting check.
@@ -55,4 +56,29 @@
 - See `docs/model-sync.md` for the current protocol and `docs/sync.md` for legacy compatibility. Preserve immutable submitted paths/bodies/identities when changing serializers or transports.
 - Run `che_rest::sync::retry_model_effects(&state)` from a trusted worker after installing modules. Hook IDs and versioned delete payloads must remain stable; missing handlers retain their queued effects. See `docs/MODEL_SYNC_VERIFICATION.md` for the completed protocol-2 verification matrix.
 - Keep HTTP DTOs and serializer/resource/header mapping in che-rest. The sync protocol exposes `ModelWrite`; generic adapters implement `ModelLogTransport::{id, prepare_write, write}` and persist opaque payloads. `RestModelWrite` is exported by che-rest. Preserve old submitted payloads through the HTTP adapter's compatibility key.
-- Before upstream dependency publication, run `python3 scripts/verify_sync_packages.py` for reproducible five-crate packaging and extracted-archive Rust 1.88 checks. It uses temporary copies outside both repositories; Python 3.11+, Git and Rust 1.88.0 are required. Results and archive hashes stay in its printed output directory.
+- The ORM and sync crates must not depend on HTTP or Tauri. `che-tauri/sync` wraps `ModelLogClient` as `TauriSync` and the `che_model_sync` invoke command; it reuses this crate's HTTP transport instead of duplicating the protocol. See `docs/model-sync.md` for managed-state setup.
+- `RestResource` uses the server's `che_orm::ModelSerializer` mapping, not `che_tauri::ModelSerializer`. `RestModelTransport` accepts reqwest 0.12; ordinary che-tauri remote resources use 0.13. Keep application dependency versions/aliases explicit and sibling ORM crate identities aligned.
+- Protocol-2 `pull` starts at cursor zero and does not use snapshots/full_load. `flush` sends at most one coalesced record per model, retrying immutable submitted payloads first. Keep UI/worker cycles bounded and stop on blocked/conflict/rejected reports.
+- Tauri UUID CRUD commands write through the managed sync client; ordinary `che_api` resources keep i64 IDs. Register external Tauri commands with fully qualified paths such as `che_tauri::che_model_sync`. Invoke DTOs and frontend sync client generation belong in che-tauri.
+- Sync credentials belong to the supplied transport. AppState login/logout/config changes in che-tauri do not update them. Renew credentials for the same server/account without clearing pending operations or silently reassigning a client database.
+- Durable sync tables must not participate in remote response cache invalidation, directly or through cascades. Overlapping cache/sync registration is currently an application-contract restriction; no framework guard has been implemented.
+- For changes affecting native clients, run `cargo test --manifest-path ../che-tauri/Cargo.toml --features sync` and the Todo workspace checks below. Root REST tests do not replace them.
+- Before upstream dependency publication, use `python3 scripts/verify_sync_packages.py --output /tmp/NEW_DIRECTORY` for five-crate packaging and extracted-archive Rust 1.88 checks. Python 3.11+, Git and Rust 1.88.0 are required. Results and hashes stay in that new output directory. The current helper needs a warmed cache for all-target/optional-feature dependencies; its offline checks do not fetch them. Keep TMPDIR outside source repositories if omitting --output. These known helper limitations are documented in `docs/MODEL_SYNC_VERIFICATION.md`.
+
+## Downstream Todo Verification
+
+Run from the che-rest root when changing synchronization or serializer contracts:
+
+```bash
+cargo check --manifest-path ../che-tauri/examples/todo-sync/Cargo.toml --workspace
+cargo test --manifest-path ../che-tauri/examples/todo-sync/Cargo.toml -p todo-sync-server -p todo-sync-client --no-default-features
+cargo clippy --manifest-path ../che-tauri/examples/todo-sync/Cargo.toml --workspace --all-targets --no-deps -- -D warnings
+```
+
+The HTTP test binds an ephemeral loopback port and uses temporary file databases.
+It covers offline reopen, repeated compiled migrations, two-device field merging,
+same-field conflicts, explicit resolution, deletion and invalid credentials.
+Default-feature workspace checks compile the Tauri desktop binary and exported
+command wrappers. GUI launch/inspection is a separate manual check. Preserve the
+example's frozen migrations and explicit migrate commands; do not create model
+tables or backfill journals during server/client startup.
