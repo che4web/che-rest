@@ -44,5 +44,33 @@
 
 ## Execution status
 
-- Plan saved. Implementation is in progress across `che-rest`, `che-sync-protocol`, `che-sync` and the ORM schema layer in the sibling `../che-orm` repository.
+- Framework implementation and verification of steps 1-9 are complete across `che-rest`, `che-sync-protocol`, `che-sync` and the ORM schema layer in `../che-orm`. See [MODEL_SYNC_VERIFICATION.md](MODEL_SYNC_VERIFICATION.md) for results and deployment boundaries.
 - The existing uncommitted review fixes are retained. No commit, tag movement, publication, or migration of an application's database is authorized by this plan.
+
+### 2026-10-20: REST/client integration verification
+
+- Added `tests/model_sync_http.rs` against the real `RestModelTransport` and authenticated `ModelSyncEndpoints`: offline edit coalescing, lost committed reply, reopening the client, immutable replay, retry after authentication failure, follow-up edits, unsent create/delete cancellation, delete journal entries, JSON null and full-range i64.
+- Added route authorization/parameter checks and TypeScript journal-client generation coverage. Corrected the legacy migration-state regression to assert the shared tables and each model's new journal/state tables by name.
+- Added `cargo run --features sync-http --example model_sync`: two independent SQLite clients merge independent fields and propagate deletion through the per-model journal. Shared example/test setup uses role-specific schemas and compiled demo migrations.
+- Documented protocol 2 setup, whole-model authorization, immutable delivery, explicit backfill and the retained legacy path in `docs/model-sync.md`; updated README and agent guidance.
+- Verification: `cargo test --features sync-http` passed (115 tests, one generated-project test ignored); the new two-client example passed. This verifies the REST integration portion of steps 6/8, not completion of all plan scenarios.
+- Remaining: complete the release matrix in step 9 and extend protocol-2 regression coverage for deferred FK projection, explicit backfill/legacy migration, concurrent pagination and independently retried effects. Existing legacy tests do not establish those properties for protocol 2.
+
+### 2026-10-20: journal recovery and atomic client initialization
+
+- Added protocol-2 regressions in `../che-orm/che-sync/tests/model_log.rs`: deferred FK projection retains the latest downloaded state/cursor across reopening; parent arrival retries projection; an invalid later operation rolls back the whole page and cursor; explicit backfill preserves revisions; incompatible legacy scope rolls back every backfilled row; gaps and concurrent paginated reads retain all committed operations.
+- Fixed a reproduced protocol-switch bug: failed `ModelLogClient::open` previously committed `model_log_protocol` before scope validation failed. Protocol checks, scope ownership, replica identity and metadata initialization now share the same transaction in `SyncClient::open_with_protocol`. Legacy clients also reject protocol-2 databases rather than reinterpreting their state.
+- Regression tests verify unchanged metadata on failed opening/invalid replica data and an immutable legacy outbox request remaining independently settleable after a rejected protocol switch.
+- Formatted the existing sync implementation and resolved clippy findings in sync capture/dispatch without changing its intended behavior.
+- Verification passed: ORM workspace tests, workspace documentation, schema CLI, legacy offline example, all 12 model-journal tests on Rust 1.88, PostgreSQL che-sync build/non-runtime tests, che-sync clippy with warnings denied, and che-rest tests/clippy with `sync-http`.
+- Live PostgreSQL tests remain unverified because `TEST_POSTGRES_URL` is absent. Still outstanding: protocol-2 independent-effect retry coverage, the remaining release matrix (packaged builds, fullstack/generated-project/frontend checks and dependency audit), and application-owned explicit legacy migration procedures. No application database migration, commit or publication was performed.
+
+### 2026-10-20: completion of framework plan
+
+- Verified request-independent protocol-2 cleanup after runtime restart, absent handlers and hook reordering. Handler-owned payloads retain their identities; successful retries remove effects without new mutations.
+- Added explicit same-field/delete conflict resolution and JSON scalar/null, timestamp/alias and full-range i64 regressions.
+- Added a live PostgreSQL protocol-2 test for concurrent journal commits, no-ops, typed state, deferred FK projection and SET NULL; wired it into release CI. Ran the existing live PostgreSQL ORM and sync suites on an isolated temporary server and stopped it afterwards.
+- Completed generated-project migrations, fullstack smoke, frontend builds, Node tests, rustdoc, examples, formatting/clippy, workspace/all-target MSRV checks and builds of all five extracted public package archives on Rust 1.88.
+- Completed RustSec/npm audits; fixed vulnerable rustls/quinn-proto lock entries and verified clean follow-up audits. Source and fullstack smoke checks pass after the dependency changes.
+- Documented the trusted background-effect worker and an explicit application-owned legacy migration rehearsal. Existing histories/pending requests remain protected; no application's data was migrated.
+- Steps 1-9 are complete for the framework. Standalone registry packaging/publication of che-rest still follows dependency publication order; combined pre-publication packaging was verified without publishing anything. Actual application rollout requires its own supplied schema/data and authorization. Detailed evidence: [MODEL_SYNC_VERIFICATION.md](MODEL_SYNC_VERIFICATION.md).

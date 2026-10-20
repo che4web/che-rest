@@ -26,19 +26,20 @@ The minimal migrated example is available under `todo_api`:
 cargo run --manifest-path todo_api/Cargo.toml
 ```
 
-## Offline Todo synchronization
+## Offline synchronization
 
-`SyncViewSet` and `SyncEndpoints` add authenticated pull and snapshot
-routes to a ViewSet. Writes use ordinary REST CRUD with conditional revisions
-and idempotency keys, independent model cursors/queues, automatic FK parent
-synchronization and journal-aware persistence. Run the two-device
-HTTP example:
+`SyncViewSet` and `ModelSyncEndpoints` add an authenticated journal per model.
+Writes use ordinary REST CRUD with conditional revisions and idempotency keys.
+`ModelLogClient` stores offline edits and immutable submitted requests in SQLite;
+`RestModelTransport` delivers them through HTTP. Run the two-device example:
 
 ```bash
-cargo run --example todo_sync
+cargo run --features sync-http --example model_sync
 ```
 
-See [`docs/sync.md`](docs/sync.md) for registration, migrations and access rules.
+See [`docs/model-sync.md`](docs/model-sync.md) for setup, migrations and access
+rules. The scoped pull/snapshot protocol and `todo_sync` example remain available
+for explicitly managed [legacy clients](docs/sync.md).
 
 ## Start a Project
 

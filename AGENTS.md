@@ -46,3 +46,11 @@
 - `examples/cli_fullstack` demonstrates nested server-owned `Task.author` plus writable nullable `Task.assignee_id` through REST and the generated admin relation picker.
 - Keep `cargo fmt --check`, `cargo test`, frontend builds, and the `cli_fullstack` smoke test passing when changing this surface.
 - SyncViewSet writes use the ordinary POST/PATCH/PUT/DELETE routes with serializer validation and preparation. Conditional sync headers carry revision, offline UUID and receipt identity; there is no sync/push route. RestSyncRequest encodes single-record writes, and HTTP transports advertise max_mutations() == 1. Preserve canonical sync-mode responses, transactional receipts/journal and independently retryable lifecycle effects.
+
+## Per-model Synchronization
+- Prefer `ModelSyncEndpoints` with `ModelLogClient` for protocol 2; `SyncEndpoints` and the existing `todo_sync` example retain the scoped legacy protocol. Do not silently migrate existing client databases or pending requests.
+- Register role-specific `server_model` / `client_model` schemas and apply compiled migrations. Existing server data requires explicit `SyncServer::backfill_model_log`; startup and journal GET must not backfill automatically.
+- Protocol 2 grants whole-model access; journal downloads do not apply ViewSet queryset filters. Match ordinary CRUD permissions to that access contract.
+- `sync-http` enables `sync_http::{RestModelTransport, RestResource}`. Run `cargo test --features sync-http` for the real HTTP retry/authentication tests and `cargo run --features sync-http --example model_sync` for the two-client workflow. Both bind an ephemeral loopback port.
+- See `docs/model-sync.md` for the current protocol and `docs/sync.md` for legacy compatibility. Preserve immutable submitted paths/bodies/identities when changing serializers or transports.
+- Run `che_rest::sync::retry_model_effects(&state)` from a trusted worker after installing modules. Hook IDs and versioned delete payloads must remain stable; missing handlers retain their queued effects. See `docs/MODEL_SYNC_VERIFICATION.md` for the completed protocol-2 verification matrix.

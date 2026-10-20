@@ -439,13 +439,25 @@ async fn sync_openapi_and_migration_state_are_registered() {
             .iter()
             .any(|model| model.key.app == "che_sync")
     );
+    let mut sync_tables = desired
+        .models()
+        .iter()
+        .filter(|model| model.key.app == "che_sync")
+        .map(|model| model.table.name.clone())
+        .collect::<Vec<_>>();
+    sync_tables.sort_unstable();
     assert_eq!(
-        desired
-            .models()
-            .iter()
-            .filter(|model| model.key.app == "che_sync")
-            .count(),
-        4
+        sync_tables,
+        vec![
+            "_sync_changes",
+            "_sync_effects",
+            "_sync_receipts",
+            "_sync_scopes",
+            "projects_sync_log",
+            "projects_sync_log_state",
+            "todos_sync_log",
+            "todos_sync_log_state",
+        ]
     );
     let (status, document) = request(&app, None, "GET", "/api/openapi.json", Value::Null).await;
     assert_eq!(status, StatusCode::OK);

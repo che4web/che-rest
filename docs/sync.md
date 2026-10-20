@@ -1,4 +1,7 @@
-# Todo synchronization through a ViewSet
+# Legacy Todo synchronization through a ViewSet
+
+This page describes the scoped pull/snapshot compatibility protocol. For the
+per-model journal protocol and `ModelLogClient`, see [model-sync.md](model-sync.md).
 
 Run the complete local HTTP demo from the `che-rest` directory:
 
