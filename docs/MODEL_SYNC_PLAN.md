@@ -2,6 +2,11 @@
 
 ## Agreed contract
 
+This plan records the implemented whole-model protocol-2 contract. The later
+requirement for objects shared through per-object permissions is a separate,
+unimplemented [next-stage plan](OBJECT_SYNC_PLAN.md). Completion of steps below
+does not imply that object-level grant/revocation delivery already exists.
+
 - Clients write through ordinary resource POST/PATCH/PUT/DELETE endpoints.
 - Each synchronized model owns a separate `<table>_sync_log` table and independent cursor.
 - No workspace partition is required by the new API. In the first version, authorization to synchronize a model grants access to all of that model's synchronized records.

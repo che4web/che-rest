@@ -6,6 +6,12 @@ Each model has its own append-only journal and cursor. Authorization grants
 access to the entire synchronized model; this protocol has no workspace or
 client-supplied scope. Use it only when that access matches the application.
 
+Shared objects with per-object permissions require an additional access-delivery
+contract: grants send current state and revocations remove local visibility.
+That extension is **not implemented** by these endpoints. See the
+[per-object synchronization plan](OBJECT_SYNC_PLAN.md); a queryset filter or
+per-owner scope alone does not implement it.
+
 Run the two-device SQLite/HTTP example:
 
 ```bash
@@ -114,7 +120,7 @@ conflict selection and deletion through these same REST endpoints.
 ```rust,ignore
 use che_tauri::TauriSync;
 
-// The app modules registered client schemas with ctx.sync_model::<Note>().
+// AppModule::schema() declares SchemaSet::new().client_model::<Note>().
 // Apply their frozen compiled migrations before opening the managed state.
 let sync = TauriSync::open(database, apps.sync_registry()?, transport).await?;
 tauri::Builder::default()
@@ -123,6 +129,13 @@ tauri::Builder::default()
     // Register application UUID CRUD commands in this same list.
     .run(tauri::generate_context!())?;
 ```
+
+The common module lifecycle matches REST: schema describes persistence, init
+registers handlers, and subscribe/start run after registration validation. Tauri
+install only stores modules; build performs registration without schema writes.
+Schema and sync-registry discovery never run init. See the
+[AppModule migration guide](../../che-tauri/docs/app-modules.md) for removed
+context APIs and existing application/database adoption.
 
 Use fully qualified exported command paths so Tauri resolves their wrapper
 macros. `TauriSync` opens without network access; it supplies `save`, `delete`,
@@ -136,14 +149,15 @@ The transport takes a reqwest **0.12** client. Ordinary `che-tauri` REST proxies
 use reqwest 0.13; configure a matching application client, using a dependency
 alias when both versions are needed. Authentication and timeouts belong to this
 supplied client. TauriApi login/logout and `che_tauri::AppState` configuration
-changes do not update the sync transport's credentials. Renew credentials for the same account
-without discarding pending data, and use another database for another
+changes do not update the sync transport's credentials. Renew credentials for
+the same account without discarding pending data, and use another database for another
 server/account history.
 
 Durable sync tables must not be registered as disposable remote cache tables.
-Cache invalidation uses raw deletes; overlap is currently prohibited by the
-application contract, without a registration-time guard. Apply this rule to
-direct table sharing and related cascade effects.
+Cache invalidation uses raw deletes. TauriApi build now rejects ordinary local
+or cached resources mapped to declared sync tables. The check does not cover
+separately configured runtimes or arbitrary triggers/cascades; keep those effects
+isolated from durable sync data too.
 
 With feature `sync`, the application's `che-tauri` management binary generates
 `sync.ts` with `modelSync` and typed reports/conflicts/resolutions. Edit its
