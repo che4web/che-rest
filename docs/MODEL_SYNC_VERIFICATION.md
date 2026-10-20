@@ -1,8 +1,9 @@
 # Model synchronization verification
 
-Verified on 2026-10-20 against the current local che-rest/che-orm worktrees.
-Framework implementation and verification cover steps 1-9 of MODEL_SYNC_PLAN.md.
-No publication, commit or application database migration was performed.
+Initial plan-verification snapshot recorded on 2026-10-20. The results below
+cover steps 1-9 before the abstraction follow-up described at the end of this
+file. That follow-up records verification of the refined layering separately.
+No publication or application database migration was part of verification.
 
 ## Results
 
@@ -70,3 +71,53 @@ Actual deployment remains application-owned. Rehearse its data/ownership
 conversion on a copy using the migration procedure in model-sync.md. The tests
 cannot certify an application database that was not supplied. Publication still
 requires the documented dependency order and a reviewed clean release commit.
+
+## Abstraction boundary follow-up
+
+Moved `RestModelWrite`, resource/body encoding and compatibility with old HTTP
+payload keys into che-rest. The sync protocol exposes transport-neutral
+`ModelWrite`; che-sync persists opaque payloads under stable adapter identities.
+Prepared-write/receipt APIs now use neutral names while keeping stored receipt
+encoding unchanged. See model-sync.md for ownership and source API changes.
+
+Verification after this refinement: 174 ORM workspace tests and 117 REST tests
+passed, including 16 model-journal/native-transport tests and both current and
+previously persisted HTTP request formats. Tests verify unchanged retries after
+route mapping/codec changes and reject reinterpretation by another adapter.
+The nine live PostgreSQL sync/runtime/model-journal tests also passed on a
+separate temporary cluster, which was stopped afterwards. SQLite/PostgreSQL
+Rust 1.88 source builds, REST sync-http MSRV build, formatting, clippy, rustdoc,
+schema CLI and native offline example passed. The initial table remains a
+historical snapshot; current archive verification is recorded below.
+
+## Current archive verification
+
+After the transport-neutral refactor, ran the complete reproducible package
+check using the current working sources:
+
+```bash
+python3 scripts/verify_sync_packages.py
+```
+
+All five archives packaged and built successfully. Their extracted sources
+passed Rust 1.88 all-target checks for SQLite/HTTP and PostgreSQL. The audit of
+the extracted workspace's resolved dependency lock found zero RustSec
+vulnerabilities and no advisory warnings. The generated authenticated project
+build/repeated migrations and cli_fullstack smoke also passed after the refactor.
+
+The successful run retained its logs, archives and `result.json` (including all
+five archive SHA-256 hashes) under `/tmp/che-sync-packages-ntxn656h`. Re-running
+creates a fresh directory; `--output NEW_DIRECTORY` chooses another location.
+Source checkouts and their lock files are copied, not modified. Cargo's normal
+registry/toolchain caches may be used. No crates were published.
+
+Packaging intentionally uses online registry resolution: the offline packaging
+attempt hit Cargo 1.98's temporary-registry checksum error for an unpublished
+sibling. The standard online package verification succeeded. Extracted-source
+MSRV checks run offline with patches only to the other extracted siblings.
+The helper seeds their workspace lock from the actual che-rest archive; Cargo
+package does not necessarily produce a lock at a temporary workspace root.
+
+This closes the verification gap left after the abstraction-boundary follow-up.
+The framework plan has no remaining implementation/verification steps;
+publication and migration of a supplied application's database are separate work.

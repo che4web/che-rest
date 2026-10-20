@@ -21,6 +21,43 @@ use crate::{
 
 pub use che_sync;
 
+/// Immutable HTTP request data owned by the REST adapter. This shape also reads
+/// requests submitted by earlier protocol-2 clients without re-encoding them.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RestModelWrite {
+    pub model: String,
+    pub resource: String,
+    pub record_id: Uuid,
+    pub operation_id: Uuid,
+    pub replica_id: Uuid,
+    #[serde(with = "decimal_revision")]
+    pub base_revision: i64,
+    pub schema_version: u32,
+    pub kind: che_sync::model_log::ChangeKind,
+    pub body: Value,
+    #[serde(default)]
+    pub json_null_fields: Vec<String>,
+}
+
+mod decimal_revision {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+    pub fn serialize<S: Serializer>(value: &i64, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&value.to_string())
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<i64, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Decimal {
+            Text(String),
+            Integer(i64),
+        }
+        match Decimal::deserialize(deserializer)? {
+            Decimal::Text(value) => value.parse().map_err(D::Error::custom),
+            Decimal::Integer(value) => Ok(value),
+        }
+    }
+}
+
 /// One immutable sync operation encoded as an ordinary serializer JSON write.
 pub struct RestSyncRequest {
     pub method: axum::http::Method,
@@ -600,7 +637,7 @@ where
         }
     }
     let result = server
-        .write_rest_prepared(request, before.clone(), effects, identity)
+        .write_prepared_request(request, before.clone(), effects, identity)
         .await
         .map_err(sync_error)?;
     retry_effects(state, principal, server, &scope).await;
@@ -1008,7 +1045,7 @@ where
                 &identity_body,
             ))?;
             if let Some(result) = server
-                .rest_receipt(replica, operation, &identity)
+                .request_receipt(replica, operation, &identity)
                 .await
                 .map_err(sync_error)?
             {
@@ -1188,7 +1225,7 @@ where
                     let mut prepared = if !conditional && action == ViewAction::Create {
                         server.prepare_write(write).await
                     } else {
-                        server.prepare_rest_write(write, revision).await
+                        server.prepare_conditional_write(write, revision).await
                     }
                     .map_err(sync_error)?;
                     for (_, wire) in json_null_mappings {
@@ -1265,7 +1302,7 @@ where
                             response.status() == StatusCode::PRECONDITION_FAILED
                         }))
                 && let Some(result) = server
-                    .rest_receipt(replica, operation, &identity)
+                    .request_receipt(replica, operation, &identity)
                     .await
                     .map_err(sync_error)?
             {
@@ -1297,7 +1334,7 @@ where
                     },
                 };
                 let result = server
-                    .reject_rest(request, identity, reason.clone())
+                    .reject_request(request, identity, reason.clone())
                     .await
                     .map_err(sync_error)?;
                 return Ok(Some(write_response(&self.viewset, result, action, true)?));

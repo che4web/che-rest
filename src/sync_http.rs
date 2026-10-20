@@ -1,4 +1,5 @@
 //! Reusable ordinary REST transport for a Tauri/native ModelLogClient.
+use crate::RestModelWrite;
 use che_orm::{ModelSerializer, OrmError};
 use che_sync::{ModelLogTransport, SyncModel, TransportFuture, model_log::*};
 use std::collections::BTreeMap;
@@ -100,41 +101,82 @@ fn network(error: reqwest::Error) -> OrmError {
     OrmError::Interaction(error.to_string())
 }
 impl ModelLogTransport for RestModelTransport {
-    fn encode_write(&self, mut write: RestModelWrite) -> Result<RestModelWrite, OrmError> {
+    fn id(&self) -> &'static str {
+        "che-rest.model.v2"
+    }
+    fn legacy_payload_key(&self, operation: che_orm::Uuid) -> Option<String> {
+        Some(format!("rest-request:{operation}"))
+    }
+    fn prepare_write(&self, write: &ModelWrite) -> Result<serde_json::Value, OrmError> {
         let resource = self.resources.get(&write.model).ok_or_else(|| {
             OrmError::Configuration(format!("no REST resource for {}", write.model))
         })?;
-        write.resource = resource.resource.clone();
-        if let Some(body) = write.body.as_object() {
-            write.body = serde_json::Value::Object(
-                body.iter()
-                    .map(|(name, value)| {
-                        resource
-                            .fields
-                            .get(name)
-                            .map(|field| (field.clone(), value.clone()))
-                            .ok_or_else(|| {
-                                OrmError::Configuration(format!("unknown writable field {name}"))
-                            })
-                    })
-                    .collect::<Result<_, _>>()?,
-            );
-        }
-        write.json_null_fields = write
-            .json_null_fields
-            .iter()
-            .map(|name| {
-                resource
-                    .fields
-                    .get(name)
-                    .cloned()
-                    .ok_or_else(|| OrmError::Configuration("unknown JSON field".into()))
+        let field_name =
+            |name: &str| {
+                resource.fields.get(name).cloned().ok_or_else(|| {
+                    OrmError::Configuration(format!("unknown writable field {name}"))
+                })
+            };
+        let body = write
+            .changes
+            .as_ref()
+            .map(|changes| {
+                changes
+                    .iter()
+                    .map(|(name, value)| Ok((field_name(name)?, value.clone())))
+                    .collect::<Result<serde_json::Map<_, _>, OrmError>>()
             })
-            .collect::<Result<_, _>>()?;
-        Ok(write)
+            .transpose()?
+            .map(serde_json::Value::Object)
+            .unwrap_or(serde_json::Value::Null);
+        let json_null_fields = write
+            .changes
+            .as_ref()
+            .map(|changes| {
+                changes
+                    .iter()
+                    .filter(|(name, value)| {
+                        value.is_null() && !write.sql_null_fields.contains(name)
+                    })
+                    .map(|(name, _)| field_name(name))
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
+        serde_json::to_value(RestModelWrite {
+            model: write.model.clone(),
+            resource: resource.resource.clone(),
+            record_id: write.record_id,
+            operation_id: write.operation_id,
+            replica_id: write.replica_id,
+            base_revision: write.base_revision,
+            schema_version: write.schema_version,
+            kind: write.kind,
+            body,
+            json_null_fields,
+        })
+        .map_err(|error| OrmError::Configuration(error.to_string()))
     }
-    fn write<'a>(&'a self, write: &'a RestModelWrite) -> TransportFuture<'a, ModelWriteResult> {
+    fn write<'a>(
+        &'a self,
+        mutation: &'a ModelWrite,
+        payload: &'a serde_json::Value,
+    ) -> TransportFuture<'a, ModelWriteResult> {
         Box::pin(async move {
+            let write: RestModelWrite = serde_json::from_value(payload.clone())
+                .map_err(|error| OrmError::Configuration(error.to_string()))?;
+            if write.model != mutation.model
+                || write.record_id != mutation.record_id
+                || write.operation_id != mutation.operation_id
+                || write.replica_id != mutation.replica_id
+                || write.base_revision != mutation.base_revision
+                || write.schema_version != mutation.schema_version
+                || write.kind != mutation.kind
+            {
+                return Err(OrmError::Configuration(
+                    "REST payload changed operation identity".into(),
+                ));
+            }
             let method = match write.kind {
                 ChangeKind::Create => reqwest::Method::POST,
                 ChangeKind::Update => reqwest::Method::PATCH,

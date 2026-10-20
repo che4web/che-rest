@@ -39,4 +39,4 @@ pub use rest::{
 };
 pub use signals::{SignalAccess, SignalBus, SignalEvent};
 pub use state::{AppState, CurrentUserResolverFuture};
-pub use sync::{ModelSyncEndpoints, RestSyncRequest, SyncEndpoints, SyncViewSet};
+pub use sync::{ModelSyncEndpoints, RestModelWrite, RestSyncRequest, SyncEndpoints, SyncViewSet};

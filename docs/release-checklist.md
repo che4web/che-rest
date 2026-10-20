@@ -33,8 +33,21 @@ cargo package --allow-dirty
 cargo publish --dry-run --allow-dirty
 ```
 
-For pre-publication model-sync verification and the unpublished dependency
-packaging procedure, see [MODEL_SYNC_VERIFICATION.md](MODEL_SYNC_VERIFICATION.md).
+Before dependency publication, verify all five sibling packages together:
+
+```bash
+python3 scripts/verify_sync_packages.py
+```
+
+This requires Python 3.11+, Git, Cargo and Rust 1.88.0. It snapshots the working
+sources into a new temporary directory, packages the five crates together,
+extracts their archives and checks all targets on Rust 1.88 for SQLite/HTTP and
+PostgreSQL. Packaging uses the registry; extracted-source checks run offline.
+Source repositories and their lock files stay unchanged. Logs, archives and
+SHA-256 hashes are retained in the printed verification directory. Use
+`--orm PATH`, `--output NEW_DIRECTORY` or `--toolchain VERSION` when needed.
+
+See [MODEL_SYNC_VERIFICATION.md](MODEL_SYNC_VERIFICATION.md) for recorded results.
 
 ## Publish
 

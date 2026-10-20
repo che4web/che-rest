@@ -74,3 +74,18 @@
 - Completed RustSec/npm audits; fixed vulnerable rustls/quinn-proto lock entries and verified clean follow-up audits. Source and fullstack smoke checks pass after the dependency changes.
 - Documented the trusted background-effect worker and an explicit application-owned legacy migration rehearsal. Existing histories/pending requests remain protected; no application's data was migrated.
 - Steps 1-9 are complete for the framework. Standalone registry packaging/publication of che-rest still follows dependency publication order; combined pre-publication packaging was verified without publishing anything. Actual application rollout requires its own supplied schema/data and authorization. Detailed evidence: [MODEL_SYNC_VERIFICATION.md](MODEL_SYNC_VERIFICATION.md).
+
+### Abstraction boundary follow-up
+
+- Removed the HTTP request DTO from che-sync-protocol. `ModelWrite` describes data changes; `che_rest::RestModelWrite` owns the resource/body encoding.
+- che-sync persists transport-owned opaque payloads with stable adapter identities. REST-specific route/serializer/null-header encoding and old cache-key compatibility live in che-rest. Unknown legacy operation payloads block adapter changes without being rewritten.
+- Renamed the prepared-write/receipt APIs to describe data operations rather than REST; existing database schema and stored receipt representation remain unchanged.
+- Regression tests cover native delivery without HTTP, immutable payload reuse across reopen/codec changes, refusal of another adapter for current/legacy pending payloads, and old HTTP requests replayed after a route-mapping upgrade.
+- See the abstraction-boundary section of model-sync.md for ownership and source API changes. The initial release-verification snapshot predates this refinement; the follow-up tests and backend/MSRV checks validate the refined layering.
+
+### Reproducible package verification after abstraction follow-up
+
+- Added `scripts/verify_sync_packages.py` to repeat the five-package check from current working sources without publishing or modifying either source checkout. It preserves logs and archive SHA-256 hashes, extracts the built crates and verifies their SQLite/HTTP and PostgreSQL paths on Rust 1.88.
+- Rechecked generated authenticated-project builds/repeated migrations and the cli_fullstack smoke against the transport-neutral APIs; both passed.
+- The current five-archive run passed, including extracted-source Rust 1.88 SQLite/HTTP and PostgreSQL checks. Its resolved dependency graph has zero RustSec vulnerabilities/warnings. Successful logs and hashes are recorded in MODEL_SYNC_VERIFICATION.md.
+- No framework implementation/verification items remain in this plan. Publication, version/tag decisions and migration of an actual supplied application database remain separate authorized work.

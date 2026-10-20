@@ -4,7 +4,7 @@ mod notes;
 
 use che_orm::{OrmError, Uuid};
 use che_rest::{
-    Server,
+    RestModelWrite, Server,
     sync_http::{RestModelTransport, RestResource},
 };
 use che_sync::{ModelLogClient, ModelLogTransport, SchemaRole, TransportFuture, model_log::*};
@@ -20,13 +20,26 @@ struct LostReply {
     requests: Arc<Mutex<Vec<RestModelWrite>>>,
 }
 impl ModelLogTransport for LostReply {
-    fn encode_write(&self, write: RestModelWrite) -> Result<RestModelWrite, OrmError> {
-        self.inner.encode_write(write)
+    fn id(&self) -> &'static str {
+        self.inner.id()
     }
-    fn write<'a>(&'a self, write: &'a RestModelWrite) -> TransportFuture<'a, ModelWriteResult> {
+    fn legacy_payload_key(&self, operation: Uuid) -> Option<String> {
+        self.inner.legacy_payload_key(operation)
+    }
+    fn prepare_write(&self, write: &ModelWrite) -> Result<serde_json::Value, OrmError> {
+        self.inner.prepare_write(write)
+    }
+    fn write<'a>(
+        &'a self,
+        write: &'a ModelWrite,
+        payload: &'a serde_json::Value,
+    ) -> TransportFuture<'a, ModelWriteResult> {
         Box::pin(async move {
-            self.requests.lock().unwrap().push(write.clone());
-            let result = self.inner.write(write).await?;
+            self.requests
+                .lock()
+                .unwrap()
+                .push(serde_json::from_value(payload.clone()).unwrap());
+            let result = self.inner.write(write, payload).await?;
             if self.lose.swap(false, Ordering::SeqCst) {
                 Err(OrmError::Interaction("lost reply after commit".into()))
             } else {
@@ -46,6 +59,15 @@ impl ModelLogTransport for LostReply {
 
 #[tokio::test]
 async fn offline_coalescing_lost_reply_and_restart_use_immutable_rest_requests() {
+    immutable_retry_scenario(false).await;
+}
+
+#[tokio::test]
+async fn previously_submitted_rest_payload_is_retried_without_reencoding() {
+    immutable_retry_scenario(true).await;
+}
+
+async fn immutable_retry_scenario(legacy_payload: bool) {
     let (state, token) = notes::demo_state().await.unwrap();
     let router = Server::new(state.clone())
         .install(notes::apps())
@@ -104,6 +126,29 @@ async fn offline_coalescing_lost_reply_and_restart_use_immutable_rest_requests()
             .title,
         "offline 9"
     );
+    if legacy_payload {
+        // Reproduce the exact pre-refactor SQLite key and JSON shape. No adapter
+        // encoding runs when this already submitted request is reopened.
+        let frozen = requests.lock().unwrap()[0].clone();
+        db.execute_sql(
+            "DELETE FROM _sync_meta WHERE key = $1",
+            vec![che_orm::DatabaseValue::Text(format!(
+                "submitted-write:{}",
+                frozen.operation_id
+            ))],
+        )
+        .await
+        .unwrap();
+        db.execute_sql(
+            "INSERT INTO _sync_meta (key, value) VALUES ($1, $2)",
+            vec![
+                che_orm::DatabaseValue::Text(format!("rest-request:{}", frozen.operation_id)),
+                che_orm::DatabaseValue::Text(serde_json::to_string(&frozen).unwrap()),
+            ],
+        )
+        .await
+        .unwrap();
+    }
     // A later edit must not change a request whose server outcome is unknown.
     note.title = "after submission".into();
     client.save(&note).await.unwrap();
@@ -125,7 +170,13 @@ async fn offline_coalescing_lost_reply_and_restart_use_immutable_rest_requests()
     assert!(client.conflicts().await.unwrap().is_empty());
     drop(unauthenticated);
     let engine = client.engine(LostReply {
-        inner: transport(),
+        // Retries after an upgrade still use the persisted resource/body.
+        inner: RestModelTransport::new(
+            &base,
+            http.clone(),
+            vec![RestResource::new::<notes::Note, notes::NoteSerializer>("renamed-notes").unwrap()],
+        )
+        .unwrap(),
         lose: AtomicBool::new(false),
         requests: requests.clone(),
     });
@@ -138,6 +189,12 @@ async fn offline_coalescing_lost_reply_and_restart_use_immutable_rest_requests()
     let page = transport().changes("notes.note", 0, 100).await.unwrap();
     assert_eq!(page.operations.len(), 1);
     assert_eq!(page.operations[0].kind, ChangeKind::Create);
+    drop(engine);
+    let engine = client.engine(LostReply {
+        inner: transport(),
+        lose: AtomicBool::new(false),
+        requests: requests.clone(),
+    });
     assert_eq!(engine.flush().await.unwrap().accepted_operations, 1);
     let saved = state
         .database()

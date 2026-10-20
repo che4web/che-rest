@@ -190,3 +190,36 @@ application combines old scopes into whole-model authorization.
 The automated tests verify guarded backfill, rollback, unchanged metadata and
 settlement of an existing legacy request. They cannot prove a migration of an
 application database whose schema, ownership rules and data were not supplied.
+
+## Abstraction boundaries
+
+| Crate | Ownership |
+| --- | --- |
+| `che-orm` | Model fields, schema, SQL, queries, transactions and compiled migrations |
+| `che-sync-protocol` | Model mutations, journal entries, canonical states and results |
+| `che-sync` | Capture, revisions, receipts, current/shadow data, outbox, cursors and merge; generic delivery interface |
+| `che-rest` | Resource routes, HTTP methods/status/headers, serializer field mapping, JSON request bodies and reqwest delivery |
+
+Dependencies point from `che-rest` through `che-sync` to `che-orm`. The data and
+sync crates do not depend on HTTP types or know resource paths. `ModelWrite`
+contains model changes and SQL-null metadata. `che_rest::RestModelWrite` owns the
+HTTP resource/body representation previously exposed by the sync protocol.
+
+Custom `ModelLogTransport` implementations provide a stable `id()`, encode an
+opaque payload once using `prepare_write(&ModelWrite)`, then deliver it using
+`write(&ModelWrite, &payload)`. The engine persists the payload with its transport
+identity, reuses it after reopening and refuses reinterpretation by another
+adapter. Adapters validate any identity metadata in their payload before side
+effects. `changes` remains a generic journal-download operation.
+
+`RestModelTransport` owns compatibility with previously saved `rest-request:*`
+keys and preserves those payloads without re-encoding. Its current route mapping
+can change without rewriting an already submitted resource/body. Unclaimed
+legacy operation payloads block another adapter instead of being overwritten.
+The storage schema and existing journal/receipt contents remain unchanged.
+
+Source API changes for direct server integration: `request_receipt`,
+`write_prepared_request`, `reject_request` and `prepare_conditional_write` replace
+the earlier REST-named methods. These APIs accept data mutations and opaque
+receipt identities; HTTP request interpretation stays in che-rest. Existing
+receipts retain their encoded shape and remain replayable.
