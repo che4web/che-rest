@@ -1,3 +1,4 @@
+pub mod access;
 pub mod models;
 pub mod views;
 
@@ -10,10 +11,11 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use che_orm::{Migration, Model};
 #[cfg(test)]
-use che_orm::{ProjectState, SchemaSet};
+use che_orm::ProjectState;
+use che_orm::{Migration, Model};
 
+mod migration_access;
 mod migration_initial;
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
@@ -22,7 +24,10 @@ use crate::{
     AppModule, AppState, Filter, FilterSetSpec, ModuleContext, Permission, ViewAction, ViewSet,
 };
 
-pub use models::{AuthSession, AuthToken, User, hash_password, verify_password};
+pub use models::{
+    AccessEvent, AuthSession, AuthToken, Group, GroupMembership, GroupModelPermission, User,
+    UserModelPermission, hash_password, verify_password,
+};
 
 #[derive(che_orm::ModelSerializer)]
 #[serializer(model = User)]
@@ -97,9 +102,12 @@ impl CurrentPrincipal {
 pub struct IsAuthenticated;
 
 impl<M: che_orm::Model> Permission<M> for IsAuthenticated {
-    fn check(
+    fn object_scoped(&self) -> bool {
+        false
+    }
+    async fn check_request(
         &self,
-        _state: &AppState,
+        _state: crate::rest::permissions::PermissionContext<'_>,
         current: Option<&CurrentPrincipal>,
         _action: ViewAction,
     ) -> crate::AppResult<()> {
@@ -113,9 +121,12 @@ impl<M: che_orm::Model> Permission<M> for IsAuthenticated {
 pub struct IsAdminUser;
 
 impl<M: che_orm::Model> Permission<M> for IsAdminUser {
-    fn check(
+    fn object_scoped(&self) -> bool {
+        false
+    }
+    async fn check_request(
         &self,
-        _state: &AppState,
+        _state: crate::rest::permissions::PermissionContext<'_>,
         current: Option<&CurrentPrincipal>,
         _action: ViewAction,
     ) -> crate::AppResult<()> {
@@ -136,13 +147,16 @@ impl<M: che_orm::Model> Permission<M> for IsAdminUser {
 pub struct ReadOnlyAdminUser;
 
 impl<M: che_orm::Model> Permission<M> for ReadOnlyAdminUser {
-    fn check(
+    fn object_scoped(&self) -> bool {
+        false
+    }
+    async fn check_request(
         &self,
-        state: &AppState,
+        state: crate::rest::permissions::PermissionContext<'_>,
         current: Option<&CurrentPrincipal>,
         action: ViewAction,
     ) -> crate::AppResult<()> {
-        <IsAdminUser as Permission<M>>::check(&IsAdminUser, state, current, action)?;
+        <IsAdminUser as Permission<M>>::check_request(&IsAdminUser, state, current, action).await?;
         if matches!(action, ViewAction::List | ViewAction::Retrieve) {
             Ok(())
         } else {
@@ -174,7 +188,10 @@ pub fn module() -> AuthModule {
 /// A project consumes this registry through [`crate::Management`], rather
 /// than copying the migration source into its own migrations directory.
 pub fn migrations() -> Vec<Migration> {
-    vec![migration_initial::migration()]
+    vec![
+        migration_initial::migration(),
+        migration_access::migration(),
+    ]
 }
 
 impl AppModule for AuthModule {
@@ -187,6 +204,11 @@ impl AppModule for AuthModule {
             .model::<User>()
             .model::<AuthToken>()
             .model::<AuthSession>()
+            .model::<Group>()
+            .model::<GroupMembership>()
+            .model::<UserModelPermission>()
+            .model::<GroupModelPermission>()
+            .model::<AccessEvent>()
     }
 
     fn migrations(&self) -> Vec<Migration> {
@@ -493,13 +515,7 @@ mod tests {
         assert_eq!(migrations()[0].checksum, "v1:cf9bef2cfd081db4");
         let graph = che_orm::MigrationGraph::new(migrations()).unwrap();
         let actual = graph.replay(Default::default()).unwrap();
-        let expected = ProjectState::from_app_schema(
-            "auth",
-            &SchemaSet::new()
-                .model::<User>()
-                .model::<AuthToken>()
-                .model::<AuthSession>(),
-        );
+        let expected = ProjectState::from_app_schema("auth", &AuthModule.schema());
         assert_eq!(actual.models(), expected.models());
     }
 
@@ -515,9 +531,9 @@ mod tests {
     struct ApplicationUserPermission;
 
     impl Permission<User> for ApplicationUserPermission {
-        fn check(
+        async fn check_request(
             &self,
-            _state: &AppState,
+            _state: crate::rest::permissions::PermissionContext<'_>,
             current: Option<&CurrentPrincipal>,
             _action: ViewAction,
         ) -> crate::AppResult<()> {
@@ -749,12 +765,13 @@ mod tests {
             app_user: None,
         };
         assert!(
-            <IsAdminUser as Permission<User>>::check(
+            <IsAdminUser as Permission<User>>::check_request(
                 &IsAdminUser,
-                &state,
+                (&state).into(),
                 Some(&regular),
                 ViewAction::List,
             )
+            .await
             .is_err()
         );
 
@@ -766,12 +783,13 @@ mod tests {
             app_user: None,
         };
         assert!(
-            <IsAdminUser as Permission<User>>::check(
+            <IsAdminUser as Permission<User>>::check_request(
                 &IsAdminUser,
-                &state,
+                (&state).into(),
                 Some(&admin),
                 ViewAction::List,
             )
+            .await
             .is_ok()
         );
     }
@@ -822,12 +840,13 @@ mod tests {
         assert_eq!(principal.auth_user().id, user.id);
         assert!(principal.app::<ApplicationUser>().is_none());
         assert!(
-            <IsAuthenticated as Permission<User>>::check(
+            <IsAuthenticated as Permission<User>>::check_request(
                 &IsAuthenticated,
-                &state,
+                (&state).into(),
                 Some(&principal),
                 ViewAction::List,
             )
+            .await
             .is_ok()
         );
     }
@@ -873,12 +892,13 @@ mod tests {
         )
         .unwrap();
 
-        <ApplicationUserPermission as Permission<User>>::check(
+        <ApplicationUserPermission as Permission<User>>::check_request(
             &ApplicationUserPermission,
-            &state,
+            (&state).into(),
             Some(&principal),
             ViewAction::Create,
         )
+        .await
         .unwrap();
         ApplicationUserViewSet
             .prepare_create(&state, Some(&principal), write)
@@ -987,3 +1007,6 @@ mod tests {
         assert_eq!(payload["has_profile"], false);
     }
 }
+
+#[cfg(test)]
+mod access_tests;

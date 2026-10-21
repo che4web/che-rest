@@ -12,7 +12,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use che_orm::{ImageField, Model, ModelField, ValidatedWrite};
+use che_orm::{ImageField, Model, ModelField, ModelSerializer, ValidatedWrite};
 use image::{GenericImageView, ImageFormat, ImageReader, Limits};
 use rand::RngCore;
 
@@ -128,8 +128,12 @@ async fn parse_image_form(mut multipart: Multipart, max_bytes: usize) -> AppResu
     Ok(form)
 }
 
-pub type ImageAuthorize<V> =
-    fn(&AppState, Option<&CurrentPrincipal>, &<V as ViewSet>::Model, ViewAction) -> AppResult<()>;
+pub type ImageAuthorize<V> = for<'a> fn(
+    crate::PermissionContext<'a>,
+    Option<&'a CurrentPrincipal>,
+    &'a <V as ViewSet>::Model,
+    ViewAction,
+) -> ImageFuture<'a, ()>;
 pub type ImageBefore<V> = for<'a> fn(
     &'a AppState,
     &'a <V as ViewSet>::Model,
@@ -211,9 +215,9 @@ impl<V: ViewSet> ImageFieldEndpoint<V> {
         principal: Option<&CurrentPrincipal>,
         id: <V::Model as Model>::PrimaryKey,
     ) -> AppResult<V::Model> {
-        if self.authorize.is_none() {
-            V::Permission::default().check(state, principal, ViewAction::Update)?;
-        }
+        V::Permission::default()
+            .check_request(state.into(), principal, ViewAction::Update)
+            .await?;
         {
             let item = viewset
                 .get_queryset()
@@ -221,14 +225,14 @@ impl<V: ViewSet> ImageFieldEndpoint<V> {
                 .first(state.database())
                 .await?
                 .ok_or(AppError::NotFound)?;
-            if self.authorize.is_none() {
-                V::Permission::default().check_object(
-                    state,
+            V::Permission::default()
+                .check_object(
+                    state.into(),
                     principal,
                     ViewAction::Update,
                     V::QuerySet::item_model(&item),
-                )?;
-            }
+                )
+                .await?;
         }
         let model = state
             .database()
@@ -236,9 +240,67 @@ impl<V: ViewSet> ImageFieldEndpoint<V> {
             .await?
             .ok_or(AppError::NotFound)?;
         if let Some(authorize) = self.authorize {
-            authorize(state, principal, &model, ViewAction::Update)?;
+            authorize(state.into(), principal, &model, ViewAction::Update).await?;
         }
         Ok(model)
+    }
+
+    async fn persist(
+        &self,
+        state: &AppState,
+        principal: Option<&CurrentPrincipal>,
+        id: <V::Model as Model>::PrimaryKey,
+        previous: &V::Model,
+        next: Option<ImageField>,
+        size: usize,
+    ) -> AppResult<()> {
+        let column = self.field();
+        let condition = match (self.image)(previous) {
+            Some(image) => column.eq(Some(image.clone())),
+            None => column.is_null(),
+        };
+        let write = ValidatedWrite::Update(
+            V::Model::update()
+                .filter(V::Model::primary_key().eq(id))
+                .filter(condition),
+        )
+        .set(self.field(), next.clone());
+        let owned_state = state.clone();
+        let principal = principal.cloned();
+        let callback = self.authorize;
+        let prepare = self.write;
+        let saved = state
+            .database()
+            .transaction_result(move |tx| {
+                Box::pin(async move {
+                    let model = tx.get::<V::Model>(id).await?.ok_or(AppError::NotFound)?;
+                    let context = crate::PermissionContext::in_transaction(&owned_state, tx);
+                    if let Some(callback) = callback {
+                        callback(context, principal.as_ref(), &model, ViewAction::Update).await?;
+                    }
+                    let write = match prepare {
+                        Some(callback) => {
+                            callback(&owned_state, &model, next.as_ref(), size, write)?
+                        }
+                        None => write,
+                    };
+                    V::Permission::default()
+                        .check_write(
+                            context,
+                            principal.as_ref(),
+                            ViewAction::Update,
+                            Some(&model),
+                            Some(&write),
+                        )
+                        .await?;
+                    Ok::<_, AppError>(write.save_in(tx).await?.is_some())
+                })
+            })
+            .await?;
+        if !saved {
+            return Err(image_update_conflict::<V::Model>(state, id).await?);
+        }
+        Ok(())
     }
 
     async fn replace(
@@ -259,20 +321,25 @@ impl<V: ViewSet> ImageFieldEndpoint<V> {
             Some(callback) => callback(&state, &model, &form).await?,
             None => Box::new(()),
         };
-        let image = ImageStorage::from_state(&state)
-            .replace_with(
+        let storage = ImageStorage::from_state(&state);
+        let image = storage.save(bytes, &self.policy)?;
+        if let Err(error) = self
+            .persist(
                 &state,
+                principal.as_ref(),
                 id,
-                self.field(),
-                (self.image)(&model),
-                bytes,
-                &self.policy,
-                |image, write| match self.write {
-                    Some(callback) => callback(&state, &model, Some(image), bytes.len(), write),
-                    None => Ok(write),
-                },
+                &model,
+                Some(image.clone()),
+                bytes.len(),
             )
-            .await?;
+            .await
+        {
+            let _ = storage.remove(&image);
+            return Err(error);
+        }
+        if let Some(previous) = (self.image)(&model) {
+            let _ = storage.remove(previous);
+        }
         Ok(axum::Json(ImageUploadResponse {
             url: url(&image, &state.config.server.api_prefix),
             key: image.key().to_owned(),
@@ -298,18 +365,11 @@ impl<V: ViewSet> ImageFieldEndpoint<V> {
             Some(callback) => callback(&state, &model, &form).await?,
             None => Box::new(()),
         };
-        ImageStorage::from_state(&state)
-            .clear_with(
-                &state,
-                id,
-                self.field(),
-                (self.image)(&model),
-                |write| match self.write {
-                    Some(callback) => callback(&state, &model, None, 0, write),
-                    None => Ok(write),
-                },
-            )
+        self.persist(&state, principal.as_ref(), id, &model, None, 0)
             .await?;
+        if let Some(previous) = (self.image)(&model) {
+            let _ = ImageStorage::from_state(&state).remove(previous);
+        }
         Ok(StatusCode::NO_CONTENT)
     }
 }
@@ -388,7 +448,7 @@ fn context_id<V: ViewSet>() -> &'static str {
 }
 
 pub type ImageCreateAuthorize =
-    fn(&AppState, Option<&CurrentPrincipal>, &ImageForm) -> AppResult<()>;
+    for<'a> fn(&'a AppState, Option<&'a CurrentPrincipal>, &'a ImageForm) -> ImageFuture<'a, ()>;
 pub type ImageCreateAction<R> = for<'a> fn(
     &'a AppState,
     Option<&'a CurrentPrincipal>,
@@ -451,7 +511,10 @@ impl<V: ViewSet, R: ApiSchema + serde::Serialize + Send + Sync + 'static>
         multipart: Multipart,
     ) -> AppResult<(StatusCode, axum::Json<R>)> {
         let form = parse_image_form(multipart, self.policy.max_bytes).await?;
-        (self.authorize)(&state, who.as_ref(), &form)?;
+        V::Permission::default()
+            .check_request((&state).into(), who.as_ref(), ViewAction::Create)
+            .await?;
+        (self.authorize)(&state, who.as_ref(), &form).await?;
         let bytes = form
             .file
             .as_ref()
@@ -908,11 +971,33 @@ impl AppModule for MediaModule {
 
 async fn download_image(
     Extension(state): Extension<AppState>,
+    Extension(media_access): Extension<MediaAccess>,
     current: Option<Extension<CurrentPrincipal>>,
     AxumPath(key): AxumPath<String>,
 ) -> Response {
     if current.is_none() {
         return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let (strict, readers) = {
+        let registry = media_access.read().expect("media access registry");
+        (registry.strict, registry.readers.clone())
+    };
+    if strict {
+        let principal = &current.as_ref().expect("authenticated above").0;
+        let mut allowed = false;
+        for reader in readers {
+            match reader(&state, principal, &key).await {
+                Ok(true) => {
+                    allowed = true;
+                    break;
+                }
+                Ok(false) => {}
+                Err(error) => return error.into_response(),
+            }
+        }
+        if !allowed {
+            return StatusCode::NOT_FOUND.into_response();
+        }
     }
     let Ok((bytes, media_type)) = ImageStorage::from_state(&state).read(&ImageField::new(key))
     else {
@@ -929,7 +1014,7 @@ async fn download_image(
     );
     response.headers_mut().insert(
         header::CACHE_CONTROL,
-        header::HeaderValue::from_static("private, max-age=60"),
+        header::HeaderValue::from_static("private, no-store"),
     );
     response
 }
@@ -1399,7 +1484,8 @@ mod tests {
         let state = AppState::from_database(Database::connect_in_memory().await.unwrap());
         let router = Router::new()
             .route("/media/{*key}", get(download_image))
-            .layer(Extension(state));
+            .layer(Extension(state))
+            .layer(Extension(MediaAccess::default()));
         let response = router
             .oneshot(
                 Request::builder()
@@ -1537,15 +1623,17 @@ mod tests {
         }
     }
 
-    fn authorize_create(
-        _state: &AppState,
-        _who: Option<&CurrentPrincipal>,
-        form: &ImageForm,
-    ) -> AppResult<()> {
-        if form.text("target")? != Some("allowed") {
-            return Err(AppError::Forbidden("invalid target".into()));
-        }
-        Ok(())
+    fn authorize_create<'a>(
+        _state: &'a AppState,
+        _who: Option<&'a CurrentPrincipal>,
+        form: &'a ImageForm,
+    ) -> ImageFuture<'a, ()> {
+        Box::pin(async move {
+            if form.text("target")? != Some("allowed") {
+                return Err(AppError::Forbidden("invalid target".into()));
+            }
+            Ok(())
+        })
     }
 
     fn create_image<'a>(
@@ -1631,4 +1719,113 @@ mod tests {
         assert_eq!(fs::read_dir(root.join("items")).unwrap().count(), 1);
         fs::remove_dir_all(root).unwrap();
     }
+}
+
+/// A registry belongs to one router build, never to the reusable application state.
+pub(crate) type MediaAccess = std::sync::Arc<std::sync::RwLock<MediaAccessRegistry>>;
+type MediaReader = std::sync::Arc<
+    dyn for<'a> Fn(&'a AppState, &'a CurrentPrincipal, &'a str) -> ImageFuture<'a, bool>
+        + Send
+        + Sync,
+>;
+#[derive(Default)]
+pub(crate) struct MediaAccessRegistry {
+    strict: bool,
+    readers: Vec<MediaReader>,
+}
+pub(crate) fn register_media_access<V: ViewSet>(
+    registry: &MediaAccess,
+    viewset: V,
+    hooks: crate::rest::router::MutationHooks<V>,
+) {
+    let mut registry = registry.write().expect("media access registry");
+    registry.strict |= V::Permission::default().object_scoped();
+    if V::Serializer::fields()
+        .iter()
+        .any(|field| !field.write_only && field.rust_type.contains("ImageField"))
+    {
+        let reader: MediaReader = std::sync::Arc::new(move |state, principal, key| {
+            let viewset = viewset.clone();
+            let hooks = hooks.clone();
+            Box::pin(
+                async move { can_download::<V>(state, principal, key, &viewset, &hooks).await },
+            )
+        });
+        registry.readers.push(reader);
+    }
+}
+fn can_download<'a, V: ViewSet>(
+    state: &'a AppState,
+    principal: &'a CurrentPrincipal,
+    key: &'a str,
+    viewset: &'a V,
+    hooks: &'a crate::rest::router::MutationHooks<V>,
+) -> ImageFuture<'a, bool> {
+    Box::pin(async move {
+        let schema = V::Model::schema();
+        let mut image_filter: Option<che_orm::Expr> = None;
+        for field in V::Serializer::fields()
+            .iter()
+            .filter(|field| !field.write_only && field.rust_type.contains("ImageField"))
+        {
+            let Some(column) = schema
+                .columns
+                .iter()
+                .find(|column| column.name == field.source || column.field_name == field.source)
+            else {
+                continue;
+            };
+            let filter = che_orm::Expr::Compare {
+                left: Box::new(che_orm::Expr::Column(che_orm::ColumnRef::new(
+                    V::Model::table_name(),
+                    column.name,
+                ))),
+                op: che_orm::CompareOp::Eq,
+                right: Box::new(che_orm::Expr::Value(che_orm::DatabaseValue::Text(
+                    key.into(),
+                ))),
+            };
+            image_filter = Some(match image_filter {
+                Some(previous) => previous.or(filter),
+                None => filter,
+            });
+        }
+        let Some(filter) = image_filter else {
+            return Ok(false);
+        };
+        let permission = V::Permission::default();
+        match permission
+            .check_request(state.into(), Some(principal), ViewAction::Retrieve)
+            .await
+        {
+            Err(AppError::Unauthorized(_) | AppError::Forbidden(_)) => return Ok(false),
+            result => result?,
+        }
+        let query = match hooks
+            .scoped_queryset(state, viewset, Some(principal), ViewAction::Retrieve)
+            .await
+        {
+            Ok(query) => query.filter(filter),
+            Err(AppError::Unauthorized(_) | AppError::Forbidden(_)) => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        // Use exactly the REST queryset, including instance-owned restrictions,
+        // relation loading, and mutation backend read filters.
+        for item in query.all(state.database()).await? {
+            match permission
+                .check_object(
+                    state.into(),
+                    Some(principal),
+                    ViewAction::Retrieve,
+                    V::QuerySet::item_model(&item),
+                )
+                .await
+            {
+                Ok(()) => return Ok(true),
+                Err(AppError::Unauthorized(_) | AppError::Forbidden(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(false)
+    })
 }

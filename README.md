@@ -189,8 +189,9 @@ generated TypeScript client (`userApi.avatar.replace(id, file)` and
 `userApi.avatar.clear(id)`). By default, the handlers use the ViewSet's
 permissions and object queryset. `authorize`, `before`, and `write` callbacks
 allow field-specific rules: a self-only avatar, a scene-version check held
-through saving, or additional model metadata. Configure them explicitly when
-the default ViewSet write permission is inappropriate.
+through saving, or additional model metadata. Async `authorize` adds restrictions to
+the ViewSet permission and receives the committing `PermissionContext` for its final
+check. It does not replace the ViewSet policy.
 
 `ImageCreateEndpoint` similarly adds a multipart `POST /api/{resource}/upload/`
 for images that are *new records*, such as attachments. Its application
@@ -336,7 +337,17 @@ the fields differ, while `retrieve()` retains `Task`. The generated admin uses l
 table columns and detail fields for forms. Regenerate the clients after changing either serializer.
 
 `FilterSetSpec` types must implement `Default`. Built-in permissions include `AllowAny`,
-`IsAuthenticated`, and `IsAdminUser`.
+`IsAuthenticated`, and `IsAdminUser`. Custom permissions are asynchronous and receive
+`PermissionContext`; `scope` restricts SQL before pagination, and write checks use the
+committing transaction.
+
+For groups and typed per-object grants, use `auth::access::Access<Model>`.
+See [access control](docs/access.md) and run `cargo run --example object_permissions`.
+Object ACLs support ordinary REST and image actions. Opt-in protocol 3 adds
+shared-object synchronization with grants, revocations and retained offline drafts:
+see [object sync](docs/object-sync.md) and the shared mode of the
+[Todo example](../che-tauri/examples/todo-sync/README.md). Relation inheritance and
+recipient-aware signals remain future work.
 
 The `Model` derive generates compile-time-safe field constants on the model type. Use those constants
 when declaring filters:
@@ -515,6 +526,9 @@ The generator writes `api_client.ts`, `channels.ts`, `models.ts`, `api.ts`, `use
 source files or require the HTTP server to be running.
 
 Generated TypeScript clients expose `setAuthToken(token)` in `api_client.ts`.
+`create` and `update` return `Model | null`: successful writes without view permission
+have an empty response body, normalized to `null`. Regenerate clients after updating
+this authorization surface.
 
 ## WebSocket Signals
 

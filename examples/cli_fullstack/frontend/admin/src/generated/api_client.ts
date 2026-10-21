@@ -9,8 +9,8 @@ export interface PaginatedResponse<T> { count: number; results: T[]; }
 export interface ModelApi<T extends BaseEntity, CreateDTO = Partial<T>, UpdateDTO = Partial<T>, Params extends ListParams = ListParams, ListItem extends BaseEntity = T> {
   list: (params?: Params) => Promise<PaginatedResponse<ListItem>>;
   retrieve: (id: number | string) => Promise<T>;
-  create: (payload: CreateDTO) => Promise<T>;
-  update: (id: number | string, payload: UpdateDTO) => Promise<T>;
+  create: (payload: CreateDTO) => Promise<T | null>;
+  update: (id: number | string, payload: UpdateDTO) => Promise<T | null>;
   remove: (id: number | string) => Promise<void>;
 }
  export const apiClient = axios.create({ baseURL: import.meta.env.VITE_API_BASE_URL ?? "/api", withCredentials: true, xsrfCookieName: "csrf_token", xsrfHeaderName: "X-CSRF-Token", headers: { "Content-Type": "application/json" } });
@@ -22,8 +22,8 @@ export function createModelApi<T extends BaseEntity, CreateDTO = Partial<T>, Upd
   return {
     async list(params) { return (await apiClient.get<PaginatedResponse<ListItem>>(normalized, { params })).data; },
     async retrieve(id) { return (await apiClient.get<T>(`${normalized}${id}/`)).data; },
-    async create(payload) { return (await apiClient.post<T>(normalized, payload)).data; },
-    async update(id, payload) { return (await apiClient.patch<T>(`${normalized}${id}/`, payload)).data; },
+    async create(payload) { return (await apiClient.post<T | null>(normalized, payload)).data || null; },
+    async update(id, payload) { return (await apiClient.patch<T | null>(`${normalized}${id}/`, payload)).data || null; },
     async remove(id) { await apiClient.delete(`${normalized}${id}/`); },
   };
 }

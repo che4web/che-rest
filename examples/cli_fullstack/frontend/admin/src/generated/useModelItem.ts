@@ -10,6 +10,6 @@ export function useModelItem<T extends BaseEntity, CreateDTO = Partial<T>, Updat
   async function create(payload: CreateDTO) { return run(() => api.create(payload), "Unable to create object"); }
   async function update(id: number | string, payload: UpdateDTO) { return run(() => api.update(id, payload), "Unable to update object"); }
   async function remove(id: number | string) { return run(async () => { await api.remove(id); item.value = null; return true; }, "Unable to delete object"); }
-  async function run<R>(operation: () => Promise<R>, fallback: string): Promise<R | null> { loading.value = true; error.value = ""; try { const value = await operation(); if (typeof value === "object" && value !== null) item.value = value as T; return value; } catch (err) { error.value = err instanceof Error ? err.message : fallback; options.onError?.(error.value, err); return null; } finally { loading.value = false; } }
+  async function run<R>(operation: () => Promise<R>, fallback: string): Promise<R | null> { loading.value = true; error.value = ""; try { const value = await operation(); if (value === null) item.value = null; else if (typeof value === "object") item.value = value as T; return value; } catch (err) { error.value = err instanceof Error ? err.message : fallback; options.onError?.(error.value, err); return null; } finally { loading.value = false; } }
   return { item, loading, error, retrieve, create, update, remove };
 }

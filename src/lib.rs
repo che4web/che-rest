@@ -34,9 +34,12 @@ pub use rest::{
     AllowAny, ApiExtension, ApiOperation, ApiSchema, ApiSchemaDefinition, ClientMethod,
     CrudViewSet, ExtensionContext, Filter, FilterError, FilterSet, FilterSetSpec, FilterValue,
     HttpMethod, Lookup, MutationBackend, MutationFuture, MutationHook, OperationSpec, Permission,
-    RestQuerySet, ViewAction, ViewSet, ViewSetConfig, ViewSetExtension, openapi_column_schema,
-    openapi_json_for, router,
+    PermissionContext, RestQuerySet, ViewAction, ViewSet, ViewSetConfig, ViewSetExtension,
+    openapi_column_schema, openapi_json_for, router,
 };
 pub use signals::{SignalAccess, SignalBus, SignalEvent};
 pub use state::{AppState, CurrentUserResolverFuture};
-pub use sync::{ModelSyncEndpoints, RestModelWrite, RestSyncRequest, SyncEndpoints, SyncViewSet};
+pub use sync::{
+    ModelSyncEndpoints, ObjectSyncEndpoints, RestModelWrite, RestSyncRequest, SyncEndpoints,
+    SyncViewSet,
+};

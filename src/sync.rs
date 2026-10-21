@@ -20,6 +20,9 @@ use crate::{
 };
 
 pub use che_sync;
+mod objects;
+use objects::ObjectPolicyFactory;
+pub use objects::{ObjectSyncEndpoints, object_schema_module};
 
 /// Immutable HTTP request data owned by the REST adapter. This shape also reads
 /// requests submitted by earlier protocol-2 clients without re-encoding them.
@@ -358,6 +361,7 @@ pub struct SyncEndpoints<V> {
     viewset: V,
     body_limit: usize,
     model_logs: bool,
+    object_access: Option<ObjectPolicyFactory>,
 }
 
 impl<V> SyncEndpoints<V> {
@@ -366,6 +370,7 @@ impl<V> SyncEndpoints<V> {
             viewset,
             body_limit: 2 * 1024 * 1024,
             model_logs: false,
+            object_access: None,
         }
     }
 
@@ -416,6 +421,18 @@ async fn server_for<V: SyncViewSet>(
 where
     V::Model: SyncModel,
 {
+    server_with_objects(viewset, state, principal, model_logs, None).await
+}
+async fn server_with_objects<V: SyncViewSet>(
+    viewset: &V,
+    state: &AppState,
+    principal: Option<&CurrentPrincipal>,
+    model_logs: bool,
+    objects: Option<&ObjectPolicyFactory>,
+) -> AppResult<SyncServer>
+where
+    V::Model: SyncModel,
+{
     let principal =
         principal.ok_or_else(|| AppError::Unauthorized("authentication required".into()))?;
     let scope = if model_logs {
@@ -424,7 +441,10 @@ where
         viewset.sync_scope(state, principal)?
     };
     let identity = principal.auth_user().id.to_string();
-    let policy = viewset.sync_policy();
+    let policy = match objects {
+        Some(factory) => (factory)(state.clone(), principal.clone())?.0,
+        None => viewset.sync_policy(),
+    };
     policy
         .authorize_scope(&identity, &scope)
         .map_err(|error| match error {
@@ -470,6 +490,9 @@ where
     const ID: &'static str = "sync";
 
     fn install(self, context: &mut ExtensionContext<'_, V>) -> AppResult<()> {
+        if V::Permission::default().object_scoped() && self.object_access.is_none() {
+            return Err(AppError::BadRequest("object permissions require an object-delivery sync protocol; existing sync endpoints expose whole-model data".into()));
+        }
         if self.body_limit == 0 {
             return Err(AppError::BadRequest(
                 "sync body limit must be positive".into(),
@@ -529,6 +552,10 @@ where
             }
         }
         let prefix = self.viewset.path().trim_matches('/').replace('/', "_");
+        if self.object_access.is_some() {
+            objects::install_route(&self, context)?;
+            return context.mutation_hook(self);
+        }
         if self.model_logs {
             context.route("sync/changes", |route| {
                 route.get(
@@ -813,7 +840,9 @@ where
     V::Model: SyncModel,
 {
     let principal = who.as_ref().map(|who| &who.0);
-    V::Permission::default().check(&state, principal, ViewAction::List)?;
+    V::Permission::default()
+        .check_request((&state).into(), principal, ViewAction::List)
+        .await?;
     let after = params
         .get("after")
         .map_or("0", String::as_str)
@@ -911,6 +940,9 @@ impl<V: SyncViewSet> MutationBackend<V> for SyncEndpoints<V>
 where
     V::Model: SyncModel,
 {
+    fn object_permissions(&self) -> bool {
+        self.object_access.is_some()
+    }
     fn filter_read(&self, queryset: V::QuerySet) -> V::QuerySet {
         if self.model_logs {
             queryset.filter(
@@ -972,7 +1004,9 @@ where
             } else {
                 V::Model::SYNC_VERSION
             };
-            let expected_protocol = if self.model_logs {
+            let expected_protocol = if self.object_access.is_some() {
+                3
+            } else if self.model_logs {
                 che_sync::protocol::model_log::MODEL_LOG_PROTOCOL
             } else {
                 PROTOCOL_VERSION
@@ -1009,7 +1043,11 @@ where
             }
             let principal = principal
                 .ok_or_else(|| AppError::Unauthorized("authentication required".into()))?;
-            V::Permission::default().check(state, Some(principal), action)?;
+            if self.object_access.is_none() {
+                V::Permission::default()
+                    .check_request(state.into(), Some(principal), action)
+                    .await?;
+            }
             let scope = if self.model_logs {
                 che_sync::model_log::MODEL_LOG_SCOPE.into()
             } else {
@@ -1018,7 +1056,14 @@ where
             if conditional && !self.model_logs && header("x-sync-scope")? != scope {
                 return Err(AppError::BadRequest("sync scope mismatch".into()));
             }
-            let server = server_for(&self.viewset, state, Some(principal), self.model_logs).await?;
+            let server = server_with_objects(
+                &self.viewset,
+                state,
+                Some(principal),
+                self.model_logs,
+                self.object_access.as_ref(),
+            )
+            .await?;
             let json_null_fields: Vec<String> =
                 if self.model_logs {
                     match headers.get("x-sync-json-null-fields") {
@@ -1050,14 +1095,25 @@ where
                 .map_err(sync_error)?
             {
                 retry_effects(state, principal, &server, &scope).await;
-                return Ok(Some(write_response(
-                    &self.viewset,
-                    result,
-                    action,
-                    self.model_logs,
-                )?));
+                return Ok(Some(
+                    objects::response(
+                        &self.viewset,
+                        result,
+                        action,
+                        self.model_logs,
+                        self.object_access.as_ref(),
+                        state,
+                        principal,
+                        &server,
+                        operation,
+                    )
+                    .await?,
+                ));
             }
             let outcome = async {
+                V::Permission::default()
+                    .check_request(state.into(), Some(principal), action)
+                    .await?;
                 let mut request = PushRequest {
                     protocol_version: PROTOCOL_VERSION,
                     scope: scope.clone(),
@@ -1098,12 +1154,14 @@ where
                         .first(state.database())
                         .await?
                         .ok_or(AppError::NotFound)?;
-                    V::Permission::default().check_object(
-                        state,
-                        Some(principal),
-                        action,
-                        V::QuerySet::item_model(&item),
-                    )?;
+                    V::Permission::default()
+                        .check_object(
+                            state.into(),
+                            Some(principal),
+                            action,
+                            V::QuerySet::item_model(&item),
+                        )
+                        .await?;
                     Some(materialize::<V::Model>(current)?)
                 } else {
                     None
@@ -1114,12 +1172,20 @@ where
                     if !conditional {
                         return Err(AppError::NotFound);
                     }
-                    return Ok(Some(write_response(
-                        &self.viewset,
-                        PushResult::Conflict(vec![current.clone()]),
-                        action,
-                        self.model_logs,
-                    )?));
+                    return Ok(Some(
+                        objects::response(
+                            &self.viewset,
+                            PushResult::Conflict(vec![current.clone()]),
+                            action,
+                            self.model_logs,
+                            self.object_access.as_ref(),
+                            state,
+                            principal,
+                            &server,
+                            operation,
+                        )
+                        .await?,
+                    ));
                 }
                 if action != ViewAction::Delete {
                     let mut json_null_mappings = Vec::new();
@@ -1257,14 +1323,35 @@ where
                 )
                 .await?;
                 if conditional {
-                    return Ok(Some(write_response(
-                        &self.viewset,
-                        result,
-                        action,
-                        self.model_logs,
-                    )?));
+                    return Ok(Some(
+                        objects::response(
+                            &self.viewset,
+                            result,
+                            action,
+                            self.model_logs,
+                            self.object_access.as_ref(),
+                            state,
+                            principal,
+                            &server,
+                            operation,
+                        )
+                        .await?,
+                    ));
                 }
                 accepted(result)?;
+                if let Some(factory) = &self.object_access {
+                    return Ok(Some(
+                        objects::ordinary_response(
+                            &self.viewset,
+                            state,
+                            principal,
+                            factory,
+                            id,
+                            action,
+                        )
+                        .await?,
+                    ));
+                }
                 if action == ViewAction::Delete {
                     return Ok(Some(StatusCode::NO_CONTENT.into_response()));
                 }
@@ -1307,16 +1394,33 @@ where
                     .map_err(sync_error)?
             {
                 retry_effects(state, principal, &server, &scope).await;
-                return Ok(Some(write_response(
-                    &self.viewset,
-                    result,
-                    action,
-                    self.model_logs,
-                )?));
+                return Ok(Some(
+                    objects::response(
+                        &self.viewset,
+                        result,
+                        action,
+                        self.model_logs,
+                        self.object_access.as_ref(),
+                        state,
+                        principal,
+                        &server,
+                        operation,
+                    )
+                    .await?,
+                ));
             }
+            let rejection = match &outcome {
+                Err(AppError::BadRequest(reason)) => Some(reason.clone()),
+                Err(AppError::Forbidden(_) | AppError::NotFound)
+                    if self.object_access.is_some() =>
+                {
+                    Some("object permission required".into())
+                }
+                _ => None,
+            };
             if conditional
                 && self.model_logs
-                && let Err(AppError::BadRequest(reason)) = &outcome
+                && let Some(reason) = rejection
             {
                 let request = PushRequest {
                     protocol_version: PROTOCOL_VERSION,
@@ -1334,10 +1438,23 @@ where
                     },
                 };
                 let result = server
-                    .reject_request(request, identity, reason.clone())
+                    .reject_request(request, identity, reason)
                     .await
                     .map_err(sync_error)?;
-                return Ok(Some(write_response(&self.viewset, result, action, true)?));
+                return Ok(Some(
+                    objects::response(
+                        &self.viewset,
+                        result,
+                        action,
+                        true,
+                        self.object_access.as_ref(),
+                        state,
+                        principal,
+                        &server,
+                        operation,
+                    )
+                    .await?,
+                ));
             }
             outcome
         })
@@ -1660,4 +1777,8 @@ impl ApiSchema for Snapshot {
             typescript: "export interface SyncSnapshot { entities: SyncEntity[]; cursor: SyncCursor; }",
         }
     }
+}
+
+pub(crate) fn add_object_rest_openapi(document: &mut Value) {
+    objects::add_openapi(document);
 }

@@ -5,7 +5,7 @@ use che_orm::{Migration, MigrationError, ProjectState, SchemaObjectState, Schema
 use serde_json::{Map, Value, json};
 
 use crate::{
-    AppError, AppResult, AppState, CrudViewSet, FilterSetSpec, Model, ModelSerializer,
+    AppError, AppResult, AppState, CrudViewSet, FilterSetSpec, Model, ModelSerializer, Permission,
     SignalAccess, ViewAction, ViewSet, ViewSetConfig, openapi_column_schema,
 };
 
@@ -177,6 +177,8 @@ pub struct ModuleContext {
     openapi_components: Map<String, Value>,
     api_endpoints: Vec<ApiEndpoint>,
     registration_errors: Vec<String>,
+    access_models: std::collections::HashMap<&'static str, &'static str>,
+    media_access: crate::media::MediaAccess,
     current_app: &'static str,
 }
 
@@ -227,11 +229,51 @@ impl ModuleContext {
         V::Serializer: serde::Serialize,
     {
         let path = viewset.path();
+        let permission = V::Permission::default();
+        if let Some(key) = permission.model_access_key()
+            && let Some(previous) = self.access_models.insert(key, V::Model::table_name())
+            && previous != V::Model::table_name()
+        {
+            self.registration_errors.push(format!(
+                "ACL model key {key} is already assigned to {previous}"
+            ));
+            return;
+        }
+        if let Err(error) = permission
+            .validate(V::Serializer::fields())
+            .and_then(|_| permission.validate(V::ListSerializer::fields()))
+        {
+            self.registration_errors.push(error.to_string());
+            return;
+        }
+        if permission.object_scoped()
+            && [
+                ViewAction::Create,
+                ViewAction::Update,
+                ViewAction::Patch,
+                ViewAction::Delete,
+            ]
+            .iter()
+            .any(|action| viewset.signal_access(*action).is_some())
+        {
+            self.registration_errors.push("object permissions require recipient-aware signals; broad CRUD signals are not supported".into());
+            return;
+        }
         let mut config = ViewSetConfig::<V>::new(path);
         if let Err(error) = viewset.configure(&mut config) {
             self.registration_errors.push(error.to_string());
         }
         let (extension_router, extensions, extension_schemas, hooks) = config.into_parts();
+        if permission.object_scoped()
+            && hooks
+                .iter()
+                .filter_map(|hook| hook.backend())
+                .any(|backend| !backend.object_permissions())
+        {
+            self.registration_errors.push("object permissions require a transaction-aware mutation backend; the configured backend does not support this contract".into());
+            return;
+        }
+
         self.api_endpoints.push(ApiEndpoint {
             app_name: self.current_app,
             model_name: std::any::type_name::<V::Model>()
@@ -301,6 +343,12 @@ impl ModuleContext {
         {
             crate::sync::add_model_rest_openapi(&mut document);
         }
+        if extensions
+            .iter()
+            .any(|extension| extension.id == "object-sync")
+        {
+            crate::sync::add_object_rest_openapi(&mut document);
+        }
         add_filter_parameters::<V>(&mut document, &viewset);
         let model_schema = V::Model::schema();
         let primary_key = model_schema
@@ -345,11 +393,12 @@ impl ModuleContext {
         if let Some(schemas) = document["components"]["schemas"].as_object() {
             self.openapi_components.extend(schemas.clone());
         }
-        self.routers.push(crate::rest::router::router_with_hooks(
+        self.routers.push(crate::rest::router::router_with_media(
             state.clone(),
             viewset,
             extension_router,
             hooks,
+            self.media_access.clone(),
         ));
     }
 
@@ -600,7 +649,9 @@ impl Server {
             root = module.middleware(root, &self.state);
         }
 
-        Ok(root.layer(axum::Extension(self.state)))
+        Ok(root
+            .layer(axum::Extension(context.media_access))
+            .layer(axum::Extension(self.state)))
     }
 }
 

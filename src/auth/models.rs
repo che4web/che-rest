@@ -65,3 +65,65 @@ pub fn verify_password(password: &str, password_hash: &str) -> bool {
         .verify_password(password.as_bytes(), &parsed_hash)
         .is_ok()
 }
+
+#[derive(Debug, che_orm::Model)]
+#[orm(table = "auth_groups")]
+pub struct Group {
+    #[orm(primary_key)]
+    pub id: i64,
+    #[orm(unique)]
+    pub name: String,
+}
+
+#[derive(Debug, che_orm::Model)]
+#[orm(
+    table = "auth_group_memberships",
+    unique("user_id", "group_id"),
+    index("group_id", "user_id")
+)]
+pub struct GroupMembership {
+    #[orm(primary_key)]
+    pub id: i64,
+    #[orm(foreign_key = User, on_delete = "cascade")]
+    pub user_id: i64,
+    #[orm(foreign_key = Group, on_delete = "cascade")]
+    pub group_id: i64,
+}
+
+#[derive(Debug, che_orm::Model)]
+#[orm(
+    table = "auth_user_model_permissions",
+    unique("user_id", "model_key", "permission")
+)]
+pub struct UserModelPermission {
+    #[orm(primary_key)]
+    pub id: i64,
+    #[orm(foreign_key = User, on_delete = "cascade")]
+    pub user_id: i64,
+    pub model_key: String,
+    pub permission: String,
+}
+
+#[derive(Debug, che_orm::Model)]
+#[orm(
+    table = "auth_group_model_permissions",
+    unique("group_id", "model_key", "permission")
+)]
+pub struct GroupModelPermission {
+    #[orm(primary_key)]
+    pub id: i64,
+    #[orm(foreign_key = Group, on_delete = "cascade")]
+    pub group_id: i64,
+    pub model_key: String,
+    pub permission: String,
+}
+
+/// Durable access-change work. Consumers must not treat this as an authorization cache.
+#[derive(Debug, che_orm::Model)]
+#[orm(table = "auth_access_events")]
+pub struct AccessEvent {
+    #[orm(primary_key)]
+    pub id: i64,
+    pub kind: String,
+    pub payload: String,
+}

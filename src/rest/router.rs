@@ -29,6 +29,30 @@ impl<V: ViewSet> MutationHooks<V> {
             None => queryset,
         }
     }
+    pub(crate) async fn scoped_queryset(
+        &self,
+        state: &AppState,
+        viewset: &V,
+        principal: Option<&CurrentPrincipal>,
+        action: ViewAction,
+    ) -> AppResult<V::QuerySet> {
+        let queryset = self.queryset(viewset);
+        Ok(
+            match V::Permission::default()
+                .scope(state.into(), principal, action)
+                .await?
+            {
+                Some(filter) => queryset.filter(filter),
+                None => queryset,
+            },
+        )
+    }
+    fn object_backend(&self) -> bool {
+        self.0
+            .iter()
+            .filter_map(|h| h.backend())
+            .any(|b| b.object_permissions())
+    }
     async fn rest(
         &self,
         state: &AppState,
@@ -39,6 +63,12 @@ impl<V: ViewSet> MutationHooks<V> {
         data: serde_json::Value,
     ) -> AppResult<Option<Response>> {
         if let Some(backend) = self.0.iter().find_map(|hook| hook.backend()) {
+            if V::Permission::default().object_scoped() && !backend.object_permissions() {
+                return Err(AppError::BadRequest(
+                    "object permissions require a transaction-aware mutation backend".into(),
+                ));
+            }
+
             backend
                 .rest(state, principal, action, id, headers, data)
                 .await
@@ -50,12 +80,82 @@ impl<V: ViewSet> MutationHooks<V> {
         &self,
         state: &AppState,
         principal: Option<&CurrentPrincipal>,
+        viewset: &V,
+        action: ViewAction,
+        id: Option<<V::Model as Model>::PrimaryKey>,
         write: ValidatedWrite<V::Model>,
     ) -> AppResult<Option<V::Model>> {
         if let Some(backend) = self.0.iter().find_map(|hook| hook.backend()) {
+            if V::Permission::default().object_scoped() {
+                return Err(AppError::BadRequest(
+                    "object permissions require a transaction-aware mutation backend".into(),
+                ));
+            }
+
+            let model = match id {
+                Some(id) => Some(
+                    state
+                        .database()
+                        .get::<V::Model>(id)
+                        .await?
+                        .ok_or(AppError::NotFound)?,
+                ),
+                None => None,
+            };
+            let write = prepare_write(viewset, state, principal, action, model.as_ref(), write)?;
             backend.save(state, principal, write).await
         } else {
-            write.save(state.database()).await.map_err(error_write)
+            let owned_state = state.clone();
+            let principal = principal.cloned();
+            let viewset = viewset.clone();
+            state
+                .database()
+                .transaction_result(move |tx| {
+                    Box::pin(async move {
+                        let model = match id {
+                            Some(id) => {
+                                Some(tx.get::<V::Model>(id).await?.ok_or(AppError::NotFound)?)
+                            }
+                            None => None,
+                        };
+                        let write = prepare_write(
+                            &viewset,
+                            &owned_state,
+                            principal.as_ref(),
+                            action,
+                            model.as_ref(),
+                            write,
+                        )?;
+                        V::Permission::default()
+                            .check_write(
+                                super::permissions::PermissionContext::in_transaction(
+                                    &owned_state,
+                                    tx,
+                                ),
+                                principal.as_ref(),
+                                action,
+                                model.as_ref(),
+                                Some(&write),
+                            )
+                            .await?;
+                        let model = write.save_in(tx).await.map_err(error_write)?;
+                        if let Some(model) = &model {
+                            V::Permission::default()
+                                .after_write(
+                                    super::permissions::PermissionContext::in_transaction(
+                                        &owned_state,
+                                        tx,
+                                    ),
+                                    principal.as_ref(),
+                                    action,
+                                    model,
+                                )
+                                .await?;
+                        }
+                        Ok(model)
+                    })
+                })
+                .await
         }
     }
 
@@ -66,10 +166,38 @@ impl<V: ViewSet> MutationHooks<V> {
         id: <V::Model as Model>::PrimaryKey,
     ) -> AppResult<()> {
         if let Some(backend) = self.0.iter().find_map(|hook| hook.backend()) {
+            if V::Permission::default().object_scoped() {
+                return Err(AppError::BadRequest(
+                    "object permissions require a transaction-aware mutation backend".into(),
+                ));
+            }
+
             backend.delete(state, principal, id).await
         } else {
-            state.database().delete::<V::Model>(id).await?;
-            Ok(())
+            let owned_state = state.clone();
+            let principal = principal.cloned();
+            state
+                .database()
+                .transaction_result(move |tx| {
+                    Box::pin(async move {
+                        let model = tx.get::<V::Model>(id).await?.ok_or(AppError::NotFound)?;
+                        V::Permission::default()
+                            .check_write(
+                                super::permissions::PermissionContext::in_transaction(
+                                    &owned_state,
+                                    tx,
+                                ),
+                                principal.as_ref(),
+                                ViewAction::Delete,
+                                Some(&model),
+                                None,
+                            )
+                            .await?;
+                        tx.delete::<V::Model>(id).await?;
+                        Ok(())
+                    })
+                })
+                .await
         }
     }
 
@@ -108,29 +236,7 @@ pub enum ViewAction {
     Delete,
 }
 
-pub trait Permission<M: Model>: Clone + Send + Sync + Default + 'static {
-    fn check(
-        &self,
-        _state: &AppState,
-        _current: Option<&CurrentPrincipal>,
-        _action: ViewAction,
-    ) -> AppResult<()> {
-        Ok(())
-    }
-    fn check_object(
-        &self,
-        _state: &AppState,
-        _current: Option<&CurrentPrincipal>,
-        _action: ViewAction,
-        _model: &M,
-    ) -> AppResult<()> {
-        Ok(())
-    }
-}
-
-#[derive(Clone, Copy, Default)]
-pub struct AllowAny;
-impl<M: Model> Permission<M> for AllowAny {}
+pub use super::permissions::{AllowAny, Permission};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lookup {
@@ -221,7 +327,27 @@ pub trait RestQuerySet: Sized + Send {
     type Item: Send + Sync + 'static;
 
     fn item_model(item: &Self::Item) -> &Self::Model;
+    /// SQL-only, unpaged selection supported by object delivery.
+    fn object_sync_filter(self) -> Result<Option<che_orm::Expr>, che_orm::OrmError> {
+        Err(che_orm::OrmError::Configuration(
+            "object sync requires a scalar SQL queryset".into(),
+        ))
+    }
 
+    /// Transactional materialization for object-sync response disclosure.
+    fn first_in<'a>(
+        self,
+        _transaction: &'a che_orm::Transaction,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Self::Item>, che_orm::OrmError>> + Send + 'a>>
+    where
+        Self: 'a,
+    {
+        Box::pin(async {
+            Err(che_orm::OrmError::Configuration(
+                "queryset does not support transactional materialization".into(),
+            ))
+        })
+    }
     fn filter(self, expr: che_orm::Expr) -> Self;
     fn order_by(self, order: che_orm::OrderBy) -> Self;
     fn limit(self, limit: u64) -> Self;
@@ -464,6 +590,30 @@ where
         item
     }
 
+    fn first_in<'a>(
+        self,
+        transaction: &'a che_orm::Transaction,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Self::Item>, che_orm::OrmError>> + Send + 'a>>
+    where
+        Self: 'a,
+    {
+        Box::pin(async move {
+            transaction
+                .fetch_one(self.limit(1).into_select_query())
+                .await
+        })
+    }
+    fn object_sync_filter(self) -> Result<Option<che_orm::Expr>, che_orm::OrmError> {
+        let che_orm::QueryAst::Select(query) = self.into_select_query().into_ast()? else {
+            unreachable!()
+        };
+        if !query.joins.is_empty() || query.limit.is_some() || query.offset.is_some() {
+            return Err(che_orm::OrmError::Configuration(
+                "object sync queryset cannot contain joins or pagination".into(),
+            ));
+        }
+        Ok(query.filter)
+    }
     fn filter(self, expr: che_orm::Expr) -> Self {
         DatabaseQuery::filter(self, expr)
     }
@@ -688,7 +838,7 @@ impl RestKey for che_orm::Uuid {}
 
 pub trait ViewSet: Clone + Send + Sync + 'static {
     type Model: Model<PrimaryKey: RestKey> + Send + Sync + 'static;
-    type Serializer: ModelSerializer<Model = Self::Model>
+    type Serializer: ModelSerializer<Model = Self::Model, Input: Send + Sync>
         + ModelWriteSerializer<Model = Self::Model>
         + Serialize
         + Send
@@ -852,10 +1002,50 @@ pub fn router_with_hooks<V: ViewSet>(
 where
     V::Serializer: Serialize,
 {
+    router_with_media(state, viewset, extensions, hooks, Arc::default())
+}
+
+pub(crate) fn router_with_media<V: ViewSet>(
+    state: AppState,
+    viewset: V,
+    extensions: Router,
+    hooks: Vec<Arc<dyn MutationHook<V>>>,
+    media_access: crate::media::MediaAccess,
+) -> Router
+where
+    V::Serializer: Serialize,
+{
+    let permission = V::Permission::default();
+    permission
+        .validate(V::Serializer::fields())
+        .and_then(|_| permission.validate(V::ListSerializer::fields()))
+        .expect("invalid ViewSet permission configuration");
+    assert!(
+        !permission.object_scoped()
+            || !hooks
+                .iter()
+                .filter_map(|hook| hook.backend())
+                .any(|backend| !backend.object_permissions()),
+        "object permissions require a transaction-aware mutation backend"
+    );
+    assert!(
+        !permission.object_scoped()
+            || ![
+                ViewAction::Create,
+                ViewAction::Update,
+                ViewAction::Patch,
+                ViewAction::Delete
+            ]
+            .iter()
+            .any(|action| viewset.signal_access(*action).is_some()),
+        "object permissions require recipient-aware signals"
+    );
     let path = viewset.path().trim_end_matches('/');
     for hook in &hooks {
         hook.installed(&state, &viewset, &hooks);
     }
+    let hooks = MutationHooks::<V>(hooks);
+    crate::media::register_media_access(&media_access, viewset.clone(), hooks.clone());
     Router::new()
         .route(&format!("{path}/"), get(list::<V>).post(create::<V>))
         .route(
@@ -868,7 +1058,8 @@ where
         .merge(extensions)
         .layer(Extension(state))
         .layer(Extension(viewset))
-        .layer(Extension(MutationHooks::<V>(hooks)))
+        .layer(Extension(hooks))
+        .layer(Extension(media_access))
 }
 
 #[cfg(test)]
@@ -1103,6 +1294,9 @@ where
     let update_schema = object_schema(update_properties, update_required);
     let patch_schema = object_schema(patch_properties, Vec::new());
     let error = schema_ref("Error");
+    let mut created_response = response_with_ref(&response);
+    created_response["description"] =
+        json!("Created; response body is omitted without view permission");
     let collection = format!("{}/", path.trim_end_matches('/'));
     let detail = format!("{collection}{{id}}/");
     json!({
@@ -1111,13 +1305,13 @@ where
         "paths": {
             collection: {
                 "get": {"responses": {"200": {"description": "OK", "content": {"application/json": {"schema": schema_ref(&list)}}}}},
-                "post": {"security": [{"TokenAuth": []}, {"SessionCookie": [], "CsrfToken": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": schema_ref(&create)}}}, "responses": {"201": response_with_ref(&response), "400": response_with_ref_value(&error), "401": response_with_ref_value(&error), "403": response_with_ref_value(&error)}}
+                "post": {"security": [{"TokenAuth": []}, {"SessionCookie": [], "CsrfToken": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": schema_ref(&create)}}}, "responses": {"201": created_response, "400": response_with_ref_value(&error), "401": response_with_ref_value(&error), "403": response_with_ref_value(&error)}}
             },
             detail: {
                 "parameters": [{"in":"path","name":"id","required":true,"schema":openapi_column_schema(schema.columns.iter().find(|column| column.primary_key).expect("model primary key"))}],
                 "get": {"responses": {"200": response_with_ref(&response), "401": response_with_ref_value(&error), "403": response_with_ref_value(&error), "404": response_with_ref_value(&error)}},
-                "put": {"security": [{"TokenAuth": []}, {"SessionCookie": [], "CsrfToken": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": schema_ref(&update)}}}, "responses": {"200": response_with_ref(&response), "400": response_with_ref_value(&error), "401": response_with_ref_value(&error), "403": response_with_ref_value(&error), "404": response_with_ref_value(&error)}},
-                "patch": {"security": [{"TokenAuth": []}, {"SessionCookie": [], "CsrfToken": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": schema_ref(&patch)}}}, "responses": {"200": response_with_ref(&response), "400": response_with_ref_value(&error), "401": response_with_ref_value(&error), "403": response_with_ref_value(&error), "404": response_with_ref_value(&error)}},
+                "put": {"security": [{"TokenAuth": []}, {"SessionCookie": [], "CsrfToken": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": schema_ref(&update)}}}, "responses": {"200": response_with_ref(&response), "204": {"description": "Saved; response body omitted without view permission"}, "400": response_with_ref_value(&error), "401": response_with_ref_value(&error), "403": response_with_ref_value(&error), "404": response_with_ref_value(&error)}},
+                "patch": {"security": [{"TokenAuth": []}, {"SessionCookie": [], "CsrfToken": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": schema_ref(&patch)}}}, "responses": {"200": response_with_ref(&response), "204": {"description": "Saved; response body omitted without view permission"}, "400": response_with_ref_value(&error), "401": response_with_ref_value(&error), "403": response_with_ref_value(&error), "404": response_with_ref_value(&error)}},
                 "delete": {"security": [{"TokenAuth": []}, {"SessionCookie": [], "CsrfToken": []}], "responses": {"204": {"description": "No Content"}, "401": response_with_ref_value(&error), "403": response_with_ref_value(&error), "404": response_with_ref_value(&error)}}
             }
         },
@@ -1179,6 +1373,26 @@ pub fn openapi_column_schema(column: &che_orm::ColumnSchema) -> serde_json::Valu
     schema
 }
 
+fn prepare_write<V: ViewSet>(
+    viewset: &V,
+    state: &AppState,
+    principal: Option<&CurrentPrincipal>,
+    action: ViewAction,
+    model: Option<&V::Model>,
+    write: ValidatedWrite<V::Model>,
+) -> AppResult<ValidatedWrite<V::Model>> {
+    match action {
+        ViewAction::Create => viewset.prepare_create(state, principal, write),
+        ViewAction::Patch => {
+            viewset.prepare_patch(state, principal, model.ok_or(AppError::NotFound)?, write)
+        }
+        ViewAction::Update => {
+            viewset.prepare_update(state, principal, model.ok_or(AppError::NotFound)?, write)
+        }
+        _ => Err(AppError::BadRequest("invalid write action".into())),
+    }
+}
+
 fn current(ext: &Option<Extension<CurrentPrincipal>>) -> Option<&CurrentPrincipal> {
     ext.as_ref().map(|e| &e.0)
 }
@@ -1222,11 +1436,18 @@ where
     V::Serializer: Serialize,
 {
     let principal = current(&who);
-    V::Permission::default().check(&state, principal, ViewAction::List)?;
+    V::Permission::default()
+        .check_request((&state).into(), principal, ViewAction::List)
+        .await?;
     let filter = viewset.filterset();
     let count_params = count_params(&params);
     let count = filter
-        .apply(hooks.queryset(&viewset), &count_params)
+        .apply(
+            hooks
+                .scoped_queryset(&state, &viewset, principal, ViewAction::List)
+                .await?,
+            &count_params,
+        )
         .map_err(error_filter)?
         .count(state.database())
         .await?;
@@ -1237,7 +1458,12 @@ where
         return Err(AppError::BadRequest("limit must not exceed 100".into()));
     }
     let rows = filter
-        .apply(hooks.queryset(&viewset), &params)
+        .apply(
+            hooks
+                .scoped_queryset(&state, &viewset, principal, ViewAction::List)
+                .await?,
+            &params,
+        )
         .map_err(error_filter)?
         .limit(limit)
         .offset(offset)
@@ -1261,19 +1487,24 @@ where
     V::Serializer: Serialize,
 {
     let principal = current(&who);
-    V::Permission::default().check(&state, principal, ViewAction::Retrieve)?;
+    V::Permission::default()
+        .check_request((&state).into(), principal, ViewAction::Retrieve)
+        .await?;
     let item = hooks
-        .queryset(&viewset)
+        .scoped_queryset(&state, &viewset, principal, ViewAction::Retrieve)
+        .await?
         .filter(V::Model::primary_key().eq(id))
         .first(state.database())
         .await?
         .ok_or(AppError::NotFound)?;
-    V::Permission::default().check_object(
-        &state,
-        principal,
-        ViewAction::Retrieve,
-        V::QuerySet::item_model(&item),
-    )?;
+    V::Permission::default()
+        .check_object(
+            (&state).into(),
+            principal,
+            ViewAction::Retrieve,
+            V::QuerySet::item_model(&item),
+        )
+        .await?;
     Ok(Json(V::Serializer::to_json(item)?))
 }
 
@@ -1286,6 +1517,12 @@ async fn destroy<V: ViewSet>(
     headers: HeaderMap,
 ) -> AppResult<Response> {
     let principal = current(&who);
+    // Object backends settle immutable receipts before checking current rights.
+    if !hooks.object_backend() {
+        V::Permission::default()
+            .check_request((&state).into(), principal, ViewAction::Delete)
+            .await?;
+    }
     if let Some(response) = hooks
         .rest(
             &state,
@@ -1299,7 +1536,6 @@ async fn destroy<V: ViewSet>(
     {
         return Ok(response);
     }
-    V::Permission::default().check(&state, principal, ViewAction::Delete)?;
     {
         let item = viewset
             .get_queryset()
@@ -1307,12 +1543,14 @@ async fn destroy<V: ViewSet>(
             .first(state.database())
             .await?
             .ok_or(AppError::NotFound)?;
-        V::Permission::default().check_object(
-            &state,
-            principal,
-            ViewAction::Delete,
-            V::QuerySet::item_model(&item),
-        )?;
+        V::Permission::default()
+            .check_object(
+                (&state).into(),
+                principal,
+                ViewAction::Delete,
+                V::QuerySet::item_model(&item),
+            )
+            .await?;
     }
     let model = state
         .database()
@@ -1345,6 +1583,12 @@ where
     V::Serializer: Serialize,
 {
     let principal = current(&who);
+    // Object backends settle immutable receipts before checking current rights.
+    if !hooks.object_backend() {
+        V::Permission::default()
+            .check_request((&state).into(), principal, ViewAction::Create)
+            .await?;
+    }
     if let Some(response) = hooks
         .rest(
             &state,
@@ -1358,13 +1602,11 @@ where
     {
         return Ok(response);
     }
-    V::Permission::default().check(&state, principal, ViewAction::Create)?;
     let mut data = data;
     normalize_datetime_fields(&mut data, V::Serializer::fields());
     let write = V::Serializer::is_valid(data, WriteMode::Create).map_err(error_validation)?;
-    let write = viewset.prepare_create(&state, principal, write)?;
     let model = hooks
-        .save(&state, principal, write)
+        .save(&state, principal, &viewset, ViewAction::Create, None, write)
         .await?
         .ok_or(AppError::BadRequest("create did not return a model".into()))?;
     hooks.after_commit(&state, principal, ViewAction::Create, &model)?;
@@ -1374,6 +1616,19 @@ where
         .first(state.database())
         .await?
         .ok_or(AppError::NotFound)?;
+    match V::Permission::default()
+        .check_object(
+            (&state).into(),
+            principal,
+            ViewAction::Retrieve,
+            V::QuerySet::item_model(&item),
+        )
+        .await
+    {
+        Ok(()) => {}
+        Err(AppError::Forbidden(_)) => return Ok(StatusCode::CREATED.into_response()),
+        Err(error) => return Err(error),
+    }
     let payload = V::Serializer::to_json(item)?;
     if let Some(signal) = viewset.signal_name(ViewAction::Create)
         && viewset.signal_access(ViewAction::Create).is_some()
@@ -1398,6 +1653,12 @@ where
     V::Serializer: Serialize,
 {
     let principal = current(&who);
+    // Object backends settle immutable receipts before checking current rights.
+    if !hooks.object_backend() {
+        V::Permission::default()
+            .check_request((&state).into(), principal, ViewAction::Patch)
+            .await?;
+    }
     if let Some(response) = hooks
         .rest(
             &state,
@@ -1411,7 +1672,6 @@ where
     {
         return Ok(response);
     }
-    V::Permission::default().check(&state, principal, ViewAction::Patch)?;
     let write = {
         let current = viewset
             .get_queryset()
@@ -1419,20 +1679,27 @@ where
             .first(state.database())
             .await?
             .ok_or(AppError::NotFound)?;
-        V::Permission::default().check_object(
-            &state,
-            principal,
-            ViewAction::Patch,
-            V::QuerySet::item_model(&current),
-        )?;
+        V::Permission::default()
+            .check_object(
+                (&state).into(),
+                principal,
+                ViewAction::Patch,
+                V::QuerySet::item_model(&current),
+            )
+            .await?;
         let mut data = data;
         normalize_datetime_fields(&mut data, V::Serializer::fields());
-        let write =
-            V::Serializer::is_valid(data, WriteMode::Patch { id }).map_err(error_validation)?;
-        viewset.prepare_patch(&state, principal, V::QuerySet::item_model(&current), write)?
+        V::Serializer::is_valid(data, WriteMode::Patch { id }).map_err(error_validation)?
     };
     let model = hooks
-        .save(&state, principal, write)
+        .save(
+            &state,
+            principal,
+            &viewset,
+            ViewAction::Patch,
+            Some(id),
+            write,
+        )
         .await?
         .ok_or(AppError::NotFound)?;
     hooks.after_commit(&state, principal, ViewAction::Patch, &model)?;
@@ -1442,6 +1709,19 @@ where
         .first(state.database())
         .await?
         .ok_or(AppError::NotFound)?;
+    match V::Permission::default()
+        .check_object(
+            (&state).into(),
+            principal,
+            ViewAction::Retrieve,
+            V::QuerySet::item_model(&item),
+        )
+        .await
+    {
+        Ok(()) => {}
+        Err(AppError::Forbidden(_)) => return Ok(StatusCode::NO_CONTENT.into_response()),
+        Err(error) => return Err(error),
+    }
     let payload = V::Serializer::to_json(item)?;
     if let Some(signal) = viewset.signal_name(ViewAction::Patch)
         && viewset.signal_access(ViewAction::Patch).is_some()
@@ -1466,6 +1746,12 @@ where
     V::Serializer: Serialize,
 {
     let principal = current(&who);
+    // Object backends settle immutable receipts before checking current rights.
+    if !hooks.object_backend() {
+        V::Permission::default()
+            .check_request((&state).into(), principal, ViewAction::Update)
+            .await?;
+    }
     if let Some(response) = hooks
         .rest(
             &state,
@@ -1479,7 +1765,6 @@ where
     {
         return Ok(response);
     }
-    V::Permission::default().check(&state, principal, ViewAction::Update)?;
     let write = {
         let current = viewset
             .get_queryset()
@@ -1487,20 +1772,27 @@ where
             .first(state.database())
             .await?
             .ok_or(AppError::NotFound)?;
-        V::Permission::default().check_object(
-            &state,
-            principal,
-            ViewAction::Update,
-            V::QuerySet::item_model(&current),
-        )?;
+        V::Permission::default()
+            .check_object(
+                (&state).into(),
+                principal,
+                ViewAction::Update,
+                V::QuerySet::item_model(&current),
+            )
+            .await?;
         let mut data = data;
         normalize_datetime_fields(&mut data, V::Serializer::fields());
-        let write =
-            V::Serializer::is_valid(data, WriteMode::Update { id }).map_err(error_validation)?;
-        viewset.prepare_update(&state, principal, V::QuerySet::item_model(&current), write)?
+        V::Serializer::is_valid(data, WriteMode::Update { id }).map_err(error_validation)?
     };
     let model = hooks
-        .save(&state, principal, write)
+        .save(
+            &state,
+            principal,
+            &viewset,
+            ViewAction::Update,
+            Some(id),
+            write,
+        )
         .await?
         .ok_or(AppError::NotFound)?;
     hooks.after_commit(&state, principal, ViewAction::Update, &model)?;
@@ -1510,6 +1802,19 @@ where
         .first(state.database())
         .await?
         .ok_or(AppError::NotFound)?;
+    match V::Permission::default()
+        .check_object(
+            (&state).into(),
+            principal,
+            ViewAction::Retrieve,
+            V::QuerySet::item_model(&item),
+        )
+        .await
+    {
+        Ok(()) => {}
+        Err(AppError::Forbidden(_)) => return Ok(StatusCode::NO_CONTENT.into_response()),
+        Err(error) => return Err(error),
+    }
     let payload = V::Serializer::to_json(item)?;
     if let Some(signal) = viewset.signal_name(ViewAction::Update)
         && viewset.signal_access(ViewAction::Update).is_some()

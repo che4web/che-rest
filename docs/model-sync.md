@@ -8,9 +8,9 @@ client-supplied scope. Use it only when that access matches the application.
 
 Shared objects with per-object permissions require an additional access-delivery
 contract: grants send current state and revocations remove local visibility.
-That extension is **not implemented** by these endpoints. See the
-[per-object synchronization plan](OBJECT_SYNC_PLAN.md); a queryset filter or
-per-owner scope alone does not implement it.
+Use the separate opt-in [object-sync protocol 3](object-sync.md) through
+`ObjectSyncEndpoints`. These protocol-2 endpoints retain whole-model behavior;
+a queryset filter or per-owner scope alone does not implement object delivery.
 
 Run the two-device SQLite/HTTP example:
 

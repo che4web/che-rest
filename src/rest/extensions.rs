@@ -136,6 +136,10 @@ pub type MutationFuture<'a, T> = Pin<Box<dyn Future<Output = AppResult<T>> + Sen
 
 /// Replaces ORM persistence while retaining validation and lifecycle hooks.
 pub trait MutationBackend<V: ViewSet>: Send + Sync + 'static {
+    /// Backend guarantees transactional object authorization on ordinary REST dispatch.
+    fn object_permissions(&self) -> bool {
+        false
+    }
     fn filter_read(&self, queryset: V::QuerySet) -> V::QuerySet {
         queryset
     }
@@ -237,7 +241,12 @@ impl<V: ViewSet> ViewSetConfig<V> {
         // Media's direct CAS writes need a journal-aware adapter before they can
         // share a sync ViewSet. Reject either installation order.
         let media = |id: &str| matches!(id, "image-field" | "image-create");
-        let sync = |id: &str| matches!(id, "sync" | "model-sync");
+        let sync = |id: &str| matches!(id, "sync" | "model-sync" | "object-sync");
+        if sync(E::ID) && self.extensions.iter().any(|item| sync(item.id)) {
+            return Err(AppError::BadRequest(
+                "choose exactly one sync protocol per ViewSet".into(),
+            ));
+        }
         if (sync(E::ID) && self.extensions.iter().any(|item| media(item.id)))
             || (media(E::ID) && self.extensions.iter().any(|item| sync(item.id)))
         {

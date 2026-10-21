@@ -466,8 +466,8 @@ export interface PaginatedResponse<T> {{ count: number; results: T[]; }}
 export interface ModelApi<T extends BaseEntity, CreateDTO = Partial<T>, UpdateDTO = Partial<T>, Params extends ListParams = ListParams, ListItem extends BaseEntity = T> {{
   list: (params?: Params) => Promise<PaginatedResponse<ListItem>>;
   retrieve: (id: number | string) => Promise<T>;
-  create: (payload: CreateDTO) => Promise<T>;
-  update: (id: number | string, payload: UpdateDTO) => Promise<T>;
+  create: (payload: CreateDTO) => Promise<T | null>;
+  update: (id: number | string, payload: UpdateDTO) => Promise<T | null>;
   remove: (id: number | string) => Promise<void>;
 }}
  export const apiClient = axios.create({{ baseURL: import.meta.env.VITE_API_BASE_URL ?? "/api", withCredentials: true, xsrfCookieName: "csrf_token", xsrfHeaderName: "X-CSRF-Token", headers: {{ "Content-Type": "application/json" }} }});
@@ -479,8 +479,8 @@ export function createModelApi<T extends BaseEntity, CreateDTO = Partial<T>, Upd
   return {{
     async list(params) {{ return (await apiClient.get<PaginatedResponse<ListItem>>(normalized, {{ params }})).data; }},
     async retrieve(id) {{ return (await apiClient.get<T>(`${{normalized}}${{id}}/`)).data; }},
-    async create(payload) {{ return (await apiClient.post<T>(normalized, payload)).data; }},
-    async update(id, payload) {{ return (await apiClient.patch<T>(`${{normalized}}${{id}}/`, payload)).data; }},
+    async create(payload) {{ return (await apiClient.post<T | null>(normalized, payload)).data || null; }},
+    async update(id, payload) {{ return (await apiClient.patch<T | null>(`${{normalized}}${{id}}/`, payload)).data || null; }},
     async remove(id) {{ await apiClient.delete(`${{normalized}}${{id}}/`); }},
   }};
 }}
@@ -608,7 +608,7 @@ export function useModelItem<T extends BaseEntity, CreateDTO = Partial<T>, Updat
   async function create(payload: CreateDTO) {{ return run(() => api.create(payload), "Unable to create object"); }}
   async function update(id: number | string, payload: UpdateDTO) {{ return run(() => api.update(id, payload), "Unable to update object"); }}
   async function remove(id: number | string) {{ return run(async () => {{ await api.remove(id); item.value = null; return true; }}, "Unable to delete object"); }}
-  async function run<R>(operation: () => Promise<R>, fallback: string): Promise<R | null> {{ loading.value = true; error.value = ""; try {{ const value = await operation(); if (typeof value === "object" && value !== null) item.value = value as T; return value; }} catch (err) {{ error.value = err instanceof Error ? err.message : fallback; options.onError?.(error.value, err); return null; }} finally {{ loading.value = false; }} }}
+  async function run<R>(operation: () => Promise<R>, fallback: string): Promise<R | null> {{ loading.value = true; error.value = ""; try {{ const value = await operation(); if (value === null) item.value = null; else if (typeof value === "object") item.value = value as T; return value; }} catch (err) {{ error.value = err instanceof Error ? err.message : fallback; options.onError?.(error.value, err); return null; }} finally {{ loading.value = false; }} }}
   return {{ item, loading, error, retrieve, create, update, remove }};
 }}
 "#
