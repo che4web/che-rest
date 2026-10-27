@@ -7,6 +7,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::json;
 use time::{Duration, OffsetDateTime};
+use tokio::sync::Semaphore;
 
 use super::{
     AuthSession, AuthToken, CurrentPrincipal, CurrentSession, User, cookie_header, generate_token,
@@ -179,7 +180,8 @@ async fn create_user(
         return Err(AppError::BadRequest("username is already taken".into()));
     }
 
-    let password_hash = super::hash_password(&payload.password)
+    let password_hash = password_work(move || super::hash_password(&payload.password))
+        .await?
         .map_err(|error| AppError::BadRequest(format!("could not hash password: {error}")))?;
     let created = state
         .database()
@@ -204,10 +206,44 @@ async fn find_user(state: &AppState, payload: LoginRequest) -> AppResult<User> {
         .first(state.database())
         .await?
         .ok_or(AppError::Unauthorized("invalid session".into()))?;
-    if !user.is_active || !verify_password(&payload.password, &user.password_hash) {
+    if !user.is_active {
+        return Err(AppError::Unauthorized("invalid session".into()));
+    }
+    let password_hash = user.password_hash.clone();
+    if !password_work(move || verify_password(&payload.password, &password_hash)).await? {
         return Err(AppError::Unauthorized("invalid session".into()));
     }
     Ok(user)
+}
+
+// Bound hashing and verification together: Argon2 is both CPU- and memory-intensive.
+static PASSWORD_WORKERS: Semaphore = Semaphore::const_new(4);
+
+async fn password_work<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> AppResult<T> {
+    password_work_limited(&PASSWORD_WORKERS, work).await
+}
+
+async fn password_work_limited<T: Send + 'static>(
+    workers: &'static Semaphore,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> AppResult<T> {
+    let permit = workers
+        .acquire()
+        .await
+        .expect("password worker semaphore is never closed");
+    tokio::task::spawn_blocking(move || {
+        // Retain the permit even if the HTTP request is cancelled while hashing.
+        let _permit = permit;
+        work()
+    })
+    .await
+    .map_err(|error| {
+        AppError::Io(std::io::Error::other(format!(
+            "password worker failed: {error}"
+        )))
+    })
 }
 
 fn user_payload(user: &User) -> serde_json::Value {
@@ -226,4 +262,44 @@ fn set_cookie(response: &mut Response, value: String) -> AppResult<()> {
         HeaderValue::from_str(&value).map_err(|error| AppError::BadRequest(error.to_string()))?,
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn password_work_is_offloaded_and_cancelled_requests_keep_their_permit() {
+        static WORKERS: Semaphore = Semaphore::const_new(1);
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let first = tokio::spawn(password_work_limited(&WORKERS, move || {
+            started.send(()).unwrap();
+            wait.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+        }));
+        tokio::time::timeout(std::time::Duration::from_secs(2), ready)
+            .await
+            .unwrap()
+            .unwrap();
+        first.abort();
+        assert!(first.await.unwrap_err().is_cancelled());
+
+        let (started, mut ready) = tokio::sync::oneshot::channel();
+        let second = tokio::spawn(password_work_limited(&WORKERS, move || {
+            started.send(()).unwrap();
+        }));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(30), &mut ready)
+                .await
+                .is_err()
+        );
+        // This send can run on the single async worker while hashing is blocked.
+        release.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), ready)
+            .await
+            .unwrap()
+            .unwrap();
+        second.await.unwrap().unwrap();
+    }
 }
