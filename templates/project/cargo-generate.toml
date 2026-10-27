@@ -15,3 +15,15 @@ default = ""
 type = "bool"
 prompt = "Install authentication?"
 default = true
+
+[placeholders.layout]
+type = "string"
+prompt = "Application layout"
+choices = ["single", "modular"]
+default = "modular"
+
+[conditional.'layout == "single"']
+ignore = ["src/apps/tasks"]
+
+[conditional.'layout == "modular"']
+ignore = ["src/models.rs", "src/serializers.rs", "src/filters.rs", "src/views.rs", "src/migrations"]

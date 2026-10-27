@@ -38,9 +38,12 @@ enum CommandKind {
         che_orm_path: String,
         #[arg(long, default_value_t = false)]
         with_auth: bool,
+        #[arg(long, value_enum, default_value_t = crate::ProjectLayout::Modular)]
+        layout: crate::ProjectLayout,
         #[arg(long, default_value_t = false)]
         force: bool,
     },
+    #[command(visible_alias = "createapp")]
     Startapp {
         name: String,
         #[arg(long = "model")]
@@ -181,26 +184,38 @@ impl Management {
                 che_rest_path,
                 che_orm_path,
                 with_auth,
+                layout,
                 force,
-            } => crate::startproject(StartProjectOptions {
-                name,
-                out,
-                che_rest_path,
-                che_orm_path,
-                with_auth,
-                force,
-            })?,
+            } => crate::startproject_with_layout(
+                StartProjectOptions {
+                    name,
+                    out,
+                    che_rest_path,
+                    che_orm_path,
+                    with_auth,
+                    force,
+                },
+                layout,
+            )?,
             CommandKind::Startapp {
                 name,
                 models,
                 root,
                 force,
-            } => crate::startapp(StartAppOptions {
-                name,
-                models,
-                root: root.unwrap_or(self.project_root),
-                force,
-            })?,
+            } => {
+                let root = root.unwrap_or_else(|| self.project_root.clone());
+                if root.canonicalize()? == self.project_root.canonicalize()?
+                    && self.apps.iter().any(|module| module.name() == name)
+                {
+                    return Err(format!("app {name} is already installed").into());
+                }
+                crate::startapp(StartAppOptions {
+                    name,
+                    models,
+                    root,
+                    force,
+                })?;
+            }
             CommandKind::Schema => print_schema(&self.apps),
             CommandKind::Makemigrations {
                 app,

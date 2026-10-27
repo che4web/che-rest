@@ -30,7 +30,7 @@ jobs:
         run: cargo test
         working-directory: che-rest
       - name: HTTP sync transport tests
-        run: cargo test --example todo_sync
+        run: cargo test --features sync-http
         working-directory: che-rest
       - name: Admin UUID identity tests
         run: node --experimental-strip-types --test tests/admin_identity.mjs

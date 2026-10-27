@@ -418,6 +418,7 @@ pub struct Server {
     state: AppState,
     apps: InstalledApps,
     api_prefix: String,
+    startup_banner: bool,
 }
 
 #[cfg(test)]
@@ -502,6 +503,34 @@ mod tests {
     }
 
     #[test]
+    fn banner_uses_effective_routes_and_session_settings_without_database_secrets() {
+        let mut config = crate::AppConfig::default();
+        config.server.host = "::1".into();
+        config.server.port = 8080;
+        config.database.url = "sqlite://private-database.sqlite?secret=hidden".into();
+        let apps = InstalledApps::new().add(crate::auth::module()).add(First);
+        let banner = startup_banner(&config, "/v1/", &apps);
+        assert!(banner.contains("http://[::1]:8080/v1/openapi.json"));
+        assert!(banner.contains("Apps:      auth, first"));
+        assert!(banner.contains("Secure=false, SameSite=Lax, idle=7d"));
+        assert!(!banner.contains("private-database"));
+        assert!(!banner.contains("secret"));
+        assert!(!banner.contains("/api/"));
+    }
+
+    #[test]
+    fn banner_omits_uninstalled_auth_and_shows_actual_memory_pool_size() {
+        let mut config = crate::AppConfig::default();
+        config.database.url = ":memory:".into();
+        let banner = startup_banner(&config, "/api", &InstalledApps::new());
+        assert!(banner.contains("Apps:      none"));
+        assert!(banner.contains("Database:  SQLite, max connections: 1"));
+        assert!(!banner.contains("Session:"));
+        assert_eq!(format_duration(90), "90s");
+        assert_eq!(format_duration(0), "0s");
+    }
+
+    #[test]
     fn installed_apps_expose_app_owned_migration_state() {
         let apps = InstalledApps::new().add(MigrationApp);
         let state = apps.migration_state().unwrap();
@@ -551,6 +580,7 @@ impl Server {
             state,
             apps: InstalledApps::new(),
             api_prefix: "/api".to_owned(),
+            startup_banner: true,
         }
     }
 
@@ -561,6 +591,14 @@ impl Server {
 
     pub fn api_prefix(mut self, prefix: impl Into<String>) -> Self {
         self.api_prefix = prefix.into();
+        self
+    }
+
+    /// Controls the configuration banner printed after a successful router build.
+    /// Enabled by default. The address is configured, not a bound listener;
+    /// applications still bind their own listener and call `axum::serve`.
+    pub fn startup_banner(mut self, enabled: bool) -> Self {
+        self.startup_banner = enabled;
         self
     }
 
@@ -649,10 +687,67 @@ impl Server {
             root = module.middleware(root, &self.state);
         }
 
+        if self.startup_banner {
+            println!(
+                "{}",
+                startup_banner(&self.state.config, &self.api_prefix, &self.apps)
+            );
+        }
+
         Ok(root
             .layer(axum::Extension(context.media_access))
             .layer(axum::Extension(self.state)))
     }
+}
+
+fn startup_banner(config: &crate::AppConfig, api_prefix: &str, apps: &InstalledApps) -> String {
+    let host = &config.server.host;
+    let host = if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]")
+    } else {
+        host.clone()
+    };
+    let address = format!("http://{host}:{}", config.server.port);
+    let prefix = api_prefix.trim_end_matches('/');
+    let names = apps.names().collect::<Vec<_>>();
+    let modules = if names.is_empty() {
+        "none".into()
+    } else {
+        names.join(", ")
+    };
+    // This framework's database connector is SQLite. Do not print connection
+    // strings: they can contain credentials or other application secrets.
+    let mut banner = format!(
+        "\nche-rest v{}\nServer:    {address} (configured)\nAPI:       {address}{prefix}/\nOpenAPI:   {address}{prefix}/openapi.json\nApps:      {modules}\nDatabase:  SQLite, max connections: {}\nMedia:     {}\n",
+        env!("CARGO_PKG_VERSION"),
+        if crate::config::sqlite_path(&config.database.url) == ":memory:" {
+            1
+        } else {
+            config.database.max_connections
+        },
+        config.media.root,
+    );
+    if apps.find("auth").is_some() {
+        let session = &config.auth.session;
+        banner.push_str(&format!(
+            "Session:   Secure={}, SameSite={}, idle={}, renew-window={}, absolute={}\n",
+            session.secure,
+            session.same_site,
+            format_duration(session.ttl_seconds),
+            format_duration(session.renewal_window_seconds),
+            format_duration(session.absolute_ttl_seconds),
+        ));
+    }
+    banner
+}
+
+fn format_duration(seconds: i64) -> String {
+    for (unit, suffix) in [(86_400, "d"), (3_600, "h"), (60, "m")] {
+        if seconds != 0 && seconds % unit == 0 {
+            return format!("{}{suffix}", seconds / unit);
+        }
+    }
+    format!("{seconds}s")
 }
 
 fn swagger_html(csrf_cookie_name: &str) -> String {

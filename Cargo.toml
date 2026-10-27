@@ -1,6 +1,6 @@
 [package]
 name = "che-rest"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 description = "Typed REST framework and project tooling for che-orm applications"
 license = "MIT"
@@ -10,7 +10,7 @@ documentation = "https://docs.rs/che-rest"
 rust-version = "1.88"
 keywords = ["rest", "api", "orm", "sqlite"]
 categories = ["web-programming", "database"]
-exclude = ["benchmarks/**"]
+exclude = ["benchmarks/**", "my-project/**"]
 
 [features]
 default = []
@@ -21,7 +21,7 @@ axum = { version = "0.8", features = ["ws", "multipart"] }
 image = { version = "=0.25.5", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 argon2 = "0.5"
 clap = { version = "4", features = ["derive"] }
-che-orm = { version = "0.3.0", path = "../che-orm" }
+che-orm = { version = "0.3.2", path = "../che-orm" }
 che-sync = { version = "0.1.0", path = "../che-orm/che-sync" }
 hex = "0.4"
 futures-util = "0.3"

@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## 0.3.1
+
+- Add protocol-2 per-model synchronization, REST HTTP transports and independently
+  retryable lifecycle effects; preserve immutable submitted requests and receipts.
+- Add asynchronous direct/group object permissions and explicit protocol-3
+  object synchronization, including current-rights disclosure and revocation.
+- Keep REST request encoding in che-rest and document the shared Tauri sync
+  adapter, downstream Todo verification and five-crate package checks.
+- Offload and bound password hashing work in authentication handlers.
+- Print a shared startup configuration banner from Server::build(), with API URLs,
+  installed apps, database pool, media and session settings; allow opting out with
+  Server::startup_banner(false).
+- Upgrade the ORM requirement to 0.3.2.
+- Add single/modular layouts with a starter Task REST resource to cargo-generate
+  and CLI startproject; keep first migration generation explicit.
+- Generate shared APP_NAME constants and app-prefixed model tables; expose
+  createapp as a compatible alias for startapp with automatic REST registration.
+- Verify both generators, layouts and auth variants with migrations, cross-app
+  foreign keys, generated API metadata and real HTTP CRUD.
 - Dispatch durable lifecycle hooks and cascade cleanup for both ordinary and conditional SyncViewSet writes; preserve successful responses when effects need retry.
 - Replay concurrent identical REST writes before applying stale UUID or revision checks.
 - Preserve offline operations on non-sync HTTP errors, including expired authentication and throttling.

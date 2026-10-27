@@ -29,7 +29,10 @@ pub use config::{AppConfig, DatabaseConfig, ServerConfig};
 pub use error::{AppError, AppResult};
 pub use management::Management;
 pub use module::{AppModule, InstalledApps, ModuleContext, Server};
-pub use project::{StartAppOptions, StartProjectOptions, startapp, startproject};
+pub use project::{
+    ProjectLayout, StartAppOptions, StartProjectOptions, startapp, startproject,
+    startproject_with_layout,
+};
 pub use rest::{
     AllowAny, ApiExtension, ApiOperation, ApiSchema, ApiSchemaDefinition, ClientMethod,
     CrudViewSet, ExtensionContext, Filter, FilterError, FilterSet, FilterSetSpec, FilterValue,

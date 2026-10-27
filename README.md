@@ -20,10 +20,12 @@ let app = Server::new(state)
 
 The migration plan is documented in [`docs/ORM2_MIGRATION_PLAN.md`](docs/ORM2_MIGRATION_PLAN.md).
 
-The minimal migrated example is available under `todo_api`:
+The runnable CRUD example is available under
+[`examples/cli_fullstack`](examples/cli_fullstack/README.md). Apply its compiled
+migrations and create an administrator as described in its README, then start it:
 
 ```bash
-cargo run --manifest-path todo_api/Cargo.toml
+cargo run --manifest-path examples/cli_fullstack/Cargo.toml
 ```
 
 ## Offline synchronization
@@ -36,6 +38,13 @@ Writes use ordinary REST CRUD with conditional revisions and idempotency keys.
 ```bash
 cargo run --features sync-http --example model_sync
 ```
+
+The example creates an offline record through `ModelLogClient::save`, then edits
+loaded models with `client.database().save(&model).await?`. The configured database
+captures those edits in the sync outbox. `Database::save` updates existing rows
+and returns `Option<Model>`; it never inserts a missing record. Use the returned
+model to retain refreshed managed fields. For a selected-field update of a stale
+object, use `database.update::<Model>(id).set(...).execute().await?` instead.
 
 See [`docs/model-sync.md`](docs/model-sync.md) for setup, migrations and access
 rules. The scoped pull/snapshot protocol and `todo_sync` example remain available
@@ -59,41 +68,52 @@ Create a new runnable `che-rest` application:
 
 ```bash
 cargo install che-rest --bin che-rest
-che-rest startproject my_project
+che-rest startproject my_project --layout modular
 cd my_project
+cargo run --bin manage -- makemigrations --name initial
+cargo run --bin manage -- migrate
 cargo run
 ```
 
 ### cargo-generate Template
 
-Use the standalone [`che-rest-template`](https://github.com/che4web/che-rest-template) repository
-to generate a minimal project with [`cargo-generate`](https://github.com/cargo-generate/cargo-generate):
+The [`templates/project`](templates/project) scaffold offers interactive project
+naming, optional authentication and `single`/`modular` layouts:
 
 ```bash
 cargo install cargo-generate
-cargo generate --git https://github.com/che4web/che-rest-template.git --name my_api \
-  --define che_rest_path=/path/to/che-rest \
-  --define che_orm_path=/path/to/che-orm
+cargo generate --path templates/project --no-workspace
 ```
 
-See that repository for its requirements and complete setup instructions.
+See [template setup and verification](templates/README.md). This checkout prepares
+che-rest 0.3.1 with che-orm 0.3.2; select absolute local dependency paths until
+both versions are published. Empty paths select crates.io.
+When using local REST, select its matching local ORM too; mixing local and
+crates.io copies produces incompatible Model/ModelSerializer types.
 
 When developing against local checkouts with the built-in project generator, point the generated
 project at them:
 
 ```bash
 cargo run --bin manage -- startproject my_project \
-  --che-rest-path ../che-rest \
-  --che-orm-path ../che-orm
+  --che-rest-path /absolute/path/to/che-rest \
+  --che-orm-path /absolute/path/to/che-orm --layout single
 cd my_project
+cargo run --bin manage -- makemigrations --name initial
+cargo run --bin manage -- migrate
 cargo run
 ```
 
 The generated project includes `app.toml`, a server entrypoint, an `apps::installed_apps()` registry,
-and a local `manage` binary. Create the first app with:
+and a local `manage` binary. Both layouts include a starter Task REST resource.
+`single` keeps its files in `src/`; `modular` puts them in `src/apps/tasks/`.
+Models use `#[orm(app = super::APP_NAME)]`, sharing the prefix with
+`AppModule::name()`; Task's table is `tasks_task`. Create additional apps with:
 
 ```bash
-cargo run --bin manage -- startapp users
+cargo run --bin manage -- createapp users --model User
+cargo run --bin manage -- makemigrations --name add_users
+cargo run --bin manage -- migrate
 ```
 
 Path overrides are useful for this repo layout:
@@ -108,6 +128,11 @@ Include the built-in auth module in the generated app registry:
 ```bash
 cargo run --bin manage -- startproject my_project --with-auth
 ```
+
+`createapp` and `startapp` are aliases. New modules are installed automatically
+and own an empty migration registry; the first migration is generated explicitly.
+The framework management backend is SQLite; changing the URL alone does not
+select PostgreSQL.
 
 A complete runnable example with CRUD, authentication, WebSocket signals, internal channels,
 TypeScript generation, and Vue admin generation is available in
@@ -145,6 +170,12 @@ OpenAPI is served by the running application at `/api/openapi.json` by default, 
 `Server::api_prefix(...)` values.
 
 Server startup:
+
+`Server::build()` prints a compact configuration banner by default: the configured
+server address, effective API/Swagger and OpenAPI URLs, installed apps, SQLite
+pool size, media root and session settings when auth is installed. Database URLs
+are omitted. The banner describes configuration; the application binds its own
+listener afterward. Disable it with `.startup_banner(false)` on `Server`.
 
 ```rust
 let app = Server::new(state)

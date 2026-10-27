@@ -33,6 +33,16 @@
 - New project migrations live in `src/apps/<app>/migrations/`. AppModule::migrations exposes compiled history; migration_path exposes its writable source directory. Management collects installed histories automatically. Library modules omit migration_path. Keep legacy Management::migrations registries compatible.
 - `src/project.rs` owns the startproject/startapp templates. Generated dependency requirements must match the current framework and ORM versions; include a compilable empty `all()` registry before the first migration. The initial migration name is passed as `makemigrations --name initial`, not as the positional application argument.
 - `templates/project` is the cargo-generate template. Keep its skeleton and AGENTS.md aligned with `src/project.rs`. Default makemigrations routes to app-owned directories; an explicit non-default --dir preserves legacy directory behavior. See `templates/README.md` for generation commands.
+- Both generators offer `single`/`modular` layouts with a starter Task and empty
+  migration history. Single keeps starter files in `src/`; modular uses
+  `src/apps/tasks/`. Shared `APP_NAME` constants drive AppModule names and
+  `#[orm(app = super::APP_NAME)]` (`tasks_task`). `createapp` aliases startapp;
+  additional apps use `src/apps/<app>/` in either layout. The original Rust
+  `startproject(options)` API keeps its empty-project behavior;
+  `startproject_with_layout` opts into the starter layout.
+- Run `TMPDIR=/tmp/opencode python3 scripts/check-template.py` after scaffold
+  changes. It checks both generators/layouts/auth variants, migrations, cross-app
+  FKs and real HTTP CRUD. The REST management backend remains SQLite.
 - Every `ViewSet` declares `type ListSerializer`: use `Self::Serializer` for matching list/detail shapes or a separate `ModelSerializer` with the same model and queryset input. Its fields drive list responses, OpenAPI, generated TypeScript list items and admin table columns. After serializer changes, regenerate clients.
 - Table-rebuild migrations temporarily remove and restore historically declared dependent triggers/views even when another app owns them; review the generated operations and keep unmanaged SQLite objects subject to executor checks.
 - Config loads `[database] url = "..."` and optional `[media] root = "uploads"`; use `migrate --config PATH` to select another database configuration. There is no `--database-url` flag in the current CLI.

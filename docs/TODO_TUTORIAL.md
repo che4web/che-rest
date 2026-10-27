@@ -16,7 +16,7 @@ From the `che-rest` repository root, create the project next to the two framewor
 cargo run --bin manage -- startproject todo_api \
   --out .. \
   --che-rest-path ../che-rest \
-  --che-orm-path ../che-orm
+  --che-orm-path ../che-orm --layout modular
 cd ../todo_api
 ```
 
@@ -33,19 +33,14 @@ api_prefix = "/api"
 Change `host`, `port`, or `api_prefix` there before starting the server. For example, `host =
 "0.0.0.0"` exposes the server on all network interfaces.
 
-## 2. Generate The Tasks App
+## 2. Inspect The Starter Tasks App
 
-Generate an application module with a `Task` model:
+The project already contains `src/apps/tasks/` with a Task model, serializer,
+filters and CRUD viewset. The model has `id`, `name`, `created_at`, and `updated_at`
+fields and uses `#[orm(app = super::APP_NAME)]`. Its table is `tasks_task`.
 
-```bash
-cargo run --bin manage -- startapp tasks --model Task
-```
-
-This creates `src/apps/tasks/` with a model, serializer, filters, and CRUD viewset. The generated
-model has `id`, `name`, `created_at`, and `updated_at` fields.
-
-The command also adds `pub mod tasks;` to `src/apps/mod.rs`. Register the module in the same file
-so the server and management commands can discover it:
+The module is already registered in `src/apps/mod.rs` so both the server and
+management commands discover it. Keep the generator marker comments:
 
 ```rust
 pub mod tasks;
@@ -57,11 +52,12 @@ pub fn installed_apps() -> InstalledApps {
 }
 ```
 
-The generated route is singular. Change it to a plural resource URL in `src/apps/tasks/mod.rs`:
+The generated route is singular. For the plural URLs below, change its path in
+`src/apps/tasks/views.rs`:
 
 ```rust
-fn init(&self, ctx: &mut ModuleContext) {
-    ctx.viewset_with(views::TaskViewSet);
+fn path(&self) -> &'static str {
+    "/tasks"
 }
 ```
 
@@ -73,7 +69,7 @@ replace it with `route` for a CRUD model.
 Generate a migration from the registered model, then apply it:
 
 ```bash
-cargo run --bin manage -- makemigrations
+cargo run --bin manage -- makemigrations --name initial
 cargo run --bin manage -- migrate
 ```
 

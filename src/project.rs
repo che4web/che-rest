@@ -26,7 +26,130 @@ pub struct StartAppOptions {
     pub force: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default, clap::ValueEnum)]
+pub enum ProjectLayout {
+    Single,
+    #[default]
+    Modular,
+}
+
 pub fn startproject(options: StartProjectOptions) -> ProjectResult<()> {
+    create_project(&options)?;
+    println!(
+        "Created project {}",
+        options.out.join(&options.name).display()
+    );
+    println!("Next steps:");
+    println!("  cd {}", options.out.join(&options.name).display());
+    println!("  cargo run --bin manage -- createapp tasks --model Task");
+    print_migration_steps();
+    Ok(())
+}
+
+/// Creates a standalone REST application with a starter Task and no migrations.
+/// The original `startproject` API continues to create an empty app registry.
+pub fn startproject_with_layout(
+    options: StartProjectOptions,
+    layout: ProjectLayout,
+) -> ProjectResult<()> {
+    create_project(&options)?;
+    let root = options.out.join(&options.name);
+    let models = vec!["Task".to_owned()];
+    match layout {
+        ProjectLayout::Modular => startapp(StartAppOptions {
+            name: "tasks".into(),
+            models,
+            root: root.clone(),
+            force: options.force,
+        })?,
+        ProjectLayout::Single => {
+            write_file(
+                &root.join("src/lib.rs"),
+                &format!(
+                    "pub mod apps;\n{}",
+                    app_module_template("tasks", &models, "src/migrations")
+                ),
+            )?;
+            write_file(&root.join("src/models.rs"), &models_rs_template(&models))?;
+            write_file(
+                &root.join("src/serializers.rs"),
+                &serializers_rs_template(&models),
+            )?;
+            write_file(&root.join("src/filters.rs"), &filters_rs_template(&models))?;
+            write_file(&root.join("src/views.rs"), &views_rs_template(&models))?;
+            write_file(&root.join("src/migrations/mod.rs"), EMPTY_MIGRATIONS)?;
+            let registry = apps_mod_template(options.with_auth).replace(
+                APP_INSTALL_MARKER,
+                &format!(".add(crate::module())\n        {APP_INSTALL_MARKER}"),
+            );
+            write_file(&root.join("src/apps/mod.rs"), &registry)?;
+        }
+    }
+    write_file(
+        &root.join("README.md"),
+        &project_readme_template(&options.name, layout),
+    )?;
+    println!("Created project {} with {layout:?} layout", root.display());
+    println!("Next steps:");
+    println!("  cd {}", root.display());
+    print_migration_steps();
+    Ok(())
+}
+
+const EMPTY_MIGRATIONS: &str = "// che-orm: migrations begin\npub fn all() -> Vec<che_orm::Migration> { vec![] }\n// che-orm: migrations end\n";
+
+fn print_migration_steps() {
+    println!("  cargo run --bin manage -- schema");
+    println!("  cargo run --bin manage -- makemigrations --name initial");
+    println!("  cargo run --bin manage -- migrate");
+    println!("  cargo run");
+}
+
+fn project_readme_template(name: &str, layout: ProjectLayout) -> String {
+    let source = match layout {
+        ProjectLayout::Single => {
+            "src/ (models.rs, serializers.rs, filters.rs, views.rs and migrations/)"
+        }
+        ProjectLayout::Modular => "src/apps/tasks/",
+    };
+    format!(
+        r#"# {name}
+
+The starter Task REST resource lives in {source}. Models use
+`#[orm(app = super::APP_NAME)]`; Task's table is `tasks_task`.
+The shared `APP_NAME` is returned by `AppModule::name()`.
+
+Generate the first migration explicitly before starting the server:
+
+```bash
+cargo run --bin manage -- schema
+cargo run --bin manage -- makemigrations --name initial
+cargo run --bin manage -- migrate
+cargo run
+```
+
+Configuration lives in `app.toml`. The server listens at `http://127.0.0.1:3000`,
+with Task at `/api/task/` and OpenAPI at `/api/openapi.json`.
+
+```bash
+cargo run --bin manage -- createapp blog --model Post
+cargo run --bin manage -- makemigrations --name add_blog
+cargo run --bin manage -- migrate
+```
+
+`createapp` (also named `startapp`) works in either layout and creates
+`src/apps/blog/` with models, serializers, filters, ViewSets, an `APP_NAME`
+constant and an empty compiled migration registry. Installing an app registers
+its migrations. Existing applied migrations must retain their identities and
+checksums. An explicit `#[orm(table = "existing_table")]` preserves an existing
+physical table name.
+
+This framework build uses SQLite. Startup does not apply migrations.
+"#
+    )
+}
+
+fn create_project(options: &StartProjectOptions) -> ProjectResult<()> {
     validate_project_name(&options.name)?;
 
     let project_dir = options.out.join(&options.name);
@@ -57,15 +180,6 @@ pub fn startproject(options: StartProjectOptions) -> ProjectResult<()> {
         &apps_mod_template(options.with_auth),
     )?;
 
-    println!("Created project {}", project_dir.display());
-    println!("Next steps:");
-    println!("  cd {}", project_dir.display());
-    println!("  cargo run --bin manage -- startapp tasks --model Task");
-    println!("  cargo run --bin manage -- schema");
-    println!("  cargo run --bin manage -- makemigrations --name initial");
-    println!("  cargo run --bin manage -- migrate");
-    println!("  cargo run");
-
     Ok(())
 }
 
@@ -83,10 +197,7 @@ pub fn startapp(options: StartAppOptions) -> ProjectResult<()> {
     let app_dir = options.root.join("src/apps").join(&options.name);
     prepare_app_dir(&app_dir, options.force)?;
 
-    write_file(
-        &app_dir.join("models.rs"),
-        &models_rs_template(&options.name, &models),
-    )?;
+    write_file(&app_dir.join("models.rs"), &models_rs_template(&models))?;
     write_file(
         &app_dir.join("serializers.rs"),
         &serializers_rs_template(&models),
@@ -98,10 +209,7 @@ pub fn startapp(options: StartAppOptions) -> ProjectResult<()> {
         &app_mod_template(&options.name, &models),
     )?;
     register_app(&options.root.join("src/apps/mod.rs"), &options.name)?;
-    write_file(
-        &app_dir.join("migrations/mod.rs"),
-        "// che-orm: migrations begin\npub fn all() -> Vec<che_orm::Migration> { vec![] }\n// che-orm: migrations end\n",
-    )?;
+    write_file(&app_dir.join("migrations/mod.rs"), EMPTY_MIGRATIONS)?;
 
     println!("Created app {}", app_dir.display());
     println!("Next steps:");
@@ -189,6 +297,64 @@ fn validate_project_name(name: &str) -> ProjectResult<()> {
 }
 
 fn validate_app_name(name: &str) -> ProjectResult<()> {
+    const RESERVED: &[&str] = &[
+        "as",
+        "async",
+        "await",
+        "break",
+        "const",
+        "continue",
+        "crate",
+        "dyn",
+        "else",
+        "enum",
+        "extern",
+        "false",
+        "fn",
+        "for",
+        "gen",
+        "if",
+        "impl",
+        "in",
+        "let",
+        "loop",
+        "match",
+        "mod",
+        "move",
+        "mut",
+        "pub",
+        "ref",
+        "return",
+        "self",
+        "static",
+        "struct",
+        "super",
+        "trait",
+        "true",
+        "type",
+        "unsafe",
+        "use",
+        "where",
+        "while",
+        "abstract",
+        "become",
+        "box",
+        "do",
+        "final",
+        "macro",
+        "override",
+        "priv",
+        "typeof",
+        "unsized",
+        "virtual",
+        "yield",
+        "try",
+        "installed_apps",
+        "che_rest",
+    ];
+    if RESERVED.contains(&name) {
+        return Err("app name must be a non-keyword snake_case Rust identifier".into());
+    }
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
         return Err("app name cannot be empty".into());
@@ -225,7 +391,7 @@ fn validate_model_name(name: &str) -> ProjectResult<()> {
 }
 
 fn cargo_toml_template(name: &str, che_rest_path: &str, che_orm_path: &str) -> String {
-    let che_orm = dependency("che-orm", "0.3.0", che_orm_path);
+    let che_orm = dependency("che-orm", "0.3.2", che_orm_path);
     let che_rest = dependency("che-rest", env!("CARGO_PKG_VERSION"), che_rest_path);
     format!(
         r#"[package]
@@ -234,6 +400,9 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 default-run = "{name}"
+publish = false
+
+[workspace]
 
 [dependencies]
 axum = "0.8"
@@ -306,6 +475,12 @@ in separately configured builds; changing only the database URL does not select 
 - `src/apps/<app>/views.rs`: typed CRUD viewsets and permissions.
 - `src/bin/manage.rs`: management command entrypoint.
 - `src/apps/<app>/migrations/`: portable application-owned compiled history.
+
+The `single` layout keeps the starter app's files in `src/` and its migration
+history in `src/migrations/`; additional apps still live in `src/apps/<app>/`.
+`createapp` is an alias for `startapp` and works in either layout. Share a
+`pub const APP_NAME: &str` between `AppModule::name()` and model attributes
+`#[orm(app = super::APP_NAME)]`. `Task` in `tasks` uses `tasks_task`.
 
 Register CRUD with `ctx.viewset_with(views::UserViewSet)`. This registers the model
 schema, API metadata, and router together. Do not use only `ctx.route(...)` for a model API.
@@ -512,14 +687,13 @@ fn to_snake_case(value: &str) -> String {
     output
 }
 
-fn model_blocks(app_name: &str, models: &[String]) -> String {
+fn model_blocks(models: &[String]) -> String {
     models
         .iter()
         .map(|model| {
-            let table = format!("{app_name}_{}", to_snake_case(model));
             format!(
                 r#"#[derive(Debug, che_orm::Model)]
-#[orm(table = "{table}")]
+#[orm(app = super::APP_NAME)]
 pub struct {model} {{
     #[orm(primary_key)]
     pub id: i64,
@@ -536,11 +710,8 @@ pub struct {model} {{
         .join("\n")
 }
 
-fn models_rs_template(app_name: &str, models: &[String]) -> String {
-    format!(
-        "use time::OffsetDateTime;\n\n{}",
-        model_blocks(app_name, models)
-    )
+fn models_rs_template(models: &[String]) -> String {
+    format!("use time::OffsetDateTime;\n\n{}", model_blocks(models))
 }
 
 fn serializers_rs_template(models: &[String]) -> String {
@@ -649,6 +820,10 @@ impl ViewSet for {model}ViewSet {{
 }
 
 fn app_mod_template(app_name: &str, models: &[String]) -> String {
+    app_module_template(app_name, models, &format!("src/apps/{app_name}/migrations"))
+}
+
+fn app_module_template(app_name: &str, models: &[String], migration_path: &str) -> String {
     let module_type = format!("{}Module", to_pascal_case(app_name));
     let schema_models = models
         .iter()
@@ -669,6 +844,8 @@ pub mod views;
 
 use che_rest::{{AppModule, ModuleContext}};
 
+pub const APP_NAME: &str = "{app_name}";
+
 pub fn module() -> {module_type} {{
     {module_type}
 }}
@@ -681,10 +858,10 @@ impl AppModule for {module_type} {{
     }}
 
     fn migration_path(&self) -> Option<&'static str> {{
-        Some(concat!(env!("CARGO_MANIFEST_DIR"), "/src/apps/{app_name}/migrations"))
+        Some(concat!(env!("CARGO_MANIFEST_DIR"), "/{migration_path}"))
     }}
     fn name(&self) -> &'static str {{
-        "{app_name}"
+        APP_NAME
     }}
 
     fn schema(&self) -> che_orm::SchemaSet {{
@@ -703,7 +880,10 @@ impl AppModule for {module_type} {{
 mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{StartAppOptions, StartProjectOptions, startapp, startproject};
+    use super::{
+        ProjectLayout, StartAppOptions, StartProjectOptions, startapp, startproject,
+        startproject_with_layout,
+    };
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
         let suffix = SystemTime::now()
@@ -790,6 +970,8 @@ mod tests {
         let models = std::fs::read_to_string(project.join("src/apps/tasks/models.rs")).unwrap();
         assert!(models.contains("pub struct Task"));
         assert!(models.contains("pub struct Comment"));
+        assert!(models.contains("#[orm(app = super::APP_NAME)]"));
+        assert!(app_mod.contains("pub const APP_NAME: &str = \"tasks\";"));
 
         let _ = std::fs::remove_dir_all(out);
     }
@@ -820,6 +1002,49 @@ mod tests {
         assert!(models.contains("pub struct Task"));
 
         let _ = std::fs::remove_dir_all(out);
+    }
+
+    #[test]
+    fn project_layouts_share_app_names_and_start_without_migrations() {
+        for layout in [ProjectLayout::Single, ProjectLayout::Modular] {
+            let out = temp_dir("layouts");
+            startproject_with_layout(
+                StartProjectOptions {
+                    name: "layout_api".into(),
+                    out: out.clone(),
+                    che_rest_path: "../che-rest".into(),
+                    che_orm_path: "../che-orm".into(),
+                    with_auth: true,
+                    force: false,
+                },
+                layout,
+            )
+            .unwrap();
+            let root = out.join("layout_api");
+            let (app, path) = match layout {
+                ProjectLayout::Single => ("src/lib.rs", "src"),
+                ProjectLayout::Modular => ("src/apps/tasks/mod.rs", "src/apps/tasks"),
+            };
+            let module = std::fs::read_to_string(root.join(app)).unwrap();
+            assert!(module.contains("pub const APP_NAME: &str = \"tasks\";"));
+            let models = std::fs::read_to_string(root.join(path).join("models.rs")).unwrap();
+            assert!(models.contains("#[orm(app = super::APP_NAME)]"));
+            let history = root.join(path).join("migrations");
+            assert_eq!(std::fs::read_dir(history).unwrap().count(), 1);
+            startapp(StartAppOptions {
+                name: "blog".into(),
+                models: vec!["Post".into()],
+                root: root.clone(),
+                force: false,
+            })
+            .unwrap();
+            assert!(
+                std::fs::read_to_string(root.join("src/apps/mod.rs"))
+                    .unwrap()
+                    .contains(".add(blog::module())")
+            );
+            std::fs::remove_dir_all(out).unwrap();
+        }
     }
 
     #[test]

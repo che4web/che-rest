@@ -6,7 +6,6 @@ and compiled migrations in this project; do not create tables during startup.
 ## Workflow
 
 ```bash
-cargo run --bin manage -- startapp tasks --model Task
 cargo run --bin manage -- makemigrations --name initial
 cargo run --bin manage -- migrate
 cargo check --all-targets
@@ -21,6 +20,16 @@ Preserve generator markers and applied migration identities/checksums.
 Register model APIs with `ModuleContext::viewset_with`, not only `route`.
 Database operations are async. Serializers convert materialized data and must
 not query the database; load relations in the ViewSet queryset.
+
+The selected layout is `{{layout}}`. The starter Task resource is already
+registered: do not create the `tasks` app again. `single` keeps starter app files
+in `src/`, with `APP_NAME` and its AppModule in `src/lib.rs` and history in
+`src/migrations/`; `modular` keeps them in `src/apps/tasks/`.
+Models use `#[orm(app = super::APP_NAME)]`; Task's table is `tasks_task`.
+Share that constant with `AppModule::name()`. Exact `table` overrides inference.
+Use `cargo run --bin manage -- createapp blog --model Post` for additional
+modules; `startapp` is a compatible alias and both use `src/apps/<app>/` in
+either layout. Keep the initial registry empty until explicit makemigrations.
 
 This framework build uses SQLite. Changing only the URL does not enable the
 ORM's PostgreSQL backend. `Server::build()` does not apply migrations.
