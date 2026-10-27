@@ -391,7 +391,7 @@ fn validate_model_name(name: &str) -> ProjectResult<()> {
 }
 
 fn cargo_toml_template(name: &str, che_rest_path: &str, che_orm_path: &str) -> String {
-    let che_orm = dependency("che-orm", "0.3.2", che_orm_path);
+    let che_orm = dependency("che-orm", "0.3.3", che_orm_path);
     let che_rest = dependency("che-rest", env!("CARGO_PKG_VERSION"), che_rest_path);
     format!(
         r#"[package]

@@ -10,8 +10,8 @@ publish = false
 
 [dependencies]
 axum = "0.8"
-che-orm = { version = "0.3.2"{% if che_orm_path != "" %}, path = "{{che_orm_path}}"{% endif %} }
-che-rest = { version = "0.3.1"{% if che_rest_path != "" %}, path = "{{che_rest_path}}"{% endif %} }
+che-orm = { version = "0.3.3"{% if che_orm_path != "" %}, path = "{{che_orm_path}}"{% endif %} }
+che-rest = { version = "0.3.2"{% if che_rest_path != "" %}, path = "{{che_rest_path}}"{% endif %} }
 serde = { version = "1", features = ["derive"] }
 time = "0.3"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync"] }

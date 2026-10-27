@@ -239,7 +239,7 @@ dependencies = [
 
 [[package]]
 name = "che-orm"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "che-orm-macros",
  "deadpool-sqlite",
@@ -264,7 +264,7 @@ dependencies = [
 
 [[package]]
 name = "che-rest"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "argon2",
  "axum",
@@ -288,7 +288,7 @@ dependencies = [
 
 [[package]]
 name = "che-sync"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "che-orm",
  "che-sync-protocol",
