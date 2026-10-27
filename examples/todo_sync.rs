@@ -352,19 +352,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Independent edits made offline on two devices merge automatically.
-    a.save(&todo::Todo {
-        title: "Buy milk and bread".into(),
-        ..item
-    })
-    .await?;
-    b.save(&todo::Todo {
-        id: item.id,
-        title: "Buy milk".into(),
-        done: true,
-        project_id: Some(project.id),
-        ..Default::default()
-    })
-    .await?;
+    let mut first = a
+        .database()
+        .get::<todo::Todo>(item.id)
+        .await?
+        .ok_or("device A todo is missing")?;
+    let mut second = b
+        .database()
+        .get::<todo::Todo>(item.id)
+        .await?
+        .ok_or("device B todo is missing")?;
+    first.title = "Buy milk and bread".into();
+    second.done = true;
+    // Legacy models expose service columns, so the sync facade selects writable fields.
+    a.save(&first).await?;
+    b.save(&second).await?;
     drain(&ea).await?;
     drain(&eb).await?;
     drain(&ea).await?;
@@ -375,12 +377,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Project has its own endpoint, cursor and outgoing queue. Existing parent
     // edits are sent by its own engine, rather than by the Todo engine.
-    a.save(&todo::Project {
-        id: project.id,
-        title: "Home errands".into(),
-        ..Default::default()
-    })
-    .await?;
+    let mut project = a
+        .database()
+        .get::<todo::Project>(project.id)
+        .await?
+        .ok_or("project is missing")?;
+    project.title = "Home errands".into();
+    a.save(&project).await?;
     let ep = SyncEngine::for_model::<todo::Project>(
         a.clone(),
         HttpTransport {

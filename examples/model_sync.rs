@@ -50,17 +50,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         document: Some(che_orm::JsonField(json!({"labels":["offline"]}))),
         number: i64::MAX,
     };
+    // The sync facade can create a record; Database::save only updates existing rows.
+    a.save(&note).await?;
     for n in 0..10 {
         note.title = format!("offline draft {n}");
-        a.save(&note).await?;
+        note = a
+            .database()
+            .save(&note)
+            .await?
+            .ok_or("offline note was deleted")?;
     }
     assert_eq!(device_a.flush().await?.accepted_operations, 1);
     device_b.pull().await?;
     let mut other = b.database().get::<notes::Note>(note.id).await?.unwrap();
     note.title = "edited by A".into();
     other.done = true;
-    a.save(&note).await?;
-    b.save(&other).await?;
+    a.database()
+        .save(&note)
+        .await?
+        .ok_or("device A note was deleted")?;
+    b.database()
+        .save(&other)
+        .await?
+        .ok_or("device B note was deleted")?;
     device_a.flush().await?;
     device_b.pull().await?;
     device_b.flush().await?;
