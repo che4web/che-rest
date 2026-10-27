@@ -61,6 +61,12 @@ impl AppState {
         &self.database
     }
 
+    /// Replace the database handle while preserving configuration and application services.
+    pub fn with_database(mut self, database: Database) -> Self {
+        self.database = database;
+        self
+    }
+
     pub fn channels(&self) -> &Channels {
         &self.signals
     }

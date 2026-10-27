@@ -62,6 +62,19 @@ models needed for cascade/SET NULL capture. Ordinary CRUD and synchronization
 must enforce the same model-wide read access. Journal downloads do not apply
 ViewSet queryset filters.
 
+Protocol-2 models may reference ordinary tables with integer keys. Those parents
+are not included in the sync feed; clients provision their reference tables
+separately. Database foreign keys enforce their existence. Use the configured
+`SyncServer::database()` handle for ordinary parent writes too: the runtime
+inventories tracked rows around those writes and journals SQL CASCADE/SET NULL
+and trigger effects atomically. Deleted UUID identity survives in the journal.
+This currently scans sync rows for ordinary mutations; account for that cost on
+large datasets. Raw SQL and unconfigured handles bypass capture.
+
+Install this handle while preserving AppState configuration/services with
+`state.with_database(server.database().clone())`. Ordinary routes must still
+enforce their declared request permissions. This does not backfill existing data.
+
 Serializer validation and trusted preparation run on ordinary REST writes.
 Committed server values, including preparation and defaults, determine journal
 diffs. A no-op produces no revision or journal operation. Data, revisions,
