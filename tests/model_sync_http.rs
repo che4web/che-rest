@@ -503,3 +503,75 @@ async fn cleanup_survives_restart_missing_handlers_and_hook_reordering_without_n
         2
     );
 }
+
+#[tokio::test]
+async fn large_model_page_limit_preserves_cursor_and_reports_decode_context() {
+    use axum::{Json, Router, extract::Query, routing::get};
+    use std::collections::HashMap;
+    let router = Router::new().route(
+        "/notes/sync/changes/",
+        get(|Query(query): Query<HashMap<String, String>>| async move {
+            assert_eq!(query["after"], "42");
+            assert_eq!(query["limit"], "1");
+            Json(json!({"model":"notes.note", "history":"invalid"}))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let resource = RestResource::new::<notes::Note, notes::NoteSerializer>("notes").unwrap();
+    assert!(resource.clone().with_page_size_limit(0).is_err());
+    assert!(resource.clone().with_page_size_limit(1001).is_err());
+    let transport = RestModelTransport::new(
+        &base,
+        reqwest::Client::new(),
+        vec![resource.with_page_size_limit(1).unwrap()],
+    )
+    .unwrap();
+    let error = transport
+        .changes("notes.note", 42, 100)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("sync changes notes.note after 42"),
+        "{error}"
+    );
+    assert!(error.contains("invalid sync JSON"), "{error}");
+    server.abort();
+}
+
+#[tokio::test]
+async fn interrupted_response_body_is_reported_as_timeout_with_model_context() {
+    use axum::{Router, body::Body, routing::get};
+    let router = Router::new().route(
+        "/notes/sync/changes/",
+        get(|| async {
+            Body::from_stream(futures_util::stream::once(async {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                Ok::<_, std::io::Error>("{}")
+            }))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(200))
+        .build()
+        .unwrap();
+    let transport = RestModelTransport::new(
+        &base,
+        client,
+        vec![RestResource::new::<notes::Note, notes::NoteSerializer>("notes").unwrap()],
+    )
+    .unwrap();
+    let error = transport
+        .changes("notes.note", 0, 100)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("sync changes notes.note after 0"), "{error}");
+    assert!(error.contains("response body timed out"), "{error}");
+    server.abort();
+}

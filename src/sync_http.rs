@@ -9,8 +9,24 @@ pub struct RestResource {
     model: String,
     resource: String,
     fields: BTreeMap<String, String>,
+    page_size_limit: u32,
 }
 impl RestResource {
+    pub fn model_name(&self) -> &str {
+        &self.model
+    }
+
+    /// Bound downloads for models with large journal entries without changing writes.
+    pub fn with_page_size_limit(mut self, limit: u32) -> Result<Self, OrmError> {
+        if !(1..=1000).contains(&limit) {
+            return Err(OrmError::Configuration(
+                "page size limit must be 1..=1000".into(),
+            ));
+        }
+        self.page_size_limit = limit;
+        Ok(self)
+    }
+
     pub fn new<M: SyncModel, S: ModelSerializer<Model = M>>(
         resource: &str,
     ) -> Result<Self, OrmError> {
@@ -56,6 +72,7 @@ impl RestResource {
             model: M::SYNC_NAME.into(),
             resource: resource.into(),
             fields,
+            page_size_limit: 1000,
         })
     }
 }
@@ -98,8 +115,25 @@ impl RestModelTransport {
     }
 }
 fn network(error: reqwest::Error) -> OrmError {
-    OrmError::Interaction(error.to_string())
+    OrmError::Interaction(error.without_url().to_string())
 }
+async fn decode_response<T: serde::de::DeserializeOwned>(
+    response: reqwest::Response,
+    context: &str,
+) -> Result<T, OrmError> {
+    // Reading separately keeps body timeouts distinguishable from malformed JSON.
+    let bytes = response.bytes().await.map_err(|error| {
+        let reason = if error.is_timeout() {
+            "response body timed out".to_owned()
+        } else {
+            error.without_url().to_string()
+        };
+        OrmError::Interaction(format!("{context}: {reason}"))
+    })?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| OrmError::Interaction(format!("{context}: invalid sync JSON: {error}")))
+}
+
 impl ModelLogTransport for RestModelTransport {
     fn id(&self) -> &'static str {
         "che-rest.model.v2"
@@ -184,7 +218,14 @@ impl ModelLogTransport for RestModelTransport {
                         .unwrap_or("unspecified")
                 )));
             }
-            let result: ModelWriteResult = response.json().await.map_err(network)?;
+            let result: ModelWriteResult = decode_response(
+                response,
+                &format!(
+                    "sync write {} operation {}",
+                    mutation.model, mutation.operation_id
+                ),
+            )
+            .await?;
             let expected = match &result {
                 ModelWriteResult::Accepted(_) if mutation.kind == ChangeKind::Create => 201,
                 ModelWriteResult::Accepted(_) => 200,
@@ -210,17 +251,19 @@ impl ModelLogTransport for RestModelTransport {
                 .resources
                 .get(model)
                 .ok_or_else(|| OrmError::Configuration(format!("no REST resource for {model}")))?;
-            self.client
+            let response = self
+                .client
                 .get(format!("{}/{}/sync/changes/", self.base, resource.resource))
-                .query(&[("after", after.to_string()), ("limit", limit.to_string())])
+                .query(&[
+                    ("after", after.to_string()),
+                    ("limit", limit.min(resource.page_size_limit).to_string()),
+                ])
                 .send()
                 .await
                 .map_err(network)?
                 .error_for_status()
-                .map_err(network)?
-                .json()
-                .await
-                .map_err(network)
+                .map_err(network)?;
+            decode_response(response, &format!("sync changes {model} after {after}")).await
         })
     }
 }
