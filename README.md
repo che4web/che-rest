@@ -1064,3 +1064,7 @@ New migration files are created exclusively. Registry updates use a directory
 lock and atomic replacement. A competing writer fails without overwriting files.
 An interrupted process may leave `.che-migrations.lock` or `.che-mod.rs.tmp`;
 inspect the directory and confirm no writer is active before removing them.
+
+## Push notifications
+
+The optional `push` feature provides a portable notification app with compiled migrations, device registration, a durable outbox and FCM delivery. Applications supply their own event source and recipient rules. See [push integration](docs/push.md).

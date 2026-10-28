@@ -31,7 +31,7 @@ cargo generate --git https://github.com/che4web/che-rest \
 ```
 
 Use the branch containing the template. Empty dependency paths select crates.io;
-use local paths until che-rest 0.3.1 and che-orm 0.3.2 are published. Authentication
+use local paths until che-rest 0.3.3 and che-orm 0.3.3 are published. Authentication
 is enabled by default; pass `--define with_auth=false` to omit it.
 
 When using a local che-rest checkout, also select the same local che-orm checkout

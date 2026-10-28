@@ -1,6 +1,6 @@
 [package]
 name = "che-rest"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2024"
 description = "Typed REST framework and project tooling for che-orm applications"
 license = "MIT"
@@ -15,10 +15,12 @@ exclude = ["benchmarks/**", "my-project/**"]
 [features]
 default = []
 sync-http = ["dep:reqwest"]
+push = ["dep:reqwest", "dep:jsonwebtoken", "tokio/time"]
 
 [dependencies]
 axum = { version = "0.8", features = ["ws", "multipart"] }
 image = { version = "=0.25.5", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+jsonwebtoken = { version = "9.3", optional = true }
 argon2 = "0.5"
 clap = { version = "4", features = ["derive"] }
 che-orm = { version = "0.3.3", path = "../che-orm" }

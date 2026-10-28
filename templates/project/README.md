@@ -1,7 +1,7 @@
 # {{project-name}}
 
 REST application with the **{{layout}}** layout and a starter Task resource.
-Requires Rust 1.88+, che-rest 0.3.1 and che-orm 0.3.2. Review the starter model,
+Requires Rust 1.88+, che-rest 0.3.3 and che-orm 0.3.3. Review the starter model,
 generate the first migration yourself, then apply it:
 
 ```bash

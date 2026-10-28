@@ -11,6 +11,8 @@ pub mod management;
 pub mod media;
 pub mod module;
 pub mod project;
+#[cfg(feature = "push")]
+pub mod push;
 pub mod rest;
 pub mod signals;
 pub mod state;
