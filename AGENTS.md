@@ -1,7 +1,7 @@
 # AGENTS.md
 
 ## Repo Shape
-- This is a single Rust library crate, not a Cargo workspace; it depends on the sibling path `../che-orm`.
+- This is a single Rust library crate (`0.3.3`), not a Cargo workspace; it depends on the sibling path `../che-orm`. Keep the cargo-generate template and example dependency versions aligned with the library.
 - The ORM2 state/error and typed CRUD REST surface are implemented in this crate. Legacy ORM integrations are not part of the public build.
 - Public API is re-exported from `src/lib.rs`; the REST implementation lives under `src/rest`.
 - The runnable Todo desktop integration lives in the sibling `../che-tauri/examples/todo-sync` Cargo workspace. It is a downstream consumer, not a member of this crate's default checks.
@@ -11,6 +11,7 @@
 - `cargo test` is the main library and integration test check, including media storage, route authorization, and ViewSet image cleanup tests.
 - `cargo clippy --all-targets -- -D warnings` passes and is required for release verification.
 - The minimum supported Rust version is 1.88; verify packaged builds on that toolchain when changing dependencies.
+- The optional `push` feature is outside default checks. For push changes run `cargo test --all-features`, `cargo clippy --all-features --all-targets -- -D warnings`, and `cargo +1.88.0 check --features push --lib`. HTTP tests require ephemeral loopback ports.
 - After changing project templates, run `cargo test --lib project::tests::generated_project_builds_and_migrates -- --ignored`; it builds a generated authenticated application and verifies initial/repeated compiled migrations.
 
 ## Framework Gotchas
@@ -40,6 +41,7 @@
   additional apps use `src/apps/<app>/` in either layout. The original Rust
   `startproject(options)` API keeps its empty-project behavior;
   `startproject_with_layout` opts into the starter layout.
+- `scripts/check-template.py` requires the separate `cargo-generate` command (`cargo install cargo-generate`). A missing tool is an incomplete matrix check; the built-in generator smoke test alone does not replace it.
 - Run `TMPDIR=/tmp/opencode python3 scripts/check-template.py` after scaffold
   changes. It checks both generators/layouts/auth variants, migrations, cross-app
   FKs and real HTTP CRUD. The REST management backend remains SQLite.
@@ -107,3 +109,13 @@ example's frozen migrations and explicit migrate commands; do not create model
 tables or backfill journals during server/client startup.
 
 - Protocol-2 image actions explicitly wrap `ImageFieldEndpoint` / `ImageCreateEndpoint` with `.model_sync()` and register via `config.extend`. Callbacks receive a model-log-configured database; use its transaction for atomic metadata/link capture. Unwrapped media remains forbidden on sync ViewSets, and wrappers are rejected with legacy/object sync. See `docs/model-sync.md`.
+
+## Portable Push Notifications
+
+- `src/push/` is enabled only by feature `push`. `push::module(config, source)` installs the `notifications` app, authenticated `/push/status/` and register/unregister routes under the server's API prefix, and schema. Keep task, employee, project and app-specific environment-variable rules in consumers. See `docs/push.md`.
+- The module owns frozen compiled `notifications:0001_initial` and `push_devices`, `push_cursors`, `push_deliveries`; these are server-only, non-sync infrastructure without domain FK cascades. Consumer `Management` normally collects `AppModule::migrations()` automatically. If a legacy explicit registry also includes `push::migrations::all()`, exclude `notifications` from automatic library history collection. Never register it twice or regenerate a consumer copy.
+- Worker startup is explicit: after migrations and router build call `push::start` with the same config/source and configured database. `PushConfig::default()` disables sending. Enabled startup reads server-only `GOOGLE_APPLICATION_CREDENTIALS`; config sets optional Firebase project/package restrictions. Startup never migrates, backfills or proves live FCM permissions/connectivity.
+- `PushSource::{initialize,capture,relevant}` is the application boundary. Preserve supplied transactions, original fact timestamps, immutable event keys and journal history/position. Queue insertion and checkpoint updates commit atomically. Read a bounded batch; perform no network work or separate-connection writes inside capture. Recheck domain deletion/access/recipients in `relevant`.
+- Targets use a type and string ID, so consumers need neither UUID domain models nor model sync. Event data is string-to-string; the serialized content budget is 2500 bytes. Reserved transport identity fields override application data. Keep private-content choices explicit in each source.
+- Registration binds installation ID/token to the authenticated user. Rebinding bumps generation; stale jobs cancel. Keep lease-token comparisons and generation/token checks when applying send results so an old `UNREGISTERED` result cannot disable a newer registration. HTTP 429/5xx/OAuth/network failures retry; delivery is bounded and may repeat. Credentials, raw tokens and remote error bodies must not enter logs or replicated data.
+- Native SDK configuration, permission, active-account filtering, logout and navigation belong to client applications. The server module does not provide generic mobile UI or activate a Firebase project. Tests must include an independent non-sync/non-UUID domain source, atomic rollback, and consumer migration preservation; live delivery requires a separate configured device check.

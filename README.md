@@ -1,6 +1,6 @@
 # che-rest
 
-Breaking v2 REST layer for `che-orm` applications.
+Breaking v2 REST layer for `che-orm` applications. Current source version: `0.3.3`.
 
 The library targets `che-orm 0.3`. Database connection methods are async;
 REST viewsets and image actions support models with `i64` or UUID primary keys.
@@ -86,7 +86,7 @@ cargo generate --path templates/project --no-workspace
 ```
 
 See [template setup and verification](templates/README.md). This checkout prepares
-che-rest 0.3.1 with che-orm 0.3.2; select absolute local dependency paths until
+che-rest 0.3.3 with che-orm 0.3.3; select absolute local dependency paths until
 both versions are published. Empty paths select crates.io.
 When using local REST, select its matching local ORM too; mixing local and
 crates.io copies produces incompatible Model/ModelSerializer types.
@@ -1067,4 +1067,16 @@ inspect the directory and confirm no writer is active before removing them.
 
 ## Push notifications
 
-The optional `push` feature provides a portable notification app with compiled migrations, device registration, a durable outbox and FCM delivery. Applications supply their own event source and recipient rules. See [push integration](docs/push.md).
+Enable feature `push` to install the portable `notifications` application. It owns
+compiled migrations, authenticated device registration, durable checkpoints and
+outbox, retry/lease handling and FCM HTTP v1 delivery. It is independent of model
+sync and domain identifier types.
+
+Applications implement `PushSource` for event capture and current recipient checks,
+install `push::module(config, source)` and explicitly call `push::start` after
+migrations and router build. Installing the module alone does not start sending.
+The Android SDK handler, account filtering and navigation remain client concerns.
+
+See [installation, event/client contracts and checks](docs/push.md). Default checks
+do not cover this optional feature: run `cargo test --all-features` and
+`cargo clippy --all-features --all-targets -- -D warnings` for changes to it.

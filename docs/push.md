@@ -1,5 +1,7 @@
 # Portable push application
 
+Available in the `che-rest 0.3.3` source release; minimum Rust version is 1.88.
+
 Enable the optional `push` feature. It adds authenticated device registration, compiled migrations, a durable SQLite outbox, checkpoint storage, retries/leases and an FCM HTTP v1 sender. It has no dependency on application models, model-sync journals, UUID domain identifiers, Android package names or application environment-variable prefixes.
 
 ```toml
@@ -35,7 +37,7 @@ The module is named `notifications`. `AppModule::migrations()` supplies its froz
 
 Tables: `push_devices`, `push_cursors`, `push_deliveries`. These are server-only infrastructure, without domain FKs or sync replication. Domain data can use integer IDs, UUIDs or business strings; an event's `target_id` is a string.
 
-`push::start` validates the schema and server credentials and starts the five-second worker only when enabled. `PushConfig::default()` disables it and does not load credentials. Set `GOOGLE_APPLICATION_CREDENTIALS` to the path of the server-only service-account JSON; enable FCM HTTP v1 for its Firebase project. Android's `google-services.json` belongs to the consumer's build, not to this module. Keep private keys outside the repository and public files.
+`push::start` checks checkpoint-storage availability, loads service-account credentials and starts the five-second worker only when enabled. It does not authenticate against Firebase during startup or prove live IAM/network access. `PushConfig::default()` disables it and does not load credentials. Set `GOOGLE_APPLICATION_CREDENTIALS` to the path of the server-only service-account JSON; enable FCM HTTP v1 for its Firebase project. Android's `google-services.json` belongs to the consumer's build, not to this module. Keep private keys outside the repository and public files.
 
 ## Application contract
 
@@ -66,3 +68,50 @@ FCM data-only messages contain `event_id`, `target_type`, `target_id`, `user_id`
 Each consumer implements its native message handler and routing. Check the active account/server before showing anything, serialize that check with logout, request Android permission explicitly, and retain taps without replacing unsaved editors. Disable local display before attempting network unregister. Refresh registration after FCM token rotation. A Vue settings screen, native SDK integration and deep-link destination remain application UI responsibilities.
 
 Delivery is at least once, bounded by retries/expiry and Android/FCM conditions. HTTP 429/5xx/OAuth/network failures retry; only explicit FCM `UNREGISTERED` disables a token. Expired leases recover after restart. Use the stable event ID to replace duplicate native notifications. `PushSender` and `delivery::drain` allow custom transports/testing; the bundled startup helper uses FCM.
+
+## Lifecycle and retries
+
+The module's `init` phase only declares routes and schema. `AppModule::start` does
+not automatically launch the push worker. Call `push::start` explicitly after
+migrations and router build, with the same configuration/source and database.
+For sync consumers this must be the configured sync database handle.
+
+The bundled worker processes bounded captures every five seconds. It claims at
+most 50 due deliveries per drain, with a 60-second lease and a unique lease token.
+Retries respect numeric Retry-After or use exponential backoff; after 12 attempts
+a job becomes `failed`, and jobs older than two days are cancelled when processed.
+FCM retention is one day. Terminal rows are retained; no automatic terminal-row
+cleanup or failed-job resubmission is provided.
+
+`delivered` means FCM accepted the send request. It does not confirm device display,
+reading or application synchronization. Delivery can repeat after an interrupted
+send. The stable event ID lets a native client replace a duplicate notification.
+A late UNREGISTERED result is applied only to the same token/binding generation.
+
+`GET /push/status/` reports configured enablement, not transport health. Queue
+states and sanitized `last_error` codes are available through trusted server-side
+ORM/SQLite inspection; the module exposes no public queue/device listing API.
+Do not log private keys, full FCM tokens or response bodies while diagnosing it.
+
+## Verification
+
+From the che-rest checkout:
+
+```sh
+cargo fmt --check
+cargo test --all-features
+cargo clippy --all-features --all-targets -- -D warnings
+cargo +1.88.0 check --features push --lib
+```
+
+HTTP tests bind ephemeral loopback ports. Default-feature checks alone exclude
+push. The independent test source emits an invoice with a string domain ID; tests
+cover compiled-schema freshness/replay, deduplication through checkpoint progress,
+queue delivery and atomic rollback of an oversized event. Consumer migration tests
+must additionally prove preservation of their previous registrations, queued IDs,
+attempts and source checkpoints.
+
+These checks use fake senders. Test real FCM after installing the consumer's
+configured native client, including permission refusal, process closure, account
+switch/logout, token rotation and network loss. The bundled transport is for
+Android FCM; native UI/SDK integration is not supplied by che-rest.
