@@ -412,6 +412,20 @@ where
     server_for(viewset, state, principal, false).await
 }
 
+/// Image adapters use this handle for ordinary CAS writes; they never accept
+/// client sync payloads or bypass the image action's own authorization.
+pub(crate) async fn model_media_state<V: SyncViewSet>(
+    viewset: &V,
+    state: &AppState,
+    principal: Option<&CurrentPrincipal>,
+) -> AppResult<AppState>
+where
+    V::Model: SyncModel,
+{
+    let server = server_for(viewset, state, principal, true).await?;
+    Ok(state.clone().with_database(server.database().clone()))
+}
+
 async fn server_for<V: SyncViewSet>(
     viewset: &V,
     state: &AppState,

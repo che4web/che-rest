@@ -308,3 +308,18 @@ Source API changes for direct server integration: `request_receipt`,
 the earlier REST-named methods. These APIs accept data mutations and opaque
 receipt identities; HTTP request interpretation stays in che-rest. Existing
 receipts retain their encoded shape and remain replayable.
+
+## Journal-aware image actions
+
+For protocol-2 ViewSets, explicitly register
+`config.extend(ImageFieldEndpoint::new(...).model_sync())` or
+`config.extend(ImageCreateEndpoint::new(...).model_sync())`. These wrappers retain
+validation, authorization, CAS replacement and rollback file cleanup while
+providing callbacks with the configured model-log database. ORM metadata/link
+writes inside the supplied transaction are journaled atomically. Binary content
+still uses media storage and authenticated download; it is not a sync field.
+
+Unwrapped direct-write image endpoints remain rejected on sync ViewSets. The
+wrappers support `ModelSyncEndpoints` only, not legacy scoped or object delivery.
+Application callbacks must use their supplied state/transaction, not an older
+unconfigured database handle or raw SQL.

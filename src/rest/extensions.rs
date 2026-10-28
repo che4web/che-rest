@@ -241,6 +241,8 @@ impl<V: ViewSet> ViewSetConfig<V> {
         // Media's direct CAS writes need a journal-aware adapter before they can
         // share a sync ViewSet. Reject either installation order.
         let media = |id: &str| matches!(id, "image-field" | "image-create");
+        let journal_media =
+            |id: &str| matches!(id, "model-sync-image-field" | "model-sync-image-create");
         let sync = |id: &str| matches!(id, "sync" | "model-sync" | "object-sync");
         if sync(E::ID) && self.extensions.iter().any(|item| sync(item.id)) {
             return Err(AppError::BadRequest(
@@ -254,7 +256,22 @@ impl<V: ViewSet> ViewSetConfig<V> {
                 "sync and direct-write media endpoints cannot share a ViewSet".into(),
             ));
         }
-        if E::ID != "image-field" && self.extensions.iter().any(|item| item.id == E::ID) {
+        if (journal_media(E::ID)
+            && self
+                .extensions
+                .iter()
+                .any(|item| sync(item.id) && item.id != "model-sync"))
+            || (sync(E::ID)
+                && E::ID != "model-sync"
+                && self.extensions.iter().any(|item| journal_media(item.id)))
+        {
+            return Err(AppError::BadRequest(
+                "journal-aware media requires protocol 2".into(),
+            ));
+        }
+        if !matches!(E::ID, "image-field" | "model-sync-image-field")
+            && self.extensions.iter().any(|item| item.id == E::ID)
+        {
             return Err(AppError::BadRequest(format!(
                 "extension `{}` is already installed for {}",
                 E::ID,

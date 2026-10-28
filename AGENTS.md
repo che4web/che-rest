@@ -105,3 +105,5 @@ Default-feature workspace checks compile the Tauri desktop binary and exported
 command wrappers. GUI launch/inspection is a separate manual check. Preserve the
 example's frozen migrations and explicit migrate commands; do not create model
 tables or backfill journals during server/client startup.
+
+- Protocol-2 image actions explicitly wrap `ImageFieldEndpoint` / `ImageCreateEndpoint` with `.model_sync()` and register via `config.extend`. Callbacks receive a model-log-configured database; use its transaction for atomic metadata/link capture. Unwrapped media remains forbidden on sync ViewSets, and wrappers are rejected with legacy/object sync. See `docs/model-sync.md`.

@@ -147,6 +147,38 @@ pub type ImageWrite<V> = fn(
     ValidatedWrite<<V as ViewSet>::Model>,
 ) -> AppResult<ValidatedWrite<<V as ViewSet>::Model>>;
 
+type ImageState<V> =
+    for<'a> fn(&'a V, &'a AppState, Option<&'a CurrentPrincipal>) -> ImageFuture<'a, AppState>;
+
+fn model_sync_image_state<'a, V: crate::SyncViewSet>(
+    viewset: &'a V,
+    state: &'a AppState,
+    principal: Option<&'a CurrentPrincipal>,
+) -> ImageFuture<'a, AppState>
+where
+    V::Model: che_orm::SyncModel,
+{
+    Box::pin(crate::sync::model_media_state(viewset, state, principal))
+}
+
+/// Explicit protocol-2 image adapter. CAS writes use the configured model-log
+/// database, so the image metadata and its journal operation commit together.
+#[derive(Clone)]
+pub struct ModelSyncImageFieldEndpoint<V: ViewSet>(ImageFieldEndpoint<V>);
+/// Protocol-2 image creation with journal-aware domain callback transactions.
+pub struct ModelSyncImageCreateEndpoint<
+    V: ViewSet,
+    R: ApiSchema + serde::Serialize + Send + Sync + 'static,
+>(ImageCreateEndpoint<V, R>);
+
+impl<V: ViewSet, R: ApiSchema + serde::Serialize + Send + Sync + 'static> Clone
+    for ModelSyncImageCreateEndpoint<V, R>
+{
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
 /// Declares automatic upload/replace and clear actions for a nullable image
 /// field of an existing ViewSet model.
 pub struct ImageFieldEndpoint<V: ViewSet> {
@@ -157,6 +189,7 @@ pub struct ImageFieldEndpoint<V: ViewSet> {
     pub authorize: Option<ImageAuthorize<V>>,
     pub before: Option<ImageBefore<V>>,
     pub write: Option<ImageWrite<V>>,
+    prepare_state: Option<ImageState<V>>,
 }
 
 impl<V: ViewSet> Clone for ImageFieldEndpoint<V> {
@@ -169,6 +202,7 @@ impl<V: ViewSet> Clone for ImageFieldEndpoint<V> {
             authorize: self.authorize,
             before: self.before,
             write: self.write,
+            prepare_state: self.prepare_state,
         }
     }
 }
@@ -192,6 +226,7 @@ impl<V: ViewSet> ImageFieldEndpoint<V> {
             authorize: None,
             before: None,
             write: None,
+            prepare_state: None,
         }
     }
 
@@ -206,6 +241,15 @@ impl<V: ViewSet> ImageFieldEndpoint<V> {
     pub fn write(mut self, callback: ImageWrite<V>) -> Self {
         self.write = Some(callback);
         self
+    }
+
+    pub fn model_sync(mut self) -> ModelSyncImageFieldEndpoint<V>
+    where
+        V: crate::SyncViewSet,
+        V::Model: che_orm::SyncModel,
+    {
+        self.prepare_state = Some(model_sync_image_state::<V>);
+        ModelSyncImageFieldEndpoint(self)
     }
 
     async fn model(
@@ -311,6 +355,10 @@ impl<V: ViewSet> ImageFieldEndpoint<V> {
         id: <V::Model as Model>::PrimaryKey,
         multipart: Multipart,
     ) -> AppResult<axum::Json<ImageUploadResponse>> {
+        let state = match self.prepare_state {
+            Some(prepare) => prepare(&viewset, &state, principal.as_ref()).await?,
+            None => state,
+        };
         let form = parse_image_form(multipart, self.policy.max_bytes).await?;
         let bytes = form
             .file
@@ -354,6 +402,10 @@ impl<V: ViewSet> ImageFieldEndpoint<V> {
         id: <V::Model as Model>::PrimaryKey,
         multipart: Multipart,
     ) -> AppResult<StatusCode> {
+        let state = match self.prepare_state {
+            Some(prepare) => prepare(&viewset, &state, principal.as_ref()).await?,
+            None => state,
+        };
         let form = parse_image_form(multipart, self.policy.max_bytes).await?;
         if form.file.is_some() {
             return Err(AppError::BadRequest(
@@ -466,6 +518,7 @@ pub struct ImageCreateEndpoint<V: ViewSet, R: ApiSchema + serde::Serialize + Sen
     pub create: ImageCreateAction<R>,
     pub namespace: &'static str,
     pub method: &'static str,
+    prepare_state: Option<ImageState<V>>,
     _marker: std::marker::PhantomData<fn() -> V>,
 }
 
@@ -479,6 +532,7 @@ impl<V: ViewSet, R: ApiSchema + serde::Serialize + Send + Sync + 'static> Clone
             create: self.create,
             namespace: self.namespace,
             method: self.method,
+            prepare_state: self.prepare_state,
             _marker: std::marker::PhantomData,
         }
     }
@@ -500,16 +554,31 @@ impl<V: ViewSet, R: ApiSchema + serde::Serialize + Send + Sync + 'static>
             create,
             namespace,
             method,
+            prepare_state: None,
             _marker: std::marker::PhantomData,
         }
+    }
+
+    pub fn model_sync(mut self) -> ModelSyncImageCreateEndpoint<V, R>
+    where
+        V: crate::SyncViewSet,
+        V::Model: che_orm::SyncModel,
+    {
+        self.prepare_state = Some(model_sync_image_state::<V>);
+        ModelSyncImageCreateEndpoint(self)
     }
 
     async fn upload(
         &self,
         state: AppState,
+        viewset: V,
         who: Option<CurrentPrincipal>,
         multipart: Multipart,
     ) -> AppResult<(StatusCode, axum::Json<R>)> {
+        let state = match self.prepare_state {
+            Some(prepare) => prepare(&viewset, &state, who.as_ref()).await?,
+            None => state,
+        };
         let form = parse_image_form(multipart, self.policy.max_bytes).await?;
         V::Permission::default()
             .check_request((&state).into(), who.as_ref(), ViewAction::Create)
@@ -542,10 +611,15 @@ impl<V: ViewSet, R: ApiSchema + serde::Serialize + Send + Sync + 'static> ViewSe
             let upload = endpoint.clone();
             route.post(
                 move |Extension(state): Extension<AppState>,
+                      Extension(viewset): Extension<V>,
                       who: Option<Extension<CurrentPrincipal>>,
                       form: Multipart| {
                     let endpoint = upload.clone();
-                    async move { endpoint.upload(state, who.map(|value| value.0), form).await }
+                    async move {
+                        endpoint
+                            .upload(state, viewset, who.map(|value| value.0), form)
+                            .await
+                    }
                 },
                 OperationSpec::new(format!("{}.image.create", context_id::<V>()))
                     .authenticated()
@@ -555,6 +629,26 @@ impl<V: ViewSet, R: ApiSchema + serde::Serialize + Send + Sync + 'static> ViewSe
                     .client(endpoint.namespace, endpoint.method),
             )
         })
+    }
+}
+
+impl<V: crate::SyncViewSet> ViewSetExtension<V> for ModelSyncImageFieldEndpoint<V>
+where
+    V::Model: che_orm::SyncModel,
+{
+    const ID: &'static str = "model-sync-image-field";
+    fn install(self, context: &mut ExtensionContext<'_, V>) -> AppResult<()> {
+        self.0.install(context)
+    }
+}
+impl<V: crate::SyncViewSet, R: ApiSchema + serde::Serialize + Send + Sync + 'static>
+    ViewSetExtension<V> for ModelSyncImageCreateEndpoint<V, R>
+where
+    V::Model: che_orm::SyncModel,
+{
+    const ID: &'static str = "model-sync-image-create";
+    fn install(self, context: &mut ExtensionContext<'_, V>) -> AppResult<()> {
+        self.0.install(context)
     }
 }
 
