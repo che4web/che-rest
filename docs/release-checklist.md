@@ -2,9 +2,19 @@
 
 ## Prepare
 
-The current release candidate is **che-rest 0.3.1**, requiring **che-orm 0.3.2**,
-**che-sync 0.1.0**, and Rust **1.88+**. The generated project dependency versions
+The current release candidate is **che-rest 0.3.3**, requiring **che-orm 0.3.3**,
+**che-sync 0.1.1 or a compatible patch**, and Rust **1.88+**. The prepared sync
+candidate is **0.1.2**. The generated project dependency versions
 in `src/project.rs` and `templates/project/Cargo.toml` must match.
+
+### Upgrade notes for 0.3.3
+
+- Push notifications are optional (`push` feature). Install the `notifications`
+  module, explicitly apply its compiled migration, and start delivery separately
+  with the configured database and application-owned PushSource.
+- Keep Firebase service-account credentials server-side. See [push](push.md).
+- Preserve submitted sync operations, journals and receipts across upgrades.
+  Large model downloads can use per-resource page limits without changing writes.
 
 ### Upgrade notes for 0.3.1
 
@@ -104,12 +114,24 @@ check; a successful desktop build only verifies compilation.
 ## Publish
 
 1. Confirm all dependency releases are indexed on crates.io. For the sibling
-   crates, the publication order is `che-orm-macros 0.3.2`, `che-orm 0.3.2`,
-   `che-sync-protocol 0.1.0`, `che-sync 0.1.0`, then `che-rest 0.3.1`. Skip versions
+   crates, the publication order is `che-orm-macros 0.3.2`, `che-orm 0.3.3`,
+   `che-sync-protocol 0.1.0`, `che-sync 0.1.2`, then `che-rest 0.3.3`. Skip versions
    that are already published.
 2. Run `cargo publish --dry-run` again after dependencies are indexed, then
    `cargo publish` from a clean `che-rest` worktree.
 3. Verify the crate page and docs.rs build, then create the matching Git tag and release.
+
+### Candidate verification (2026-11-02)
+
+- Tests with all features, all-target Clippy with warnings denied, documentation
+  and Rust 1.88 all-target compilation passed.
+- The six sibling package archives, including che-sync 0.1.2 and che-tauri 0.1.2,
+  packaged together. Extracted ORM/REST/sync sources passed Rust 1.88 SQLite/HTTP
+  and PostgreSQL compilation; extracted che-tauri passed on current stable.
+- Tacit mobile offline/attachment/comment/whiteboard/push tests and the shared
+  Todo HTTP integration passed against the prepared dependency versions.
+- No candidate was published. che-orm 0.3.3 and che-sync 0.1.2 must be indexed
+  before the ordinary che-rest registry dry run can succeed.
 
 ### 0.3.1 publication status
 

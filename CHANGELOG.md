@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 0.3.3
+
+- Add the optional portable push module with device registration, durable
+  delivery queues, recipient rechecks and opt-in Firebase sending.
+- Keep application recipient rules in the supplied PushSource and delivery
+  startup explicit; include frozen notifications migrations.
+
+## 0.3.2
+
+- Add journal-aware protocol-2 image actions with conditional replacement and
+  generated multipart clients.
+- Bound large model download pages and include model/cursor context in response
+  body timeout and JSON decoding errors.
+- Require che-orm 0.3.3 and che-sync 0.1.1 or a compatible patch release.
+
 ## 0.3.1
 
 - Add protocol-2 per-model synchronization, REST HTTP transports and independently
