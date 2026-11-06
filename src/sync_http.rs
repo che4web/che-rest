@@ -78,11 +78,18 @@ impl RestResource {
 }
 
 pub struct RestModelTransport {
+    batched_changes: bool,
     base: String,
     client: reqwest::Client,
     resources: BTreeMap<String, RestResource>,
 }
 impl RestModelTransport {
+    /// Opt in to POST /sync/changes/; requires a server exposing the batch action.
+    /// Write payload identity and pending receipts are unchanged.
+    pub fn with_batched_changes(mut self) -> Self {
+        self.batched_changes = true;
+        self
+    }
     /// Configure bearer/token authentication and timeouts on `client`. The base
     /// URL includes the API prefix, e.g. https://host/api. Credentials are never
     /// persisted inside the immutable request body.
@@ -111,6 +118,7 @@ impl RestModelTransport {
             base: base.trim_end_matches('/').into(),
             client,
             resources: mappings,
+            batched_changes: false,
         })
     }
 }
@@ -238,6 +246,47 @@ impl ModelLogTransport for RestModelTransport {
                 ));
             }
             Ok(result)
+        })
+    }
+    fn changes_many<'a>(
+        &'a self,
+        models: Vec<ModelJournalRequest>,
+        limit: u32,
+    ) -> TransportFuture<'a, Option<Vec<ModelJournalPage>>> {
+        Box::pin(async move {
+            if !self.batched_changes {
+                return Ok(None);
+            }
+            if models.is_empty()
+                || models.len() > 100
+                || limit < models.len() as u32
+                || limit > 1000
+            {
+                return Err(OrmError::Configuration(
+                    "invalid batch journal request".into(),
+                ));
+            }
+            // Preserve per-resource download caps with the endpoint's equal quotas.
+            let mut cap = 1000;
+            for model in &models {
+                let resource = self.resources.get(&model.model).ok_or_else(|| {
+                    OrmError::Configuration(format!("no REST resource for {}", model.model))
+                })?;
+                cap = cap.min(resource.page_size_limit);
+            }
+            let limit = limit.min(cap.saturating_mul(models.len() as u32));
+            let response = self
+                .client
+                .post(format!("{}/sync/changes/", self.base))
+                .json(&crate::sync::JournalChangesRequest { models, limit })
+                .send()
+                .await
+                .map_err(network)?
+                .error_for_status()
+                .map_err(network)?;
+            let response: crate::sync::JournalChangesResponse =
+                decode_response(response, "batch sync changes").await?;
+            Ok(Some(response.models))
         })
     }
     fn changes<'a>(

@@ -69,6 +69,12 @@
 - Keep `cargo fmt --check`, `cargo test`, frontend builds, and the `cli_fullstack` smoke test passing when changing this surface.
 - SyncViewSet writes use the ordinary POST/PATCH/PUT/DELETE routes with serializer validation and preparation. Conditional sync headers carry revision, offline UUID and receipt identity; there is no sync/push route. RestSyncRequest encodes single-record writes, and HTTP transports advertise max_mutations() == 1. Preserve canonical sync-mode responses, transactional receipts/journal and independently retryable lifecycle effects.
 
+## Batched journal reads
+- `JournalChangesRequest`/`JournalChangesResponse` in `src/sync.rs` define the HTTP contract. Applications mount the standalone action; `ModelSyncEndpoints` does not mount an aggregate endpoint automatically. Use `authorize_model_journal` for every participating ViewSet; object-scoped policies fail closed.
+- `ModuleContext::actions(resource, name, config)` registers standalone typed actions without CRUD. Such `ApiEndpoint` entries have `crud = false`; generators must include extension methods/types and exclude model CRUD and admin pages.
+- `RestModelTransport::with_batched_changes()` explicitly enables POST `{base}/sync/changes/`. Default transports retain individual GETs. Preserve `che-rest.model.v2`, legacy payload keys and immutable submitted writes. No silent fallback on HTTP errors. Resource download caps bound equal batch quotas using the smallest configured cap.
+- Batch engine/cursor storage belongs in che-sync; REST owns URLs, authentication and HTTP DTOs. Verify with `cargo test --features sync-http`, including `batch_download_sends_explicit_positions_and_preserves_resource_cap`.
+
 ## Per-model Synchronization
 - Prefer `ModelSyncEndpoints` with `ModelLogClient` for protocol 2; `SyncEndpoints` and the existing `todo_sync` example retain the scoped legacy protocol. Do not silently migrate existing client databases or pending requests.
 - Register role-specific `server_model` / `client_model` schemas and apply compiled migrations. Existing server data requires explicit `SyncServer::backfill_model_log`; startup and journal GET must not backfill automatically.

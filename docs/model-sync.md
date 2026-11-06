@@ -26,6 +26,33 @@ The integration test in `tests/model_sync_http.rs` additionally simulates a lost
 reply after commit and reopens the client before retrying the immutable request.
 All example databases are in memory; deployed clients need persistent SQLite.
 
+## Optional batched downloads
+
+Applications can mount authenticated `POST /api/sync/changes/` with
+`JournalChangesRequest` and `JournalChangesResponse`. It accepts explicit
+`{ model, cursor: { history, after } | null }` entries and a total `limit`.
+`after` is a decimal string. The application must authorize every requested
+ViewSet with `authorize_model_journal` before using `SyncServer::changes_many`.
+Register the action with `ModuleContext::actions` to expose its schema/client
+method without mounting CRUD. Installing `ModelSyncEndpoints` alone does not
+create this application-wide route.
+
+Enable the batch transport only with a server that implements the route:
+
+```rust
+let transport = RestModelTransport::new(api_base, http_client, resources)?
+    .with_batched_changes();
+```
+ The default transport keeps individual journal GETs;
+an opted-in transport propagates HTTP errors without falling back. Existing
+write identity, saved payloads and settlement are unchanged. Resource download
+caps bound the equal batch quotas using the smallest resource cap.
+
+The che-sync engine owns cursor/history storage, response validation and
+registry-order application. `reset_required` blocks new submissions and retains
+pending local work. No protocol version or database migration is required for
+batch transport. File bytes and object-sync protocol 3 remain separate.
+
 ## Model and server
 
 Use a UUID primary key and stable model identity:

@@ -575,3 +575,65 @@ async fn interrupted_response_body_is_reported_as_timeout_with_model_context() {
     assert!(error.contains("response body timed out"), "{error}");
     server.abort();
 }
+
+#[tokio::test]
+async fn batch_download_sends_explicit_positions_and_preserves_resource_cap() {
+    use axum::{Json, Router, routing::post};
+    let seen = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+    let captured = seen.clone();
+    let app = Router::new().route("/api/sync/changes/", post(move |headers: axum::http::HeaderMap, Json(body): Json<serde_json::Value>| {
+        let captured = captured.clone();
+        async move {
+            assert_eq!(headers["authorization"], "Token secret");
+            captured.lock().unwrap().push(body.clone());
+            Json(json!({"models":[{"model":body["models"][0]["model"],"status":"reset_required"}]}))
+        }
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/api", listener.local_addr().unwrap());
+    let serving = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let resource = RestResource::new::<notes::Note, notes::NoteSerializer>("notes")
+        .unwrap()
+        .with_page_size_limit(3)
+        .unwrap();
+    let model = resource.model_name().to_string();
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("authorization", "Token secret".parse().unwrap());
+    let client = reqwest::Client::builder()
+        .default_headers(headers)
+        .build()
+        .unwrap();
+    let transport = RestModelTransport::new(&base, client, vec![resource]).unwrap();
+    let history = Uuid::now_v7();
+    let request = vec![ModelJournalRequest {
+        model,
+        cursor: Some(ModelJournalCursor {
+            history,
+            after: 9007199254740993,
+        }),
+    }];
+    assert!(
+        transport
+            .changes_many(request.clone(), 100)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(seen.lock().unwrap().is_empty());
+    let pages = transport
+        .with_batched_changes()
+        .changes_many(request, 100)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(pages[0], ModelJournalPage::ResetRequired { .. }));
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0]["limit"], 3);
+    assert_eq!(seen[0]["models"][0]["cursor"]["after"], "9007199254740993");
+    assert_eq!(
+        seen[0]["models"][0]["cursor"]["history"],
+        history.to_string()
+    );
+    serving.abort();
+}
