@@ -49,7 +49,7 @@ fn admin_schema(endpoints: &[ApiEndpoint]) -> String {
     let mut out = HEADER.to_owned();
     out.push_str("import {\n");
     let mut apps = Vec::new();
-    for endpoint in endpoints {
+    for endpoint in endpoints.iter().filter(|endpoint| endpoint.crud) {
         out.push_str(&format!("  {}Api,\n", api_name(endpoint, endpoints)));
     }
     out.push_str("} from \"../../generated/api\";\n\n");
@@ -57,7 +57,7 @@ fn admin_schema(endpoints: &[ApiEndpoint]) -> String {
     out.push_str(
         "export interface AdminField { name: string; source: string; type: AdminFieldType; label: string; readOnly: boolean; writeOnly: boolean; required: boolean; nullable: boolean; hasDefault: boolean; choices?: string[]; relatedModel?: string; relationField?: string; }\n\nexport interface AdminFilter { name: string; source: string; type: AdminFieldType; label: string; nullable: boolean; choices?: string[]; }\n\nexport interface AdminModelApi { list: (params?: any) => Promise<{ count: number; results: any[] }>; retrieve: (id: number | string) => Promise<any>; create: (payload: any) => Promise<any>; update: (id: number | string, payload: any) => Promise<any>; remove: (id: number | string) => Promise<void>; }\n\nexport interface AdminModel { appName: string; name: string; resource: string; api: AdminModelApi; fields: AdminField[]; listFields: string[]; filters: AdminFilter[]; }\nexport interface AdminApp { name: string; models: AdminModel[]; }\n\nexport const adminModels: AdminModel[] = [\n",
     );
-    for endpoint in endpoints {
+    for endpoint in endpoints.iter().filter(|endpoint| endpoint.crud) {
         out.push_str("  {\n");
         out.push_str(&format!(
             "    appName: {}, name: {}, resource: {}, api: {}Api,\n",
@@ -129,11 +129,11 @@ fn admin_schema(endpoints: &[ApiEndpoint]) -> String {
         out.push_str("    ],\n  },\n");
     }
     out.push_str("];\n\n");
-    for endpoint in endpoints {
+    for endpoint in endpoints.iter().filter(|endpoint| endpoint.crud) {
         out.push_str(&format!("export const {}AdminModel = adminModels.find((model) => model.appName === {} && model.resource === {}) as AdminModel;\n", api_name(endpoint, endpoints), js(endpoint.app_name), js(&endpoint.resource)));
     }
     out.push_str("\nexport const adminApps: AdminApp[] = [\n");
-    for endpoint in endpoints {
+    for endpoint in endpoints.iter().filter(|endpoint| endpoint.crud) {
         if apps.contains(&endpoint.app_name) {
             continue;
         }
@@ -320,7 +320,7 @@ fn static_files(endpoints: &[ApiEndpoint]) -> Vec<(String, String)> {
             .into(),
         ),
     ]);
-    for endpoint in endpoints {
+    for endpoint in endpoints.iter().filter(|endpoint| endpoint.crud) {
         let page = page_name(endpoint, endpoints);
         let api = api_name(endpoint, endpoints);
         files.push((format!("src/admin/pages/{page}List.vue"), format!("<script setup lang=\"ts\">import {{ {api}AdminModel }} from \"../generated/adminSchema\"; import GenericModelTable from \"../components/GenericModelTable.vue\";</script><template><GenericModelTable :model=\"{api}AdminModel\" /></template>\n")));
@@ -332,12 +332,12 @@ fn static_files(endpoints: &[ApiEndpoint]) -> Vec<(String, String)> {
 fn admin_routes(endpoints: &[ApiEndpoint]) -> String {
     let mut out = HEADER.to_owned();
     out.push_str("import type { RouteRecordRaw } from \"vue-router\";\nimport AdminModelList from \"../AdminModelList.vue\";\n");
-    for endpoint in endpoints {
+    for endpoint in endpoints.iter().filter(|endpoint| endpoint.crud) {
         let page = page_name(endpoint, endpoints);
         out.push_str(&format!("import {page}List from \"../pages/{page}List.vue\";\nimport {page}Form from \"../pages/{page}Form.vue\";\n"));
     }
     out.push_str("\nexport const adminRoutes: RouteRecordRaw[] = [\n  { path: \"\", component: AdminModelList },\n");
-    for endpoint in endpoints {
+    for endpoint in endpoints.iter().filter(|endpoint| endpoint.crud) {
         let page = page_name(endpoint, endpoints);
         out.push_str(&format!("  {{ path: {}, component: {page}List }},\n  {{ path: {}, component: {page}Form }},\n  {{ path: {}, component: {page}Form }},\n", js(&endpoint.resource), js(&format!("{}/new", endpoint.resource)), js(&format!("{}/:id/edit", endpoint.resource))));
     }
@@ -473,6 +473,7 @@ mod tests {
 
     fn endpoint(app_name: &'static str, model_name: &str) -> ApiEndpoint {
         ApiEndpoint {
+            crud: true,
             app_name,
             model_name: model_name.into(),
             resource: model_name.to_ascii_lowercase(),

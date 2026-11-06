@@ -1,7 +1,7 @@
 # AGENTS.md
 
 ## Repo Shape
-- This is a single Rust library crate (`0.3.3`), not a Cargo workspace; it depends on the sibling path `../che-orm`. Keep the cargo-generate template and example dependency versions aligned with the library.
+- This is a single Rust library crate (`0.3.4`), not a Cargo workspace; it depends on the sibling path `../che-orm`. Keep the cargo-generate template and example dependency versions aligned with the library.
 - The ORM2 state/error and typed CRUD REST surface are implemented in this crate. Legacy ORM integrations are not part of the public build.
 - Public API is re-exported from `src/lib.rs`; the REST implementation lives under `src/rest`.
 - The runnable Todo desktop integration lives in the sibling `../che-tauri/examples/todo-sync` Cargo workspace. It is a downstream consumer, not a member of this crate's default checks.

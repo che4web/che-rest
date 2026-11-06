@@ -264,7 +264,7 @@ dependencies = [
 
 [[package]]
 name = "che-rest"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "argon2",
  "axum",
@@ -289,7 +289,7 @@ dependencies = [
 
 [[package]]
 name = "che-sync"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "che-orm",
  "che-sync-protocol",

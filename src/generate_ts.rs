@@ -209,10 +209,14 @@ fn api(endpoints: &[ApiEndpoint]) -> String {
             ));
             continue;
         }
-        out.push_str(&format!(
+        if !endpoint.crud {
+            out.push_str(&format!("export const {name}Api = {{\n"));
+        } else {
+            out.push_str(&format!(
             "const {name}Crud = createModelApi<{}, {}Create, {}Update, {}ListParams, {list_item}>(\"{}\");\nexport const {name}Api = {{\n  ...{name}Crud,\n",
             endpoint.model_name, endpoint.model_name, endpoint.model_name, endpoint.model_name, endpoint.resource
         ));
+        }
         for extension in &endpoint.extensions {
             let mut operations = extension
                 .operations
@@ -414,7 +418,7 @@ fn lower_first(value: &str) -> String {
 
 fn unique_models(endpoints: &[ApiEndpoint]) -> Vec<&ApiEndpoint> {
     let mut models = BTreeMap::new();
-    for endpoint in endpoints {
+    for endpoint in endpoints.iter().filter(|endpoint| endpoint.crud) {
         models
             .entry(endpoint.model_name.as_str())
             .or_insert(endpoint);
@@ -674,6 +678,7 @@ mod tests {
             openapi: serde_json::json!({}),
         };
         let mut endpoint = ApiEndpoint {
+            crud: true,
             app_name: "boards",
             model_name: "Board".into(),
             resource: "boards".into(),
@@ -714,6 +719,12 @@ mod tests {
             related_model: None,
             many: false,
         });
+        let mut actions = endpoint.clone();
+        actions.crud = false;
+        let action_output = api(&[actions.clone()]);
+        assert!(action_output.contains("export const boardApi = {"));
+        assert!(!action_output.contains("const boardCrud"));
+        assert!(!models(&[actions]).contains("export interface Board {"));
         let uuid_output = api(&[endpoint]);
         assert!(uuid_output.contains("async replace(id: string, file: Blob"));
         assert!(uuid_output.contains("async clear(id: string, fields?"));
@@ -731,6 +742,7 @@ mod tests {
             many: false,
         };
         let endpoint = ApiEndpoint {
+            crud: true,
             app_name: "diagrams",
             model_name: "Board".into(),
             resource: "boards".into(),
@@ -753,6 +765,7 @@ mod tests {
     #[test]
     fn generates_nested_model_and_typed_write_dtos() {
         let endpoint = ApiEndpoint {
+            crud: true,
             app_name: "tasks",
             model_name: "Task".into(),
             resource: "tasks".into(),
@@ -862,6 +875,7 @@ mod tests {
         description.source = "description";
         description.rust_type = "String";
         let endpoint = ApiEndpoint {
+            crud: true,
             app_name: "knowledge",
             model_name: "Module".into(),
             resource: "modules".into(),
@@ -880,6 +894,7 @@ mod tests {
     #[test]
     fn duplicate_model_endpoints_use_resource_api_names() {
         let user = ApiEndpoint {
+            crud: true,
             app_name: "auth",
             model_name: "User".into(),
             resource: "users".into(),
@@ -890,6 +905,7 @@ mod tests {
             extensions: vec![],
         };
         let assignees = ApiEndpoint {
+            crud: true,
             app_name: "tasks",
             resource: "task-assignees".into(),
             ..user.clone()

@@ -1796,3 +1796,59 @@ impl ApiSchema for Snapshot {
 pub(crate) fn add_object_rest_openapi(document: &mut Value) {
     objects::add_openapi(document);
 }
+
+/// Check the same whole-model permission and sync policy as a model journal GET.
+pub async fn authorize_model_journal<V: SyncViewSet>(
+    viewset: &V,
+    state: &AppState,
+    principal: &CurrentPrincipal,
+) -> AppResult<()>
+where
+    V::Model: SyncModel,
+{
+    let permission = V::Permission::default();
+    if permission.object_scoped() {
+        return Err(AppError::Forbidden(
+            "whole-model journal access required".into(),
+        ));
+    }
+    permission
+        .check_request(state.into(), Some(principal), ViewAction::List)
+        .await?;
+    viewset
+        .sync_policy()
+        .authorize_scope(
+            &principal.auth_user().id.to_string(),
+            che_sync::model_log::MODEL_LOG_SCOPE,
+        )
+        .map_err(|e| AppError::Forbidden(e.to_string()))
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct JournalChangesRequest {
+    pub models: Vec<che_sync::model_log::ModelJournalRequest>,
+    pub limit: u32,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct JournalChangesResponse {
+    pub models: Vec<che_sync::model_log::ModelJournalPage>,
+}
+impl ApiSchema for JournalChangesRequest {
+    fn api_schema() -> ApiSchemaDefinition {
+        ApiSchemaDefinition {
+            name: "JournalChangesRequest",
+            openapi: json!({"type":"object","required":["models","limit"],"properties":{"limit":{"type":"integer","minimum":1,"maximum":1000},"models":{"type":"array","minItems":1,"maxItems":100,"items":{"type":"object","required":["model","cursor"],"properties":{"model":{"type":"string"},"cursor":{"type":"object","nullable":true,"required":["history","after"],"properties":{"history":{"type":"string","format":"uuid"},"after":{"type":"string","pattern":"^[0-9]+$"}}}}}}}}),
+            typescript: "export interface JournalChangesRequest { models: { model: string; cursor: { history: string; after: string } | null }[]; limit: number; }",
+        }
+    }
+}
+impl ApiSchema for JournalChangesResponse {
+    fn api_schema() -> ApiSchemaDefinition {
+        let operation = <che_sync::model_log::ModelChanges as ApiSchema>::api_schema().openapi["properties"]["operations"].clone();
+        ApiSchemaDefinition {
+            name: "JournalChangesResponse",
+            openapi: json!({"type":"object","required":["models"],"properties":{"models":{"type":"array","items":{"oneOf":[{"type":"object","required":["model","status"],"properties":{"model":{"type":"string"},"status":{"type":"string","enum":["reset_required"]}}},{"type":"object","required":["model","status","operations","cursor","has_more"],"properties":{"model":{"type":"string"},"status":{"type":"string","enum":["changes"]},"operations":operation,"cursor":{"type":"object","required":["history","after"],"properties":{"history":{"type":"string","format":"uuid"},"after":{"type":"string"}}},"has_more":{"type":"boolean"}}}]}}}}),
+            typescript: "export interface JournalChangesResponse { models: ({ model: string; status: 'reset_required' } | { model: string; status: 'changes'; operations: { id: string; record_id: string; revision: string; kind: 'create' | 'update' | 'delete'; diff: { field: string; old_value?: unknown; new_value?: unknown; old_sql_null?: boolean; new_sql_null?: boolean }[]; created_at: string; schema_version: number }[]; cursor: { history: string; after: string }; has_more: boolean })[]; }",
+        }
+    }
+}

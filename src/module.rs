@@ -46,6 +46,8 @@ pub trait AppModule: Send + Sync + 'static {
 
 #[derive(Debug, Clone)]
 pub struct ApiEndpoint {
+    /// False for standalone actions without model CRUD.
+    pub crud: bool,
     pub app_name: &'static str,
     pub model_name: String,
     pub resource: String,
@@ -194,6 +196,31 @@ impl ModuleContext {
         self.routers.push(router);
     }
 
+    /// Register standalone typed actions without mounting model CRUD.
+    pub fn actions<V: ViewSet>(&mut self, resource: &str, name: &str, config: ViewSetConfig<V>) {
+        let (router, extensions, schemas, _) = config.into_parts();
+        let document = crate::rest::extensions::extension_openapi(&extensions);
+        if let Some(paths) = document["paths"].as_object() {
+            self.openapi_paths.extend(paths.clone());
+        }
+        for schema in schemas {
+            self.openapi_components
+                .insert(schema.name.into(), schema.openapi);
+        }
+        self.api_endpoints.push(ApiEndpoint {
+            crud: false,
+            app_name: self.current_app,
+            model_name: name.into(),
+            resource: resource.into(),
+            fields: vec![],
+            list_fields: vec![],
+            columns: vec![],
+            filters: vec![],
+            extensions,
+        });
+        self.routers.push(router);
+    }
+
     pub fn route_at_root(&mut self, router: Router) {
         self.root_routers.push(router);
     }
@@ -275,6 +302,7 @@ impl ModuleContext {
         }
 
         self.api_endpoints.push(ApiEndpoint {
+            crud: true,
             app_name: self.current_app,
             model_name: std::any::type_name::<V::Model>()
                 .rsplit("::")
