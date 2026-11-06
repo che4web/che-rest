@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.3.4
+
+- Add explicit batched protocol-2 journal download DTOs and whole-model
+  authorization helpers for application-wide changes endpoints.
+- Add opt-in `RestModelTransport::with_batched_changes()`; retain individual
+  GETs by default and preserve submitted write payloads and transport identity.
+- Register standalone typed actions through `ModuleContext::actions` without
+  generating CRUD clients or admin pages. `ApiEndpoint` struct literals must
+  now set `crud: true` for model endpoints (`false` for standalone actions).
+- Require che-sync 0.1.3; retain che-orm 0.3.3 and Rust 1.88 minimums.
+- No automatic journal initialization, client reset or migration is introduced.
+- Refresh generated admin and fullstack example build dependencies to patched
+  Vite 6.4.5 and vue-tsc 3.3.14; refresh example lock files.
+
 ## 0.3.3
 
 - Add the optional portable push module with device registration, durable

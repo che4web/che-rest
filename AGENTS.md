@@ -125,3 +125,8 @@ tables or backfill journals during server/client startup.
 - Targets use a type and string ID, so consumers need neither UUID domain models nor model sync. Event data is string-to-string; the serialized content budget is 2500 bytes. Reserved transport identity fields override application data. Keep private-content choices explicit in each source.
 - Registration binds installation ID/token to the authenticated user. Rebinding bumps generation; stale jobs cancel. Keep lease-token comparisons and generation/token checks when applying send results so an old `UNREGISTERED` result cannot disable a newer registration. HTTP 429/5xx/OAuth/network failures retry; delivery is bounded and may repeat. Credentials, raw tokens and remote error bodies must not enter logs or replicated data.
 - Native SDK configuration, permission, active-account filtering, logout and navigation belong to client applications. The server module does not provide generic mobile UI or activate a Firebase project. Tests must include an independent non-sync/non-UUID domain source, atomic rollback, and consumer migration preservation; live delivery requires a separate configured device check.
+
+## Current publication candidate
+
+- che-rest 0.3.4 requires che-sync 0.1.3; publish sync first, then rerun the REST registry dry run after indexing.
+- See `docs/release-checklist.md` for checks and publication order. Package preparation and `cargo publish --dry-run` do not authorize an actual publication.

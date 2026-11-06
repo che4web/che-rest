@@ -1,11 +1,23 @@
 # crates.io Release Checklist
 
+See [the current verification report](release-verification-2026-11-06.md) for
+completed checks, artifacts and the remaining registry publication gate.
+
 ## Prepare
 
-The current release candidate is **che-rest 0.3.3**, requiring **che-orm 0.3.3**,
-**che-sync 0.1.1 or a compatible patch**, and Rust **1.88+**. The prepared sync
-candidate is **0.1.2**. The generated project dependency versions
+The current release candidate is **che-rest 0.3.4**, requiring **che-orm 0.3.3**,
+**che-sync 0.1.3**, and Rust **1.88+**. The generated project dependency versions
 in `src/project.rs` and `templates/project/Cargo.toml` must match.
+
+### Upgrade notes for 0.3.4
+
+- Batched journal reads are explicit opt-in and require an application-mounted
+  aggregate endpoint; installing `ModelSyncEndpoints` alone does not mount it.
+- Standalone actions register schemas/client methods without CRUD/admin pages.
+  Downstream `ApiEndpoint` struct literals must include the new `crud` flag.
+- Keep durable per-model positions, immutable submitted writes and adapter
+  identity. History resets block new submissions without deleting client work.
+- No automatic DDL, backfill, protocol switch or database migration is added.
 
 ### Upgrade notes for 0.3.3
 
@@ -47,11 +59,11 @@ in `src/project.rs` and `templates/project/Cargo.toml` must match.
 
 ```bash
 cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test --features sync-http
+cargo clippy --all-features --all-targets -- -D warnings
+cargo test --all-features
 cargo run --features sync-http --example model_sync
 cargo run --example todo_sync
-cargo +1.88.0 check --all-targets --features sync-http --locked
+cargo +1.88.0 check --all-targets --all-features --locked
 cargo test --lib project::tests::generated_project_builds_and_migrates -- --ignored
 TMPDIR=/tmp/opencode python3 scripts/check-template.py
 node --experimental-strip-types --test tests/admin_identity.mjs
@@ -113,10 +125,11 @@ check; a successful desktop build only verifies compilation.
 
 ## Publish
 
-1. Confirm all dependency releases are indexed on crates.io. For the sibling
-   crates, the publication order is `che-orm-macros 0.3.2`, `che-orm 0.3.3`,
-   `che-sync-protocol 0.1.0`, `che-sync 0.1.2`, then `che-rest 0.3.3`. Skip versions
-   that are already published.
+1. Confirm all dependency releases are indexed on crates.io. The registry check on 2026-11-06 confirmed
+   `che-orm-macros 0.3.2`, `che-orm 0.3.3`, `che-sync-protocol 0.1.0`,
+   `che-sync 0.1.2` and `che-rest 0.3.3` are published and not yanked.
+   Publish only new `che-sync 0.1.3`, wait for indexing, then `che-rest 0.3.4`.
+   Do not republish unchanged dependencies or move old tags.
 2. Run `cargo publish --dry-run` again after dependencies are indexed, then
    `cargo publish` from a clean `che-rest` worktree.
 3. Verify the crate page and docs.rs build, then create the matching Git tag and release.

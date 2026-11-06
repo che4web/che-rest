@@ -1,6 +1,6 @@
 # che-rest
 
-Breaking v2 REST layer for `che-orm` applications. Current source version: `0.3.3`.
+Breaking v2 REST layer for `che-orm` applications. Current source version: `0.3.4`.
 
 The library targets `che-orm 0.3`. Database connection methods are async;
 REST viewsets and image actions support models with `i64` or UUID primary keys.
@@ -46,6 +46,11 @@ and returns `Option<Model>`; it never inserts a missing record. Use the returned
 model to retain refreshed managed fields. For a selected-field update of a stale
 object, use `database.update::<Model>(id).set(...).execute().await?` instead.
 
+Applications can register a typed aggregate journal action and opt in with
+`RestModelTransport::with_batched_changes()` to download explicit per-model
+cursors in one request. Existing per-model endpoints and write identities remain
+unchanged; this does not create a global cursor or switch wire protocols.
+
 See [`docs/model-sync.md`](docs/model-sync.md) for setup, migrations and access
 rules. The scoped pull/snapshot protocol and `todo_sync` example remain available
 for explicitly managed [legacy clients](docs/sync.md).
@@ -86,8 +91,8 @@ cargo generate --path templates/project --no-workspace
 ```
 
 See [template setup and verification](templates/README.md). This checkout prepares
-che-rest 0.3.3 with che-orm 0.3.3; select absolute local dependency paths until
-both versions are published. Empty paths select crates.io.
+che-rest 0.3.4 with che-orm 0.3.3 and che-sync 0.1.3; select absolute local
+dependency paths until the new REST/sync versions are published. Empty paths select crates.io.
 When using local REST, select its matching local ORM too; mixing local and
 crates.io copies produces incompatible Model/ModelSerializer types.
 
