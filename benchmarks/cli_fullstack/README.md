@@ -54,7 +54,7 @@ For fewer than 500 seed rows, choose an existing ID with `--retrieve-id`, e.g. `
 ## Run
 
 ```bash
-python3 benchmarks/cli_fullstack/run.py --requests 10000 --concurrency 50 --workers 4
+python3 benchmarks/cli_fullstack/run.py --requests 10000 --concurrency 50 --workers 8
 ```
 
 The read-only scenarios are:
@@ -65,7 +65,7 @@ The read-only scenarios are:
 
 Servers run **one at a time** on loopback ports 3101–3104. Each scenario has a
 warmup (200 requests by default, configurable with `--warmup`) followed by Apache
-Bench with HTTP keep-alive. Python uses four Uvicorn worker processes by default;
+Bench with HTTP keep-alive. Python uses eight Uvicorn worker processes by default;
 Rust uses its Tokio multithread runtime and a four-connection database pool.
 These are different concurrency models, not an equal-CPU allocation.
 

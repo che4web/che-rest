@@ -164,7 +164,7 @@ def main() -> None:
     parser.add_argument("--database", type=Path, default=BENCHMARK / "benchmark.sqlite")
     parser.add_argument("--requests", type=positive, default=10_000)
     parser.add_argument("--concurrency", type=positive, default=50)
-    parser.add_argument("--workers", type=positive, default=4)
+    parser.add_argument("--workers", type=positive, default=8)
     parser.add_argument("--retrieve-id", type=positive, default=500)
     parser.add_argument("--warmup", type=positive, default=200)
     parser.add_argument("--output", type=Path, default=BENCHMARK / "results.json")
