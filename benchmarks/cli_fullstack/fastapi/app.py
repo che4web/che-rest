@@ -20,25 +20,17 @@ def task_payload(row: sqlite3.Row) -> dict:
     return {
         "id": row["id"],
         "author": {"id": row["author_id"], "username": row["username"]},
+        "assignee_id": row["assignee_id"],
         "name": row["name"],
+        "status": row["status"],
         "created_at": time_payload(row["created_at"]),
         "updated_at": time_payload(row["updated_at"]),
     }
 
 
-def time_payload(value: str) -> list[int]:
+def time_payload(value: str) -> str:
     timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    return [
-        timestamp.year,
-        timestamp.timetuple().tm_yday,
-        timestamp.hour,
-        timestamp.minute,
-        timestamp.second,
-        timestamp.microsecond * 1000,
-        0,
-        0,
-        0,
-    ]
+    return timestamp.isoformat().replace("+00:00", "Z")
 
 
 @app.get("/api/tasks/")
@@ -62,7 +54,7 @@ def list_tasks(
             f"SELECT COUNT(*) FROM tasks_task t{where}", values
         ).fetchone()[0]
         rows = connection.execute(
-            f"""SELECT t.id, t.author_id, u.username, t.name, t.created_at, t.updated_at
+            f"""SELECT t.id, t.author_id, u.username, t.assignee_id, t.name, t.status, t.created_at, t.updated_at
                 FROM tasks_task t JOIN auth_users u ON u.id = t.author_id
                 {where} ORDER BY t.{order} {direction} LIMIT ? OFFSET ?""",
             [*values, limit, offset],
@@ -74,7 +66,7 @@ def list_tasks(
 def retrieve_task(task_id: int):
     with connect() as connection:
         row = connection.execute(
-            """SELECT t.id, t.author_id, u.username, t.name, t.created_at, t.updated_at
+            """SELECT t.id, t.author_id, u.username, t.assignee_id, t.name, t.status, t.created_at, t.updated_at
                FROM tasks_task t JOIN auth_users u ON u.id = t.author_id WHERE t.id = ?""",
             [task_id],
         ).fetchone()

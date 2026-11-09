@@ -1,62 +1,83 @@
-# cli_fullstack Read Benchmark
+# cli_fullstack read benchmark
 
-This compares the `cli_fullstack` task list/retrieve endpoints with equivalent Python servers:
-FastAPI using direct `sqlite3`, FastAPI using SQLAlchemy ORM, and Django ORM. All servers read the
-same SQLite database and return the same nested task JSON.
+Compares the current `cli_fullstack` task list/retrieve endpoints with FastAPI using
+direct `sqlite3`, FastAPI using SQLAlchemy ORM, and Django ORM. Every server reads
+the same SQLite database and returns the same `TaskSerializer` JSON, including
+nested `author`, nullable `assignee_id`, `status`, and timestamps. ORM servers load
+the author eagerly, as the REST ViewSet does.
 
-## Prepare
+Requirements: Rust/Cargo, Python 3.11+, `uv`, and Apache Bench (`ab`). Atlas is not
+used. Run commands from the repository root.
 
-From the repository root:
+## Build and prepare
 
 ```bash
-cargo build --release --manifest-path examples/cli_fullstack/Cargo.toml
+cargo build --release --manifest-path examples/cli_fullstack/Cargo.toml --bins
 python3 benchmarks/cli_fullstack/prepare.py --rows 10000
 ```
 
-Preparation removes and recreates `benchmark.sqlite`, applies the checked-in Atlas migration, and
-seeds one user plus 10,000 tasks. It never uses `db.sqlite`.
+The separate `benchmark_schema` binary applies the framework's compiled auth
+migrations and a disposable fixture migration derived from the current Rust
+`Task` schema. This is not production migration history: application startup is
+unchanged and never creates model tables. Rebuild the binaries after model changes.
+
+Preparation seeds one user and 10,000 tasks, covering all three status values and
+both null/non-null assignees. It refuses to replace an existing database unless
+`--force` is supplied. A new seed is built in a staging directory and replaces
+the destination only after successful migration and insertion. Stop all database
+users before replacement. The default is `benchmarks/cli_fullstack/benchmark.sqlite`;
+the application's `db.sqlite` is not used.
+
+```bash
+python3 benchmarks/cli_fullstack/prepare.py --rows 10000 --force
+```
+
+Both scripts accept `--database PATH` for a separate fixture file. Rust receives
+an isolated temporary config pointing at that file; no application config is edited.
+Use plain `sqlite://PATH` URLs with the current ORM backend, not SQLx-style
+`?mode=rwc` query parameters.
 
 ## Validate
 
 ```bash
 python3 benchmarks/cli_fullstack/run.py --parity
+python3 -m unittest discover -s benchmarks/cli_fullstack -p 'test_*.py'
 ```
 
-The parity scenarios are:
+Parity compares parsed JSON from all four servers for ordered lists, filtered
+lists, a paginated list, an empty result, and detail retrieval. List responses
+exercise enum values and nullable relations. `--parity` validates only; every
+normal load run also performs these checks before measuring anything.
 
-- `GET /api/tasks/?limit=50&ordering=-created_at`
-- `GET /api/tasks/?limit=50&name__contains=task`
-- `GET /api/tasks/500/`
+For fewer than 500 seed rows, choose an existing ID with `--retrieve-id`, e.g. `50`.
 
-## Benchmark
+## Run
 
 ```bash
 python3 benchmarks/cli_fullstack/run.py --requests 10000 --concurrency 50 --workers 4
 ```
 
-The benchmark runs Rust and FastAPI sequentially against the same database file. It reports Apache
-Bench requests/sec, mean time/request, and failed requests for list, filtered-list, and retrieve.
-The default workload is read-only by design: writes would measure SQLite locking and require a DB
-reset between frameworks rather than provide a clean framework comparison.
+The read-only scenarios are:
 
-Use `--retrieve-id` when the seed contains fewer than 500 rows, for example `--retrieve-id 50`.
-The `--parity` flag only validates responses and does not run the load benchmark.
+- `GET /api/tasks/?limit=50&ordering=-created_at`
+- `GET /api/tasks/?limit=50&name__contains=task`
+- `GET /api/tasks/500/`
 
-Requirements: Rust/Cargo, Python 3.11+, `uv`, and Apache Bench (`ab`). Atlas is only required when
-regenerating migrations.
+Servers run **one at a time** on loopback ports 3101–3104. Each scenario has a
+warmup (200 requests by default, configurable with `--warmup`) followed by Apache
+Bench with HTTP keep-alive. Python uses four Uvicorn worker processes by default;
+Rust uses its Tokio multithread runtime and a four-connection database pool.
+These are different concurrency models, not an equal-CPU allocation.
 
-The Django server can also be started directly:
+The runner prints requests/sec, mean request latency (`concurrency / throughput`,
+not the across-concurrency time reported by `ab`), p95 latency, failed requests,
+and non-2xx responses. Any request failures or non-2xx responses invalidate the
+run. Readiness errors include the HTTP response and server log instead of hiding
+broken endpoints behind a startup timeout. Servers are stopped and reaped on exit.
 
-```bash
-BENCHMARK_DATABASE="$PWD/benchmarks/cli_fullstack/benchmark.sqlite" \
-uv run --project benchmarks/cli_fullstack/django \
-  uvicorn config.asgi:application --host 127.0.0.1 --port 3104 --workers 4
-```
-
-The SQLAlchemy server can also be started directly:
-
-```bash
-BENCHMARK_DATABASE="$PWD/benchmarks/cli_fullstack/benchmark.sqlite" \
-uv run --project benchmarks/cli_fullstack/fastapi_sqlalchemy \
-  uvicorn app:app --host 127.0.0.1 --port 3103 --workers 4
-```
+Results and workload settings are saved to `benchmarks/cli_fullstack/results.json`
+(override with `--output PATH`). Timings describe a single local run; repeat runs
+on an otherwise idle host before drawing conclusions. Access logging is disabled
+for Python, and neither framework performs request-time auth database lookups on
+these public task reads. Writes are deliberately excluded: comparing SQLite lock
+contention requires resetting the database between frameworks.

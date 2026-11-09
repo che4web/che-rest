@@ -8,24 +8,16 @@ ORDERING = {"id": "id", "name": "name", "created_at": "created_at", "updated_at"
 
 
 def time_payload(value):
-    return [
-        value.year,
-        value.timetuple().tm_yday,
-        value.hour,
-        value.minute,
-        value.second,
-        value.microsecond * 1000,
-        0,
-        0,
-        0,
-    ]
+    return value.isoformat().replace("+00:00", "Z")
 
 
 def task_payload(task):
     return {
         "id": task.id,
         "author": {"id": task.author.id, "username": task.author.username},
+        "assignee_id": task.assignee_id,
         "name": task.name,
+        "status": task.status,
         "created_at": time_payload(task.created_at),
         "updated_at": time_payload(task.updated_at),
     }

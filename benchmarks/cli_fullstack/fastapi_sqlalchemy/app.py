@@ -1,11 +1,11 @@
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from sqlalchemy import ForeignKey, String, create_engine, func, select
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, joinedload, mapped_column, relationship
 
 
 DATABASE = Path(os.environ.get("BENCHMARK_DATABASE", "../benchmark.sqlite")).resolve()
@@ -34,10 +34,12 @@ class Task(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     author_id: Mapped[int] = mapped_column(ForeignKey("auth_users.id"))
+    assignee_id: Mapped[int | None] = mapped_column(ForeignKey("auth_users.id"))
     name: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String)
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
-    author: Mapped[User] = relationship()
+    author: Mapped[User] = relationship(foreign_keys=[author_id])
 
 
 def session() -> Session:
@@ -48,25 +50,18 @@ def session() -> Session:
 Database = Annotated[Session, Depends(session)]
 
 
-def time_payload(value: datetime) -> list[int]:
-    return [
-        value.year,
-        value.timetuple().tm_yday,
-        value.hour,
-        value.minute,
-        value.second,
-        value.microsecond * 1000,
-        0,
-        0,
-        0,
-    ]
+def time_payload(value: datetime) -> str:
+    # SQLite's SQLAlchemy datetime reader returns naive values; the seed is UTC.
+    return value.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def task_payload(task: Task) -> dict:
     return {
         "id": task.id,
         "author": {"id": task.author.id, "username": task.author.username},
+        "assignee_id": task.assignee_id,
         "name": task.name,
+        "status": task.status,
         "created_at": time_payload(task.created_at),
         "updated_at": time_payload(task.updated_at),
     }
@@ -94,7 +89,7 @@ def list_tasks(
         raise HTTPException(status_code=400, detail=f"unknown ordering field: {field_name}")
     condition = Task.name.contains(name__contains) if name__contains is not None else None
     count_query = select(func.count()).select_from(Task)
-    task_query = select(Task).join(Task.author)
+    task_query = select(Task).options(joinedload(Task.author, innerjoin=True))
     if condition is not None:
         count_query = count_query.where(condition)
         task_query = task_query.where(condition)
@@ -107,7 +102,7 @@ def list_tasks(
 
 @app.get("/api/tasks/{task_id}/")
 def retrieve_task(task_id: int, database: Database):
-    task = database.scalar(select(Task).join(Task.author).where(Task.id == task_id))
+    task = database.scalar(select(Task).options(joinedload(Task.author, innerjoin=True)).where(Task.id == task_id))
     if task is None:
         raise HTTPException(status_code=404, detail="Not Found")
     return task_payload(task)
