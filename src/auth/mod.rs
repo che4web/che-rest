@@ -11,7 +11,7 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-#[cfg(test)]
+#[cfg(all(test, feature = "sqlite"))]
 use che_orm::ProjectState;
 use che_orm::{Migration, Model};
 
@@ -270,7 +270,7 @@ pub async fn auth_middleware(
             .database()
             .query::<AuthToken>()
             .filter(AuthToken::KEY_HASH.eq(token_hash(token)))
-            .first(state.database())
+            .first()
             .await
         else {
             return crate::AppError::Unauthorized("invalid token".into()).into_response();
@@ -340,7 +340,7 @@ async fn load_session(state: &AppState, key: &str) -> Option<(CurrentSession, Us
         .database()
         .query::<AuthSession>()
         .filter(AuthSession::KEY_HASH.eq(token_hash(key)))
-        .first(state.database())
+        .first()
         .await
         .ok()??;
     if session.expires_at <= OffsetDateTime::now_utc() {
@@ -491,7 +491,7 @@ pub fn token_hash(token: &str) -> String {
     hex::encode(Sha256::digest(token.as_bytes()))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use std::sync::{
         Arc,
@@ -1008,5 +1008,5 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "sqlite"))]
 mod access_tests;

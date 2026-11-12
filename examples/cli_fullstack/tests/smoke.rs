@@ -1,3 +1,5 @@
+#![cfg(feature = "sqlite")]
+
 use std::{
     fs,
     time::{SystemTime, UNIX_EPOCH},

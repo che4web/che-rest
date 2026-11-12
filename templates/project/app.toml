@@ -1,5 +1,7 @@
 [database]
-url = "sqlite://db.sqlite?mode=rwc"
+{% if backend == "postgres" %}url = "postgresql://localhost/che_rest"
+{% else %}url = "sqlite://db.sqlite?mode=rwc"
+{% endif %}
 max_connections = 64
 
 [server]

@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import re
 import signal
 import socket
 import sqlite3
@@ -52,11 +53,18 @@ def validate_database(database: Path, retrieve_id: int) -> int:
         count = connection.execute("SELECT COUNT(*) FROM tasks_task").fetchone()[0]
         if not connection.execute("SELECT 1 FROM tasks_task WHERE id = ?", (retrieve_id,)).fetchone():
             raise RuntimeError(f"task {retrieve_id} does not exist; choose --retrieve-id from the seed")
+        canonical = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{9}Z")
+        for dates in connection.execute("SELECT created_at, updated_at FROM tasks_task"):
+            if any(not isinstance(value, str) or not canonical.fullmatch(value) for value in dates):
+                raise RuntimeError("outdated benchmark datetime format; recreate the fixture with prepare.py or explicitly migrate it")
         return count
 
 
 @contextmanager
-def server(name: str, port: int, database: Path, workers: int):
+def server(name: str, port: int, database: Path, workers: int, *, postgres_url=None, rust_binary=None,
+           rust_pool_size=4, django_pool_size=0):
+    if django_pool_size < 0 or (django_pool_size and not postgres_url):
+        raise ValueError("Django pooling requires PostgreSQL and a positive per-worker pool size")
     with socket.socket() as probe:
         probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         probe.bind(("127.0.0.1", port))
@@ -64,21 +72,29 @@ def server(name: str, port: int, database: Path, workers: int):
         directory = Path(directory)
         if name == "che-rest":
             config = (
-                f"[database]\nurl = {json.dumps(f'sqlite://{database}')}\nmax_connections = 4\n"
+                f"[database]\nurl = {json.dumps(postgres_url or f'sqlite://{database}')}\nmax_connections = {rust_pool_size}\n"
                 f'[server]\nhost = "127.0.0.1"\nport = {port}\napi_prefix = "/api"\n'
             )
             (directory / "app.toml").write_text(config)
-            command, cwd = [str(RUST_BINARY)], directory
+            command, cwd = [str(rust_binary or RUST_BINARY)], directory
         else:
             project = BENCHMARK / name.replace("-", "_")
             application = "config.asgi:application" if name == "django" else "app:app"
-            command = ["uv", "run", "--project", str(project), "uvicorn", application,
+            extras = ["--extra", "pool"] if name == "django" and django_pool_size else []
+            command = ["uv", "run", "--exact", "--locked", "--project", str(project), *extras, "uvicorn", application,
                        "--host", "127.0.0.1", "--port", str(port), "--workers", str(workers),
                        "--no-access-log"]
             cwd = project
         with (directory / "server.log").open("w+") as log:
+            env = {**os.environ, "BENCHMARK_DATABASE": str(database)}
+            env.pop("BENCHMARK_POSTGRES_URL", None)
+            env.pop("BENCHMARK_DJANGO_POOL_SIZE", None)
+            if postgres_url:
+                env["BENCHMARK_POSTGRES_URL"] = postgres_url
+            if name == "django" and django_pool_size:
+                env["BENCHMARK_DJANGO_POOL_SIZE"] = str(django_pool_size)
             process = subprocess.Popen(command, cwd=cwd,
-                                       env={**os.environ, "BENCHMARK_DATABASE": str(database)},
+                                       env=env,
                                        start_new_session=True, stdout=log, stderr=log)
             try:
                 wait_for(f"http://127.0.0.1:{port}/api/tasks/?limit=1", process)

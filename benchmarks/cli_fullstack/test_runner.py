@@ -1,4 +1,7 @@
 import importlib.util
+import json
+import os
+import runpy
 import sqlite3
 import subprocess
 import tempfile
@@ -6,6 +9,7 @@ import unittest
 import urllib.error
 from pathlib import Path
 from unittest.mock import Mock, patch
+from types import SimpleNamespace
 
 
 SPEC = importlib.util.spec_from_file_location("benchmark_runner", Path(__file__).with_name("run.py"))
@@ -24,6 +28,58 @@ Time per request:       0.810 [ms] (mean, across all concurrent requests)
 
 
 class RunnerTests(unittest.TestCase):
+    def test_django_pool_is_per_worker_and_uses_optional_psycopg3(self):
+        with patch.object(runner.subprocess, "Popen") as launch, \
+             patch.object(runner, "wait_for"), patch.object(runner.os, "killpg"):
+            with runner.server("django", 0, Path("unused"), 8,
+                               postgres_url="postgresql://localhost/bench", django_pool_size=4):
+                args, kwargs = launch.call_args
+                self.assertIn("--exact", args[0])
+                self.assertIn("--locked", args[0])
+                self.assertEqual(args[0][args[0].index("--extra") + 1], "pool")
+                self.assertEqual(kwargs["env"]["BENCHMARK_DJANGO_POOL_SIZE"], "4")
+
+    def test_django_pool_settings_keep_request_cleanup_and_bound_connections(self):
+        parser = Mock(return_value={"dbname": "bench", "host": "localhost", "options": "-csearch_path=bench"})
+        with patch.dict(os.environ, {"BENCHMARK_POSTGRES_URL": "postgresql://localhost/bench",
+                                     "BENCHMARK_DJANGO_POOL_SIZE": "4"}), \
+             patch.dict("sys.modules", {"psycopg.conninfo": SimpleNamespace(conninfo_to_dict=parser)}):
+            config = runpy.run_path(str(Path(__file__).parent / "django/config/settings.py"))["DATABASES"]["default"]
+        self.assertEqual(config["CONN_MAX_AGE"], 0)
+        self.assertEqual(config["NAME"], "bench")
+        self.assertEqual(config["OPTIONS"]["options"], "-csearch_path=bench")
+        self.assertEqual(config["OPTIONS"]["pool"], {"min_size": 4, "max_size": 4, "timeout": 30})
+
+    def test_django_pool_rejects_sqlite(self):
+        with self.assertRaisesRegex(ValueError, "requires PostgreSQL"):
+            with runner.server("django", 0, Path("fixture.sqlite"), 8, django_pool_size=4):
+                self.fail("pool must be rejected before starting a server")
+
+    def test_postgres_server_preserves_full_url_and_binary_selection(self):
+        url = "postgresql://user@localhost/benchmark?sslmode=require&options=-csearch_path%3Dbench"
+        with patch.object(runner.subprocess, "Popen") as launch, \
+             patch.object(runner, "wait_for"), patch.object(runner.os, "killpg"):
+            with runner.server("che-rest", 0, Path("unused"), 8, postgres_url=url,
+                               rust_binary=Path("/postgres-release/cli_fullstack"), rust_pool_size=32):
+                args, kwargs = launch.call_args
+                self.assertEqual(args[0], ["/postgres-release/cli_fullstack"])
+                self.assertEqual(kwargs["env"]["BENCHMARK_POSTGRES_URL"], url)
+                config = (kwargs["cwd"] / "app.toml").read_text()
+                self.assertIn("url = " + json.dumps(url), config)
+                self.assertIn("max_connections = 32", config)
+
+    def test_sqlite_server_does_not_inherit_postgres_url(self):
+        with patch.dict(os.environ, {"BENCHMARK_POSTGRES_URL": "postgresql://wrong/target",
+                                     "BENCHMARK_DJANGO_POOL_SIZE": "32"}), \
+             patch.object(runner.subprocess, "Popen") as launch, \
+             patch.object(runner, "wait_for"), patch.object(runner.os, "killpg"):
+            with runner.server("che-rest", 0, Path("/fixture.sqlite"), 8):
+                self.assertNotIn("BENCHMARK_POSTGRES_URL", launch.call_args.kwargs["env"])
+                self.assertNotIn("BENCHMARK_DJANGO_POOL_SIZE", launch.call_args.kwargs["env"])
+                config = (launch.call_args.kwargs["cwd"] / "app.toml").read_text()
+                self.assertIn("sqlite:///fixture.sqlite", config)
+                self.assertIn("max_connections = 4", config)
+
     def test_latency_is_not_overwritten_by_throughput_time(self):
         values = runner.parse_ab(AB_OUTPUT)
         self.assertEqual(values["requests_per_second"], 1234.56)
@@ -72,13 +128,24 @@ class RunnerTests(unittest.TestCase):
             database = Path(directory) / "benchmark.sqlite"
             with sqlite3.connect(database) as connection:
                 connection.execute("CREATE TABLE tasks_task (id, author_id, assignee_id, name, status, created_at, updated_at)")
-                connection.execute("INSERT INTO tasks_task (id) VALUES (1)")
+                connection.execute("INSERT INTO tasks_task (id, created_at, updated_at) VALUES (1, ?, ?)",
+                                   ("2026-01-01T00:00:00.000000000Z",) * 2)
             self.assertEqual(runner.validate_database(database, 1), 1)
             with self.assertRaisesRegex(RuntimeError, "task 500 does not exist"):
                 runner.validate_database(database, 500)
 
 
 class PrepareTests(unittest.TestCase):
+    def test_mixed_datetime_formats_are_rejected_before_benchmarking(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "benchmark.sqlite"
+            with sqlite3.connect(database) as connection:
+                connection.execute("CREATE TABLE tasks_task (id, author_id, assignee_id, name, status, created_at, updated_at)")
+                connection.execute("INSERT INTO tasks_task (id, created_at, updated_at) VALUES (1, ?, ?)",
+                                   ("2026-01-01T00:00:00Z", "2026-01-01T00:00:00.000000000Z"))
+            with self.assertRaisesRegex(RuntimeError, "outdated benchmark datetime format"):
+                runner.validate_database(database, 1)
+
     def test_existing_database_requires_force(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "benchmark.sqlite"
@@ -114,6 +181,10 @@ class PrepareTests(unittest.TestCase):
                                  {"draft", "in_progress", "done"})
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM tasks_task WHERE assignee_id IS NULL").fetchone()[0], 3)
                 self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+                for dates in connection.execute("SELECT created_at, updated_at FROM tasks_task"):
+                    for value in dates:
+                        self.assertEqual(len(value), 30)
+                        self.assertTrue(value.endswith(".000000000Z"))
 
 
 if __name__ == "__main__":

@@ -1,3 +1,5 @@
+#![cfg(feature = "sqlite")]
+
 #[path = "../examples/todo_sync/support.rs"]
 mod todo;
 
@@ -6,7 +8,7 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
-use che_orm::{OrmError, Uuid};
+use che_orm::{Model, OrmError, Uuid};
 use che_rest::Server;
 use che_sync::{SchemaRole, SyncClient, SyncEngine, SyncTransport, TransportFuture, protocol::*};
 use serde::{Serialize, de::DeserializeOwned};
@@ -257,17 +259,13 @@ async fn todo_endpoint_automatically_synchronizes_fk_parent_and_project_has_its_
         "independent parent edit"
     );
     // Optional UUID relation querysets are supported by the REST adapter too.
-    let queryset = state
-        .database()
-        .query::<todo::Todo>()
-        .select_related(todo::Todo::PROJECT);
+    let queryset =
+        che_orm::DatabaseQuery::new(todo::Todo::query()).select_related(todo::Todo::PROJECT);
     let loaded = che_rest::RestQuerySet::all(queryset, state.database())
         .await
         .unwrap();
     assert_eq!(loaded.len(), 1);
-    let reverse = state
-        .database()
-        .query::<todo::Project>()
+    let reverse = che_orm::DatabaseQuery::new(todo::Project::query())
         .prefetch_related(todo::Todo::PROJECT.reverse());
     assert_eq!(
         che_rest::RestQuerySet::all(reverse, state.database())

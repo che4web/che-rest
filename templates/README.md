@@ -7,7 +7,7 @@ cargo install cargo-generate --version 0.23.7 --locked
 ```
 
 Generate interactively from a local checkout. Prompts ask for the project name,
-dependency paths, authentication and the `single`/`modular` layout:
+dependency paths, backend, authentication and the `single`/`modular` layout:
 
 ```bash
 cargo generate --path templates/project --no-workspace
@@ -31,7 +31,7 @@ cargo generate --git https://github.com/che4web/che-rest \
 ```
 
 Use the branch containing the template. Empty dependency paths select crates.io;
-use local paths until che-rest 0.3.4 and its che-sync 0.1.3 dependency are published. Authentication
+use local paths until che-orm 0.4.0, che-sync 0.2.0 and che-rest 0.4.0 are published. Authentication
 is enabled by default; pass `--define with_auth=false` to omit it.
 
 When using a local che-rest checkout, also select the same local che-orm checkout
@@ -67,16 +67,24 @@ AppModule. `makemigrations` selects these directories automatically; no shared
 `src/migrations` registry or `--dir` is needed. Copy an app with its migrations and
 register its module in the destination project's installed apps.
 
-This framework build uses SQLite; PostgreSQL selection requires porting the
-framework's SQLite-specific management operations first.
+SQLite is the default; use `--define backend=postgres` for PostgreSQL and set
+the database URL in `app.toml` before migrating. Generated manifests forward
+backend features consistently. The CLI generator uses its own compiled backend
+as the generated project's default. To switch an existing SQLite-default project,
+use `--no-default-features --features postgres` for every build/run and supply a
+PostgreSQL URL. Changing the URL alone does not select a backend.
 
 ## Verification
 
 ```bash
 TMPDIR=/tmp/opencode python3 scripts/check-template.py
+TEST_POSTGRES_URL='postgresql://localhost/test_database' \
+  TMPDIR=/tmp/opencode python3 scripts/check-template.py --backend postgres
 ```
 
 The script checks both generators, both layouts, authentication on/off, initial
 and repeated migrations, createapp, a cross-app FK, HTTP CRUD and OpenAPI.
+PostgreSQL checks also require `psql` and permission to create/drop schemas;
+each generated application uses an isolated schema, cleaned up when the script exits.
 Use `--generator cargo-generate` or `--generator cli` and `--layout single` or
 `--layout modular` to narrow it. `--published` uses crates.io after publication.

@@ -8,16 +8,20 @@ use std::{
 };
 
 use che_orm::{
-    Database, Migration, MigrationGraph, MigrationId, MigrationOperation, Model, SchemaSet,
-    SqliteDialect, operations_from_changes, render_migration_rust,
+    CurrentDialect, Database, Migration, MigrationGraph, MigrationId, MigrationOperation, Model,
+    SchemaSet, operations_from_changes, render_migration_rust,
 };
 use clap::{Parser, Subcommand};
 
 use crate::auth::{User, hash_password};
+#[cfg(feature = "sqlite")]
 use crate::config::sqlite_path;
 use crate::{AppConfig, AppModule, AppState, InstalledApps, StartAppOptions, StartProjectOptions};
 
 type ManageResult<T> = Result<T, Box<dyn std::error::Error>>;
+
+#[cfg(all(test, feature = "postgres"))]
+mod postgres_tests;
 
 #[derive(Debug, Parser)]
 #[command(name = "manage", about = "Project management commands")]
@@ -333,11 +337,9 @@ impl Management {
                 }
                 let config = AppConfig::from_file(config)?;
                 if plan {
-                    let result = tokio::task::spawn_blocking(move || {
-                        operation_migration_plan(&config, self.migrations)
-                    })
-                    .await?
-                    .map_err(|error| error as Box<dyn std::error::Error>)?;
+                    let result = operation_migration_plan_for_backend(&config, self.migrations)
+                        .await
+                        .map_err(|error| error as Box<dyn std::error::Error>)?;
                     print!("{result}");
                     return Ok(());
                 }
@@ -371,11 +373,10 @@ impl Management {
             }
             CommandKind::Showmigrations { app, config } => {
                 let config = AppConfig::from_file(config)?;
-                let result = tokio::task::spawn_blocking(move || {
-                    operation_migration_list(&config, self.migrations, app.as_deref())
-                })
-                .await?
-                .map_err(|error| error as Box<dyn std::error::Error>)?;
+                let result =
+                    operation_migration_list_for_backend(&config, self.migrations, app.as_deref())
+                        .await
+                        .map_err(|error| error as Box<dyn std::error::Error>)?;
                 print!("{result}");
             }
             CommandKind::Createsuperuser {
@@ -385,7 +386,7 @@ impl Management {
             } => create_superuser(username, password, config).await?,
             CommandKind::GenerateTs { out, config } => {
                 AppConfig::from_file(config)?;
-                let state = AppState::from_database(Database::connect_in_memory().await?);
+                let state = metadata_state()?;
                 let endpoints = self.apps.api_endpoints(state.clone());
                 let signals = self.apps.api_signals(state);
                 let files = crate::generate_ts::generate(
@@ -398,7 +399,7 @@ impl Management {
             }
             CommandKind::GenerateAdmin { out, config, force } => {
                 AppConfig::from_file(config)?;
-                let state = AppState::from_database(Database::connect_in_memory().await?);
+                let state = metadata_state()?;
                 let endpoints = self.apps.api_endpoints(state.clone());
                 let signals = self.apps.api_signals(state);
                 let generated = crate::generate_ts::generate(
@@ -719,7 +720,16 @@ fn schema(apps: &InstalledApps) -> SchemaSet {
 }
 
 fn print_schema(apps: &InstalledApps) {
-    print!("{}", schema(apps).to_sql::<SqliteDialect>());
+    print!("{}", schema(apps).to_sql::<CurrentDialect>());
+}
+
+fn metadata_state() -> ManageResult<AppState> {
+    let url = if cfg!(feature = "postgres") {
+        "postgresql://localhost/che_rest_metadata"
+    } else {
+        ":memory:"
+    };
+    Ok(AppState::from_database(Database::connect_lazy(url)?))
 }
 
 /// Writes a generated, compiled migration without ever replacing an existing
@@ -988,6 +998,7 @@ pub fn build_operation_merge_migration(
                 operation,
                 che_orm::MigrationOperation::RunSql { .. }
                     | che_orm::MigrationOperation::BackfillColumn { .. }
+                    | che_orm::MigrationOperation::NormalizeSqliteDateTimes { .. }
             )
         }) {
             return Err(format!(
@@ -1481,7 +1492,7 @@ fn validate_operation_migration_name(name: &str) -> ManageResult<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "sqlite"))]
 fn create_empty_migration(dir: &PathBuf, name: &str, version: &str) -> ManageResult<PathBuf> {
     fs::create_dir_all(dir)?;
     let path = dir.join(format!("{version}_{name}.sql"));
@@ -1762,11 +1773,11 @@ async fn run_operation_migrations_to(
     Ok(database.migrate_to(graph, Some(target)).await?)
 }
 
-#[cfg(test)]
+#[cfg(feature = "sqlite")]
+use che_orm::migration::sqlite_executor::applied_operation_migrations;
+#[cfg(all(test, feature = "sqlite"))]
 use che_orm::migration::sqlite_executor::apply_operation_migrations_on_connection;
-use che_orm::migration::sqlite_executor::{
-    applied_operation_migrations, pending_operation_migrations,
-};
+use che_orm::pending_operation_migrations;
 
 fn resolve_operation_migration_target(
     migrations: &[Migration],
@@ -1795,12 +1806,20 @@ fn resolve_operation_migration_target(
     }
 }
 
+#[cfg(all(test, feature = "sqlite"))]
 fn operation_migration_plan(
     config: &AppConfig,
     migrations: Vec<Migration>,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    let graph = MigrationGraph::new(migrations)?;
     let applied = read_operation_migration_history_read_only(config, "migrate --plan")?;
+    render_operation_migration_plan(migrations, applied)
+}
+
+fn render_operation_migration_plan(
+    migrations: Vec<Migration>,
+    applied: HashMap<(String, String), String>,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let graph = MigrationGraph::new(migrations)?;
     let pending = pending_operation_migrations(&graph, &applied)?;
     let applied_ids = applied
         .keys()
@@ -1844,6 +1863,7 @@ fn operation_migration_plan(
     Ok(output)
 }
 
+#[cfg(feature = "sqlite")]
 fn read_operation_migration_history_read_only(
     config: &AppConfig,
     command: &str,
@@ -1877,13 +1897,22 @@ fn read_operation_migration_history_read_only(
     }
 }
 
+#[cfg(all(test, feature = "sqlite"))]
 fn operation_migration_list(
     config: &AppConfig,
     migrations: Vec<Migration>,
     app_filter: Option<&str>,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    let graph = MigrationGraph::new(migrations)?;
     let applied = read_operation_migration_history_read_only(config, "showmigrations")?;
+    render_operation_migration_list(migrations, applied, app_filter)
+}
+
+fn render_operation_migration_list(
+    migrations: Vec<Migration>,
+    applied: HashMap<(String, String), String>,
+    app_filter: Option<&str>,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let graph = MigrationGraph::new(migrations)?;
     pending_operation_migrations(&graph, &applied)?;
     let migrations = graph
         .ordered()
@@ -1925,6 +1954,10 @@ fn operation_migration_list(
 fn describe_migration_operation(operation: &MigrationOperation) -> String {
     use MigrationOperation::*;
     match operation {
+        NormalizeSqliteDateTimes { table, columns } => format!(
+            "NormalizeSqliteDateTimes {table} ({}) - WARNING: rebuilds the table and rewrites datetime storage",
+            columns.join(", ")
+        ),
         CreateModel { model } => format!(
             "CreateModel {}:{} (table {})",
             model.key.app, model.key.name, model.table.name
@@ -1980,6 +2013,43 @@ fn describe_migration_operation(operation: &MigrationOperation) -> String {
     }
 }
 
+async fn read_backend_migration_history(
+    config: &AppConfig,
+    command: &'static str,
+) -> Result<HashMap<(String, String), String>, Box<dyn std::error::Error + Send + Sync>> {
+    #[cfg(feature = "sqlite")]
+    {
+        let config = config.clone();
+        tokio::task::spawn_blocking(move || {
+            read_operation_migration_history_read_only(&config, command)
+        })
+        .await?
+    }
+    #[cfg(all(feature = "postgres", not(feature = "sqlite")))]
+    {
+        let _ = command;
+        // The ORM history reader checks table existence without creating it.
+        Ok(config.database.connect().await?.migration_history().await?)
+    }
+}
+
+async fn operation_migration_plan_for_backend(
+    config: &AppConfig,
+    migrations: Vec<Migration>,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let applied = read_backend_migration_history(config, "migrate --plan").await?;
+    render_operation_migration_plan(migrations, applied)
+}
+
+async fn operation_migration_list_for_backend(
+    config: &AppConfig,
+    migrations: Vec<Migration>,
+    app: Option<&str>,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let applied = read_backend_migration_history(config, "showmigrations").await?;
+    render_operation_migration_list(migrations, applied, app)
+}
+
 fn operation_migration_sql(
     migrations: &[Migration],
     app: &str,
@@ -2027,6 +2097,18 @@ fn operation_migration_sql(
     if target.operations.is_empty() {
         output.push_str("-- This migration has no SQL operations.\n");
     }
+    #[cfg(feature = "postgres")]
+    {
+        let plan = che_orm::PostgresSchemaEditor::plan_migration(&target.operations, &state)?;
+        for statement in plan.statements {
+            output.push_str(&statement);
+            if !statement.trim_end().ends_with(';') {
+                output.push(';');
+            }
+            output.push('\n');
+        }
+    }
+    #[cfg(feature = "sqlite")]
     for operation in &target.operations {
         let rendered = che_orm::SqliteSchemaEditor::plan(operation, &state)?;
         for statement in rendered.statements {
@@ -2090,11 +2172,11 @@ async fn verify_migrations(config: &AppConfig, dir: PathBuf) -> ManageResult<()>
 
 async fn verify_foreign_keys(config: &AppConfig) -> ManageResult<()> {
     let database = config.database.connect().await?;
-    if !database
-        .query_sql("PRAGMA foreign_key_check;", vec![])
-        .await?
-        .is_empty()
-    {
+    #[cfg(feature = "sqlite")]
+    let query = "PRAGMA foreign_key_check;";
+    #[cfg(feature = "postgres")]
+    let query = "SELECT c.conname FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid JOIN pg_namespace n ON n.oid = t.relnamespace WHERE c.contype = 'f' AND NOT c.convalidated AND n.nspname = ANY(current_schemas(false))";
+    if !database.query_sql(query, vec![]).await?.is_empty() {
         return Err("migration left foreign key violations".into());
     }
     Ok(())
@@ -2257,7 +2339,7 @@ fn file_url(path: &PathBuf) -> String {
     format!("file://{}", path.display())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use std::{
         collections::HashMap,

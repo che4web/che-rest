@@ -82,7 +82,7 @@ pub async fn start(
         return Ok(None);
     }
     db.query::<models::PushCursor>()
-        .first(&db)
+        .first()
         .await
         .map_err(|_| "Apply notifications migrations before enabling push")?;
     let sender = fcm::FcmSender::from_env(&config)?;

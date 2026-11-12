@@ -1,16 +1,25 @@
 import os
 import sqlite3
-from datetime import datetime
+from contextlib import closing
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
 
 
 DATABASE = Path(os.environ.get("BENCHMARK_DATABASE", "../benchmark.sqlite")).resolve()
+POSTGRES_URL = os.environ.get("BENCHMARK_POSTGRES_URL")
+if POSTGRES_URL:
+    import psycopg2
+    from psycopg2.extras import DictCursor
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
 
-def connect() -> sqlite3.Connection:
+def connect():
+    if POSTGRES_URL:
+        connection = psycopg2.connect(POSTGRES_URL, cursor_factory=DictCursor)
+        connection.autocommit = True
+        return connection
     connection = sqlite3.connect(f"file:{DATABASE}?mode=ro", uri=True)
     connection.row_factory = sqlite3.Row
     return connection
@@ -29,8 +38,8 @@ def task_payload(row: sqlite3.Row) -> dict:
 
 
 def time_payload(value: str) -> str:
-    timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    return timestamp.isoformat().replace("+00:00", "Z")
+    timestamp = value if isinstance(value, datetime) else datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return timestamp.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 @app.get("/api/tasks/")
@@ -49,27 +58,34 @@ def list_tasks(
     if name__contains is not None:
         where = " WHERE t.name LIKE ? ESCAPE '\\'"
         values.append(f"%{name__contains}%")
-    with connect() as connection:
-        count = connection.execute(
-            f"SELECT COUNT(*) FROM tasks_task t{where}", values
-        ).fetchone()[0]
-        rows = connection.execute(
+    with closing(connect()) as connection, closing(connection.cursor()) as cursor:
+        placeholder = "%s" if POSTGRES_URL else "?"
+        # SQL identifiers come only from the ordering allowlist above.
+        sql_where = where.replace("?", placeholder)
+        cursor.execute(
+            f"SELECT COUNT(*) FROM tasks_task t{sql_where}", values
+        )
+        count = cursor.fetchone()[0]
+        query = (
             f"""SELECT t.id, t.author_id, u.username, t.assignee_id, t.name, t.status, t.created_at, t.updated_at
                 FROM tasks_task t JOIN auth_users u ON u.id = t.author_id
-                {where} ORDER BY t.{order} {direction} LIMIT ? OFFSET ?""",
-            [*values, limit, offset],
-        ).fetchall()
+                {sql_where} ORDER BY t.{order} {direction} LIMIT {placeholder} OFFSET {placeholder}"""
+        )
+        cursor.execute(query, [*values, limit, offset])
+        rows = cursor.fetchall()
     return {"count": count, "results": [task_payload(row) for row in rows]}
 
 
 @app.get("/api/tasks/{task_id}/")
 def retrieve_task(task_id: int):
-    with connect() as connection:
-        row = connection.execute(
+    with closing(connect()) as connection, closing(connection.cursor()) as cursor:
+        query = (
             """SELECT t.id, t.author_id, u.username, t.assignee_id, t.name, t.status, t.created_at, t.updated_at
-               FROM tasks_task t JOIN auth_users u ON u.id = t.author_id WHERE t.id = ?""",
-            [task_id],
-        ).fetchone()
+               FROM tasks_task t JOIN auth_users u ON u.id = t.author_id WHERE t.id = """
+            + ("%s" if POSTGRES_URL else "?")
+        )
+        cursor.execute(query, [task_id])
+        row = cursor.fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Not Found")
     return task_payload(row)

@@ -1,6 +1,6 @@
 # che-rest
 
-Breaking v2 REST layer for `che-orm` applications. Current source version: `0.3.4`.
+Breaking v2 REST layer for `che-orm` applications. Current candidate version: `0.4.0`.
 
 The library targets `che-orm 0.3`. Database connection methods are async;
 REST viewsets and image actions support models with `i64` or UUID primary keys.
@@ -91,7 +91,7 @@ cargo generate --path templates/project --no-workspace
 ```
 
 See [template setup and verification](templates/README.md). This checkout prepares
-che-rest 0.3.4 with che-orm 0.3.3 and che-sync 0.1.3; select absolute local
+che-rest 0.4.0 with che-orm 0.4.0 and che-sync 0.2.0; select absolute local
 dependency paths until the new REST/sync versions are published. Empty paths select crates.io.
 When using local REST, select its matching local ORM too; mixing local and
 crates.io copies produces incompatible Model/ModelSerializer types.
@@ -136,8 +136,65 @@ cargo run --bin manage -- startproject my_project --with-auth
 
 `createapp` and `startapp` are aliases. New modules are installed automatically
 and own an empty migration registry; the first migration is generated explicitly.
-The framework management backend is SQLite; changing the URL alone does not
-select PostgreSQL.
+The default backend is SQLite. PostgreSQL is supported by the server, built-in
+auth/ACL/push migrations and management CLI; select it at compile time as below.
+
+### PostgreSQL backend
+
+This checkout prepares unpublished che-rest 0.4.0, requiring che-orm 0.4.0 and
+che-sync 0.2.0. Use matching sibling path dependencies until those packages are
+published and indexed. Previously published core 0.3.3 does not contain the
+lazy metadata and whole-migration planning additions.
+
+Enable exactly one backend and forward it to every direct ORM/framework dependency:
+
+```toml
+[features]
+default = ["sqlite"]
+sqlite = ["che-orm/sqlite", "che-rest/sqlite"]
+postgres = ["che-orm/postgres", "che-rest/postgres"]
+
+[dependencies]
+che-orm = { version = "0.4.0", default-features = false }
+che-rest = { version = "0.4.0", default-features = false }
+```
+
+Set `[database].url` in `app.toml` to a `postgres://` or `postgresql://` URL.
+Credentials, TLS and `options`/`search_path` parameters are passed unchanged to
+the ORM. Keep secrets out of source control. The database must already exist.
+
+```bash
+cargo run --no-default-features --features postgres --bin manage -- makemigrations --name initial
+cargo run --no-default-features --features postgres --bin manage -- migrate
+cargo run --no-default-features --features postgres
+```
+
+Changing the URL alone does not change the compiled backend. Do not use
+`--all-features`: `sqlite` and `postgres` are mutually exclusive. Existing
+SQLite data is not transferred automatically; review backend-specific `RunSql`
+operations before applying an existing history on PostgreSQL.
+`schema`, `sqlmigrate`, `makemigrations`, `generate-ts` and `generate-admin`
+discover metadata offline; history/plan/apply/verify commands connect to the
+configured database. PostgreSQL uses native DDL, identity keys, TIMESTAMPTZ and
+transactional migration locking; foreign keys deferred during table creation
+are resolved within the migration.
+`migrate verify` checks registered history and rejects unvalidated PostgreSQL
+foreign-key constraints in the active schemas; it relies on PostgreSQL's native
+enforcement for validated constraints, rather than running SQLite's row scan.
+
+Backend verification from this checkout:
+
+```bash
+cargo test --features sync-http,push
+cargo clippy --features sync-http,push --all-targets -- -D warnings
+TEST_POSTGRES_URL='postgresql://localhost/test_database' \
+  cargo test --no-default-features --features postgres,sync-http,push -- --include-ignored
+cargo clippy --no-default-features --features postgres,sync-http,push --all-targets -- -D warnings
+```
+
+Live tests require permission to create/drop isolated schemas and clean them
+after each scenario. See [template checks](templates/README.md#verification)
+for generated-project verification on both backends.
 
 A complete runnable example with CRUD, authentication, WebSocket signals, internal channels,
 TypeScript generation, and Vue admin generation is available in
@@ -177,7 +234,7 @@ OpenAPI is served by the running application at `/api/openapi.json` by default, 
 Server startup:
 
 `Server::build()` prints a compact configuration banner by default: the configured
-server address, effective API/Swagger and OpenAPI URLs, installed apps, SQLite
+server address, effective API/Swagger and OpenAPI URLs, installed apps, backend and
 pool size, media root and session settings when auth is installed. Database URLs
 are omitted. The banner describes configuration; the application binds its own
 listener afterward. Disable it with `.startup_banner(false)` on `Server`.
@@ -266,7 +323,7 @@ section, the storage root is `uploads`. To override it in `app.toml`:
 root = "/var/lib/my-app/uploads"
 ```
 
-Back up this directory separately from the SQLite database.
+Back up this directory separately from the database.
 
 The generated `app.toml` also configures the listener and API prefix:
 
@@ -917,7 +974,7 @@ src/apps/<app>/migrations/
 ```
 
 The database URL is read from `[database].url` in `app.toml`. Apply all project migrations with the
-built-in forward-only SQLite executor:
+built-in forward-only executor for the selected backend:
 
 ```bash
 cargo run --bin manage -- migrate
@@ -952,20 +1009,22 @@ and warnings for table/column deletion, column changes and manual SQL. It valida
 the registered graph, applied checksums, dependency history and historical state.
 SQLite is opened read-only; a missing database is treated as empty and is not
 created. No migrations or history records are written. The command requires a
-file database path (plain or `sqlite://`) and cannot be combined with a `migrate`
+file database path (plain or `sqlite://`) for SQLite. PostgreSQL reads the
+configured database history without creating its table. The plan cannot be combined with a `migrate`
 subcommand. It previews compiled migrations; SQL execution and live-schema
 compatibility are checked when applying them. Rebuild after changing migration
 sources, and inspect `RunSql` source before applying manual SQL.
 
-Inspect the SQLite SQL for one registered migration without opening a database:
+Inspect the selected backend's SQL for one registered migration without opening a database:
 
 ```bash
 cargo run --bin manage -- sqlmigrate tasks 0002_add_title
 ```
 
 `sqlmigrate` rebuilds only the selected migration's dependency state in memory,
-then prints its SQLite statements. Declarative table changes therefore show the
-same create-copy-drop-rename SQL used by the executor. `RunSql` is printed as
+then prints its statements. SQLite table changes show the same
+create-copy-drop-rename SQL used by the executor; PostgreSQL uses native ALTER
+statements and resolves deferred foreign keys across the migration. `RunSql` is printed as
 authored. The command requires compiled migrations and does not validate the
 live database schema or execute any statement.
 
@@ -978,8 +1037,8 @@ cargo run --bin manage -- showmigrations tasks
 
 `[X]` marks a migration recorded in `che_migration_history`; `[ ]` marks a
 pending migration. Dependencies are listed beneath each migration. The command
-opens a file database only in read-only mode, treats a missing database as an
-empty history and never creates the history table.
+opens SQLite files only in read-only mode and treats a missing file as an empty
+history. PostgreSQL reads the configured database. Neither creates the history table.
 
 Apply a selected application's forward migration target with:
 
@@ -991,7 +1050,7 @@ cargo run --bin manage -- migrate tasks 0002_add_title
 
 The first two forms select the application's single latest migration. The
 executor applies only that target and its missing dependencies, each in a
-separate atomic SQLite transaction; unrelated pending migrations are left untouched. A target
+separate atomic transaction; unrelated pending migrations are left untouched. A target
 already passed by a later migration in the same application is rejected because
 rollback is not supported. Unknown applications and migration names are also
 rejected before the database is opened.
@@ -1083,5 +1142,6 @@ migrations and router build. Installing the module alone does not start sending.
 The Android SDK handler, account filtering and navigation remain client concerns.
 
 See [installation, event/client contracts and checks](docs/push.md). Default checks
-do not cover this optional feature: run `cargo test --all-features` and
-`cargo clippy --all-features --all-targets -- -D warnings` for changes to it.
+do not cover this optional feature: run `cargo test --features push` and
+`cargo clippy --features push --all-targets -- -D warnings` for changes to it,
+plus the separate PostgreSQL backend matrix above.

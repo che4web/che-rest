@@ -84,6 +84,7 @@ pub fn apps() -> InstalledApps {
 }
 
 /// Demo/test databases only. Applications freeze these operations in compiled migrations.
+#[cfg(feature = "sqlite")]
 pub async fn database(role: SchemaRole) -> AppResult<Database> {
     use che_orm::{Migration, MigrationGraph, MigrationId, MigrationOperation};
     let db = Database::connect_in_memory().await?;
@@ -114,6 +115,7 @@ pub async fn database(role: SchemaRole) -> AppResult<Database> {
     .await?;
     Ok(db)
 }
+#[cfg(feature = "sqlite")]
 pub async fn demo_state() -> AppResult<(AppState, String)> {
     use che_rest::auth::{AuthToken, User, generate_token, token_hash};
     let state = AppState::from_database(database(SchemaRole::Server).await?);

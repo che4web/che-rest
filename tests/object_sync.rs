@@ -1,3 +1,5 @@
+#![cfg(feature = "sqlite")]
+
 #[path = "object_sync/support.rs"]
 mod support;
 use axum::{

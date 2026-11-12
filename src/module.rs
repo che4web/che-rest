@@ -449,7 +449,7 @@ pub struct Server {
     startup_banner: bool,
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
 
@@ -743,12 +743,15 @@ fn startup_banner(config: &crate::AppConfig, api_prefix: &str, apps: &InstalledA
     } else {
         names.join(", ")
     };
-    // This framework's database connector is SQLite. Do not print connection
+    // Do not print connection
     // strings: they can contain credentials or other application secrets.
     let mut banner = format!(
-        "\nche-rest v{}\nServer:    {address} (configured)\nAPI:       {address}{prefix}/\nOpenAPI:   {address}{prefix}/openapi.json\nApps:      {modules}\nDatabase:  SQLite, max connections: {}\nMedia:     {}\n",
+        "\nche-rest v{}\nServer:    {address} (configured)\nAPI:       {address}{prefix}/\nOpenAPI:   {address}{prefix}/openapi.json\nApps:      {modules}\nDatabase:  {}, max connections: {}\nMedia:     {}\n",
         env!("CARGO_PKG_VERSION"),
-        if crate::config::sqlite_path(&config.database.url) == ":memory:" {
+        crate::config::backend_name(),
+        if cfg!(feature = "sqlite")
+            && crate::config::sqlite_path(&config.database.url) == ":memory:"
+        {
             1
         } else {
             config.database.max_connections

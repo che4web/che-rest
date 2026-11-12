@@ -1,3 +1,5 @@
+#![cfg(feature = "sqlite")]
+
 use std::{fs, path::PathBuf, time::SystemTime};
 
 use che_orm::{Model, ModelSerializer, SchemaSet, Uuid};

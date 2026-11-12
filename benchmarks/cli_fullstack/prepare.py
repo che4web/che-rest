@@ -30,8 +30,8 @@ def seed(database: Path, rows: int) -> None:
                     1 if row_id % 2 == 0 else None,
                     f"benchmark task {row_id:05d}",
                     ("draft", "in_progress", "done")[(row_id - 1) % 3],
-                    (datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=row_id)).isoformat().replace("+00:00", "Z"),
-                    (datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=row_id)).isoformat().replace("+00:00", "Z"),
+                    (datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=row_id)).strftime("%Y-%m-%dT%H:%M:%S.000000000Z"),
+                    (datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=row_id)).strftime("%Y-%m-%dT%H:%M:%S.000000000Z"),
                 )
                 for row_id in range(1, rows + 1)
             ),

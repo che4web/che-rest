@@ -99,8 +99,11 @@ From the che-rest checkout:
 
 ```sh
 cargo fmt --check
-cargo test --all-features
-cargo clippy --all-features --all-targets -- -D warnings
+cargo test --features sync-http,push
+cargo clippy --features sync-http,push --all-targets -- -D warnings
+TEST_POSTGRES_URL='postgresql://localhost/test_database' \
+  cargo test --no-default-features --features postgres,sync-http,push -- --include-ignored
+cargo clippy --no-default-features --features postgres,sync-http,push --all-targets -- -D warnings
 cargo +1.88.0 check --features push --lib
 ```
 

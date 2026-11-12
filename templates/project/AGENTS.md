@@ -31,8 +31,9 @@ Use `cargo run --bin manage -- createapp blog --model Post` for additional
 modules; `startapp` is a compatible alias and both use `src/apps/<app>/` in
 either layout. Keep the initial registry empty until explicit makemigrations.
 
-This framework build uses SQLite. Changing only the URL does not enable the
-ORM's PostgreSQL backend. `Server::build()` does not apply migrations.
+The selected backend is `{{backend}}`. Enable exactly one Cargo feature (`sqlite`
+or `postgres`) and use a matching app.toml URL. Every ORM/framework dependency
+must select the same backend. `Server::build()` does not apply migrations.
 
 {% if with_auth %}Authentication is installed. Session login is at `/api-session-auth/login/`.
 {% else %}Authentication is not installed; add `che_rest::auth::module()` before protected APIs.

@@ -4,6 +4,8 @@ use super::{
     models::{PushCursor, PushDelivery, PushDevice},
     views::{RegisterDevice, register_device},
 };
+#[cfg(feature = "postgres")]
+use crate::postgres_test_support as postgres;
 use che_orm::{Database, MigrationGraph, Transaction, Uuid};
 use std::{collections::BTreeSet, sync::Arc};
 struct InvoiceSource;
@@ -70,8 +72,19 @@ impl PushSender for Accepted {
     }
 }
 #[tokio::test]
+#[cfg(feature = "sqlite")]
 async fn standalone_module_migrates_and_delivers_non_sync_non_uuid_domain_events() {
-    let db = Database::connect_in_memory().await.unwrap();
+    standalone_delivery(Database::connect_in_memory().await.unwrap()).await;
+}
+
+#[tokio::test]
+#[cfg(feature = "postgres")]
+#[ignore = "requires TEST_POSTGRES_URL"]
+async fn postgres_standalone_delivery() {
+    postgres::isolated(|db, _| standalone_delivery(db)).await;
+}
+
+async fn standalone_delivery(db: Database) {
     db.migrate(MigrationGraph::new(super::migrations::all()).unwrap())
         .await
         .unwrap();
@@ -94,7 +107,7 @@ async fn standalone_module_migrates_and_delivers_non_sync_non_uuid_domain_events
     .unwrap();
     delivery::capture(&db, source.clone()).await.unwrap();
     delivery::capture(&db, source.clone()).await.unwrap();
-    let jobs = db.query::<PushDelivery>().all(&db).await.unwrap();
+    let jobs = db.query::<PushDelivery>().all().await.unwrap();
     assert_eq!(jobs.len(), 1);
     assert_eq!(jobs[0].target_id, "INV-42");
     let device = db.get::<PushDevice>(id).await.unwrap().unwrap();
@@ -111,7 +124,7 @@ async fn standalone_module_migrates_and_delivers_non_sync_non_uuid_domain_events
     delivery::drain(&db, &Accepted, source).await.unwrap();
     assert_eq!(
         db.query::<PushDelivery>()
-            .first(&db)
+            .first()
             .await
             .unwrap()
             .unwrap()
@@ -152,8 +165,19 @@ impl PushSource for Oversized {
     }
 }
 #[tokio::test]
+#[cfg(feature = "sqlite")]
 async fn invalid_event_rolls_back_source_checkpoint_and_queue_together() {
-    let db = Database::connect_in_memory().await.unwrap();
+    invalid_event_rollback(Database::connect_in_memory().await.unwrap()).await;
+}
+
+#[tokio::test]
+#[cfg(feature = "postgres")]
+#[ignore = "requires TEST_POSTGRES_URL"]
+async fn postgres_invalid_event_rollback() {
+    postgres::isolated(|db, _| invalid_event_rollback(db)).await;
+}
+
+async fn invalid_event_rollback(db: Database) {
     db.migrate(MigrationGraph::new(super::migrations::all()).unwrap())
         .await
         .unwrap();
@@ -173,18 +197,12 @@ async fn invalid_event_rolls_back_source_checkpoint_and_queue_together() {
     assert!(delivery::capture(&db, source).await.is_err());
     assert_eq!(
         db.query::<PushCursor>()
-            .first(&db)
+            .first()
             .await
             .unwrap()
             .unwrap()
             .position,
         0
     );
-    assert!(
-        db.query::<PushDelivery>()
-            .all(&db)
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert!(db.query::<PushDelivery>().all().await.unwrap().is_empty());
 }

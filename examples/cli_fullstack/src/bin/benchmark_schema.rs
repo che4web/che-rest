@@ -6,7 +6,9 @@ use cli_fullstack::apps::tasks::models::Task;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let url = std::env::args().nth(1).ok_or("expected SQLite URL")?;
+    let url = std::env::args()
+        .nth(1)
+        .ok_or("expected database URL for the selected backend")?;
     let database = Database::connect(&url).await?;
     let schema = SchemaSet::new().model::<Task>();
     let state = ProjectState::from_app_schemas([("tasks", &schema)])?;

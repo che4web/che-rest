@@ -1113,7 +1113,7 @@ async fn download_image(
     response
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
     use axum::http::Request;

@@ -1,5 +1,12 @@
 #![allow(clippy::items_after_test_module, clippy::type_complexity)]
 
+#[cfg(all(feature = "sqlite", feature = "postgres"))]
+compile_error!(
+    "enable exactly one che-rest backend: sqlite or postgres (disable default features for postgres)"
+);
+#[cfg(not(any(feature = "sqlite", feature = "postgres")))]
+compile_error!("enable one che-rest backend: sqlite or postgres");
+
 pub mod app_channels;
 pub mod auth;
 pub mod channels;
@@ -10,6 +17,9 @@ pub mod generate_ts;
 pub mod management;
 pub mod media;
 pub mod module;
+#[cfg(all(test, feature = "postgres"))]
+#[path = "../tests/support/postgres.rs"]
+pub(crate) mod postgres_test_support;
 pub mod project;
 #[cfg(feature = "push")]
 pub mod push;

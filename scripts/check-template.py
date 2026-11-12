@@ -2,6 +2,7 @@
 """Verify cargo-generate and CLI REST scaffolds, migrations and real HTTP CRUD."""
 
 import argparse
+from contextlib import ExitStack
 import hashlib
 from itertools import product
 import json
@@ -14,6 +15,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import uuid
 
 
 def run(command, *, cwd, env):
@@ -77,6 +79,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--layout", choices=["single", "modular"])
     parser.add_argument("--generator", choices=["cargo-generate", "cli"])
+    parser.add_argument("--backend", choices=["sqlite", "postgres"], default="sqlite")
     parser.add_argument("--published", action="store_true",
                         help="use crates.io dependencies after publication")
     args = parser.parse_args()
@@ -84,10 +87,12 @@ def main():
     orm = (root / "../che-orm").resolve()
     env = dict(os.environ)
     target = Path(env.get("CARGO_TARGET_DIR", root / "target/template-check")).resolve()
-    env["CARGO_TARGET_DIR"] = str(target / ("published" if args.published else "local"))
+    env["CARGO_TARGET_DIR"] = str(target / ("published" if args.published else "local") / args.backend)
     layouts = [args.layout] if args.layout else ["single", "modular"]
     generators = [args.generator] if args.generator else ["cargo-generate", "cli"]
-    with tempfile.TemporaryDirectory(prefix="che-rest-template-") as directory:
+    if args.backend == "postgres" and not env.get("TEST_POSTGRES_URL"):
+        parser.error("--backend postgres requires TEST_POSTGRES_URL and psql")
+    with ExitStack() as cleanup, tempfile.TemporaryDirectory(prefix="che-rest-template-") as directory:
         destination = Path(directory)
         # Generation must not attach the project to an enclosing workspace.
         parent = destination / "Cargo.toml"
@@ -103,17 +108,33 @@ def main():
                     "cargo", "generate", "--path", str(root / "templates/project"),
                     "--name", name, "--destination", str(destination),
                     "--define", f"layout={layout}", "--define", f"with_auth={str(auth).lower()}",
+                    "--define", f"backend={args.backend}",
                     "--define", f"che_rest_path={'' if args.published else root}",
                     "--define", f"che_orm_path={'' if args.published else orm}",
                     "--silent", "--vcs", "none", "--no-workspace",
                 ], cwd=root, env=env)
             else:
                 run([
-                    "cargo", "run", "--bin", "che-rest", "--", "startproject", name,
+                    "cargo", "run", "--no-default-features", "--features", args.backend,
+                    "--bin", "che-rest", "--", "startproject", name,
                     "--out", str(destination), "--layout", layout,
                     *paths, *(["--with-auth"] if auth else []),
                 ], cwd=root, env=env)
             assert parent.read_text() == "[workspace]\nmembers = []\n"
+            if args.backend == "postgres":
+                base_url = env["TEST_POSTGRES_URL"]
+                schema = "rest_template_" + uuid.uuid4().hex
+
+                def sql(url, statement):
+                    return subprocess.run(["psql", url, "-X", "-v", "ON_ERROR_STOP=1", "-At"],
+                                          input=statement, text=True, capture_output=True, check=True).stdout.strip()
+
+                sql(base_url, f'CREATE SCHEMA "{schema}"')
+                cleanup.callback(sql, base_url, f'DROP SCHEMA "{schema}" CASCADE')
+                separator = "&" if "?" in base_url else "?"
+                scoped_url = f"{base_url}{separator}options=-csearch_path%3D{schema}"
+                config = project / "app.toml"
+                config.write_text(config.read_text().replace("postgresql://localhost/che_rest", scoped_url))
             source = project / ("src" if layout == "single" else "src/apps/tasks")
             assert (project / "src/models.rs").exists() == (layout == "single")
             assert (project / "src/apps/tasks").exists() == (layout == "modular")
@@ -162,18 +183,23 @@ def main():
             run(manage("makemigrations", "--name", "add_blog"), cwd=project, env=env)
             assert hashlib.sha256(initial.read_bytes()).digest() == digest
             run(manage("migrate"), cwd=project, env=env)
-            with sqlite3.connect(project / "db.sqlite") as db:
-                db.execute("PRAGMA foreign_keys = ON")
-                key = db.execute("INSERT INTO tasks_task (name) VALUES ('parent') RETURNING id").fetchone()[0]
-                db.execute("INSERT INTO blog_post (name, task_id) VALUES ('child', ?)", (key,))
-                assert db.execute("SELECT task_id FROM blog_post").fetchone() == (key,)
+            if args.backend == "sqlite":
+                with sqlite3.connect(project / "db.sqlite") as db:
+                    db.execute("PRAGMA foreign_keys = ON")
+                    key = db.execute("INSERT INTO tasks_task (name) VALUES ('parent') RETURNING id").fetchone()[0]
+                    db.execute("INSERT INTO blog_post (name, task_id) VALUES ('child', ?)", (key,))
+                    assert db.execute("SELECT task_id FROM blog_post").fetchone() == (key,)
+            else:
+                sql(scoped_url, "WITH parent AS (INSERT INTO tasks_task (name) VALUES ('parent') RETURNING id) "
+                    "INSERT INTO blog_post (name, task_id) SELECT 'child', id FROM parent;")
+                assert sql(scoped_url, "SELECT count(*) FROM blog_post b JOIN tasks_task t ON t.id=b.task_id") == "1"
             run(cargo("fmt"), cwd=project, env=env)
             for command in [cargo("fmt", "--check"), cargo("test"),
                             cargo("clippy", "--all-targets", "--", "-D", "warnings"),
                             manage("makemigrations", "--check"), cargo("build", "--bin", name)]:
                 run(command, cwd=project, env=env)
             verify_http(project, Path(env["CARGO_TARGET_DIR"]) / "debug" / name, env)
-            print(f"Verified {generator}: layout={layout}, auth={auth}", flush=True)
+            print(f"Verified {generator}: backend={args.backend}, layout={layout}, auth={auth}", flush=True)
 
 
 if __name__ == "__main__":

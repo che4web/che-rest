@@ -88,7 +88,7 @@ pub struct DatabaseConfig {
 impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
-            url: "sqlite://db.sqlite?mode=rwc".to_string(),
+            url: default_database_url().to_string(),
             max_connections: 10,
         }
     }
@@ -96,13 +96,51 @@ impl Default for DatabaseConfig {
 
 impl DatabaseConfig {
     pub(crate) async fn connect(&self) -> Result<che_orm::Database, che_orm::OrmError> {
-        let path = sqlite_path(&self.url);
-        let pool_size = if path == ":memory:" {
+        let url = self.connection_url()?;
+        let pool_size = if cfg!(feature = "sqlite") && url == ":memory:" {
             1
         } else {
             self.max_connections as usize
         };
-        che_orm::Database::connect_with_pool_size(path, pool_size).await
+        che_orm::Database::connect_with_pool_size(url, pool_size).await
+    }
+
+    fn connection_url(&self) -> Result<String, che_orm::OrmError> {
+        #[cfg(feature = "sqlite")]
+        {
+            if self.url.contains("://") && !self.url.starts_with("sqlite://") {
+                return Err(che_orm::OrmError::Configuration(
+                    "this build requires a SQLite URL or file path".into(),
+                ));
+            }
+            Ok(sqlite_path(&self.url))
+        }
+        #[cfg(all(feature = "postgres", not(feature = "sqlite")))]
+        {
+            if !(self.url.starts_with("postgres://") || self.url.starts_with("postgresql://")) {
+                return Err(che_orm::OrmError::Configuration(
+                    "this build requires a postgres:// or postgresql:// URL".into(),
+                ));
+            }
+            // Preserve credentials, TLS, options/search_path and all query parameters.
+            Ok(self.url.clone())
+        }
+    }
+}
+
+fn default_database_url() -> &'static str {
+    if cfg!(feature = "postgres") {
+        "postgresql://localhost/che_rest"
+    } else {
+        "sqlite://db.sqlite?mode=rwc"
+    }
+}
+
+pub(crate) fn backend_name() -> &'static str {
+    if cfg!(feature = "postgres") {
+        "PostgreSQL"
+    } else {
+        "SQLite"
     }
 }
 
@@ -124,6 +162,24 @@ impl AppConfig {
 #[cfg(test)]
 mod tests {
     use super::AppConfig;
+
+    #[test]
+    fn backend_urls_are_validated_without_disclosing_credentials() {
+        let mut config = super::DatabaseConfig::default();
+        #[cfg(feature = "postgres")]
+        {
+            config.url = "postgresql://user:secret@localhost/app?sslmode=require&options=-csearch_path%3Dtenant".into();
+            assert_eq!(config.connection_url().unwrap(), config.url);
+            config.url = "sqlite://wrong.sqlite".into();
+        }
+        #[cfg(feature = "sqlite")]
+        {
+            config.url = "postgresql://user:secret@localhost/app".into();
+        }
+        let error = config.connection_url().unwrap_err().to_string();
+        assert!(!error.contains("secret"));
+        assert!(!error.contains(&config.url));
+    }
 
     #[test]
     fn session_config_is_optional() {

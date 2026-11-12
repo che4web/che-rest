@@ -1,7 +1,7 @@
 # AGENTS.md
 
 ## Repo Shape
-- This is a single Rust library crate (`0.3.4`), not a Cargo workspace; it depends on the sibling path `../che-orm`. Keep the cargo-generate template and example dependency versions aligned with the library.
+- This is a single Rust library crate (`0.4.0` candidate), not a Cargo workspace; it depends on sibling che-orm 0.4.0 and che-sync 0.2.0. Keep cargo-generate templates and example dependency versions aligned. Registry versions core 0.3.3/sync 0.1.3/REST 0.3.4 are already published; do not reuse them for these breaking changes.
 - The ORM2 state/error and typed CRUD REST surface are implemented in this crate. Legacy ORM integrations are not part of the public build.
 - Public API is re-exported from `src/lib.rs`; the REST implementation lives under `src/rest`.
 - The runnable Todo desktop integration lives in the sibling `../che-tauri/examples/todo-sync` Cargo workspace. It is a downstream consumer, not a member of this crate's default checks.
@@ -11,13 +11,13 @@
 - `cargo test` is the main library and integration test check, including media storage, route authorization, and ViewSet image cleanup tests.
 - `cargo clippy --all-targets -- -D warnings` passes and is required for release verification.
 - The minimum supported Rust version is 1.88; verify packaged builds on that toolchain when changing dependencies.
-- The optional `push` feature is outside default checks. For push changes run `cargo test --all-features`, `cargo clippy --all-features --all-targets -- -D warnings`, and `cargo +1.88.0 check --features push --lib`. HTTP tests require ephemeral loopback ports.
+- Enable exactly one backend: default `sqlite` or `--no-default-features --features postgres`. Never use `--all-features` (backends conflict). For optional push/sync HTTP changes run `cargo test --features sync-http,push` and `cargo clippy --features sync-http,push --all-targets -- -D warnings`, then the separate PostgreSQL matrix in README.md. Verify Rust 1.88 too. HTTP tests require ephemeral loopback ports; live PostgreSQL cases require TEST_POSTGRES_URL.
 - After changing project templates, run `cargo test --lib project::tests::generated_project_builds_and_migrates -- --ignored`; it builds a generated authenticated application and verifies initial/repeated compiled migrations.
 
 ## Framework Gotchas
 - `CrudViewSet::<Model, Serializer>::new("/resource")` uses serializer types; no serializer instance is constructed.
 - Write handlers call `Serializer::is_valid` to build a `ValidatedWrite`; `ViewSet::prepare_*` may add server-owned fields before `ValidatedWrite::save` executes the mutation.
-- Compiled Rust migrations are the only migration format. `migrate` and `migrate status` use the built-in forward-only SQLite executor. Production startup must not create model tables.
+- Compiled Rust migrations are the only migration format. `migrate` and `migrate status` use the selected backend's built-in forward-only executor. Production startup must not create model tables. Preserve frozen histories/checksums; review backend-specific RunSql before reusing history on a different backend.
 - `Server::new(state).install(apps).build().await` installs app routers under `/api` by default; override with `api_prefix(...)`.
 - `ModuleContext::viewset` and `viewset_with` both register the model schema, generated API metadata, and router; using only `route(...)` skips schema/codegen metadata.
 - `ViewSet::get_queryset` defines filtering scope and relation loading; serializers only convert the materialized queryset item and never query the database.
@@ -44,7 +44,8 @@
 - `scripts/check-template.py` requires the separate `cargo-generate` command (`cargo install cargo-generate`). A missing tool is an incomplete matrix check; the built-in generator smoke test alone does not replace it.
 - Run `TMPDIR=/tmp/opencode python3 scripts/check-template.py` after scaffold
   changes. It checks both generators/layouts/auth variants, migrations, cross-app
-  FKs and real HTTP CRUD. The REST management backend remains SQLite.
+  FKs and real HTTP CRUD. Also run `--backend postgres` with TEST_POSTGRES_URL
+  and psql for the PostgreSQL matrix; both generators forward backend features.
 - Every `ViewSet` declares `type ListSerializer`: use `Self::Serializer` for matching list/detail shapes or a separate `ModelSerializer` with the same model and queryset input. Its fields drive list responses, OpenAPI, generated TypeScript list items and admin table columns. After serializer changes, regenerate clients.
 - Table-rebuild migrations temporarily remove and restore historically declared dependent triggers/views even when another app owns them; review the generated operations and keep unmanaged SQLite objects subject to executor checks.
 - Config loads `[database] url = "..."` and optional `[media] root = "uploads"`; use `migrate --config PATH` to select another database configuration. There is no `--database-url` flag in the current CLI.
@@ -128,5 +129,5 @@ tables or backfill journals during server/client startup.
 
 ## Current publication candidate
 
-- che-rest 0.3.4 requires che-sync 0.1.3; publish sync first, then rerun the REST registry dry run after indexing.
+- che-rest 0.4.0 requires che-orm 0.4.0 and che-sync 0.2.0. Registry checked 2026-11-12; neither new version is published. Prepare core, then sync, then REST; ordinary registry dry runs require dependency indexing. Publication requires separate approval.
 - See `docs/release-checklist.md` for checks and publication order. Package preparation and `cargo publish --dry-run` do not authorize an actual publication.

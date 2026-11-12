@@ -1,13 +1,27 @@
 # crates.io Release Checklist
 
-See [the current verification report](release-verification-2026-11-06.md) for
-completed checks, artifacts and the remaining registry publication gate.
+The [2026-11-06 verification report](release-verification-2026-11-06.md) is
+historical. Reverify the current breaking-change candidates before publication.
 
 ## Prepare
 
-The current release candidate is **che-rest 0.3.4**, requiring **che-orm 0.3.3**,
-**che-sync 0.1.3**, and Rust **1.88+**. The generated project dependency versions
+The current release candidate is **che-rest 0.4.0**, requiring **che-orm 0.4.0**,
+**che-sync 0.2.0**, and Rust **1.88+**. The generated project dependency versions
 in `src/project.rs` and `templates/project/Cargo.toml` must match.
+
+Registry checked 2026-11-12: core 0.3.3, macros 0.3.2, protocol 0.1.0, sync 0.1.3
+and REST 0.3.4 are already published; che-tauri has no registry entry. The new
+core/REST 0.4 and sync 0.2 minor lines reflect breaking bound-query and SQLite
+storage contracts. Publish core, then sync, then REST only after separate approval
+and dependency indexing. Do not republish old versions or unchanged macros/protocol.
+
+### Upgrade notes for 0.4.0
+
+- Choose exactly one compile-time backend; SQLite remains the default.
+- Database-bound query terminal methods no longer take a database argument.
+- Existing SQLite apps need explicit compiled datetime normalization migrations
+  before startup, including sync current/shadow/journal columns. Preserve opaque
+  payloads, receipts and cursors. PostgreSQL stays native TIMESTAMPTZ.
 
 ### Upgrade notes for 0.3.4
 
@@ -59,13 +73,19 @@ in `src/project.rs` and `templates/project/Cargo.toml` must match.
 
 ```bash
 cargo fmt --check
-cargo clippy --all-features --all-targets -- -D warnings
-cargo test --all-features
+cargo clippy --features sync-http,push --all-targets -- -D warnings
+cargo test --features sync-http,push
+cargo clippy --no-default-features --features postgres,sync-http,push --all-targets -- -D warnings
+TEST_POSTGRES_URL='postgresql://localhost/test_database' \
+  cargo test --no-default-features --features postgres,sync-http,push -- --include-ignored
 cargo run --features sync-http --example model_sync
 cargo run --example todo_sync
-cargo +1.88.0 check --all-targets --all-features --locked
+cargo +1.88.0 check --all-targets --features sync-http,push --locked
+cargo +1.88.0 check --all-targets --no-default-features --features postgres,sync-http,push --locked
 cargo test --lib project::tests::generated_project_builds_and_migrates -- --ignored
 TMPDIR=/tmp/opencode python3 scripts/check-template.py
+TEST_POSTGRES_URL='postgresql://localhost/test_database' \
+  TMPDIR=/tmp/opencode python3 scripts/check-template.py --backend postgres
 node --experimental-strip-types --test tests/admin_identity.mjs
 cargo test --manifest-path examples/cli_fullstack/Cargo.toml --test smoke
 npm --prefix examples/cli_fullstack/frontend/client ci
@@ -125,13 +145,13 @@ check; a successful desktop build only verifies compilation.
 
 ## Publish
 
-1. Confirm all dependency releases are indexed on crates.io. The registry check on 2026-11-06 confirmed
+1. Confirm all dependency releases are indexed on crates.io. The registry check on 2026-11-12 confirmed
    `che-orm-macros 0.3.2`, `che-orm 0.3.3`, `che-sync-protocol 0.1.0`,
-   `che-sync 0.1.2` and `che-rest 0.3.3` are published and not yanked.
-   Publish only new `che-sync 0.1.3`, wait for indexing, then `che-rest 0.3.4`.
+   `che-sync 0.1.3` and `che-rest 0.3.4` are published and not yanked.
+   New candidates are core 0.4.0, then sync 0.2.0, then REST 0.4.0.
    Do not republish unchanged dependencies or move old tags.
-2. Run `cargo publish --dry-run` again after dependencies are indexed, then
-   `cargo publish` from a clean `che-rest` worktree.
+2. Run `cargo publish --dry-run` again after dependencies are indexed. Actual
+   `cargo publish` from a clean worktree requires separate explicit approval.
 3. Verify the crate page and docs.rs build, then create the matching Git tag and release.
 
 ### Candidate verification (2026-11-02)

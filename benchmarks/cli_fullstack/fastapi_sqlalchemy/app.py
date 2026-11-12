@@ -9,9 +9,10 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, joinedload, mapped_
 
 
 DATABASE = Path(os.environ.get("BENCHMARK_DATABASE", "../benchmark.sqlite")).resolve()
+POSTGRES_URL = os.environ.get("BENCHMARK_POSTGRES_URL")
 engine = create_engine(
-    f"sqlite:///{DATABASE}",
-    connect_args={"check_same_thread": False, "uri": False},
+    POSTGRES_URL.replace("postgresql://", "postgresql+psycopg2://", 1) if POSTGRES_URL else f"sqlite:///{DATABASE}",
+    connect_args={} if POSTGRES_URL else {"check_same_thread": False, "uri": False},
     pool_size=4,
     max_overflow=0,
 )
@@ -52,7 +53,8 @@ Database = Annotated[Session, Depends(session)]
 
 def time_payload(value: datetime) -> str:
     # SQLite's SQLAlchemy datetime reader returns naive values; the seed is UTC.
-    return value.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+    value = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+    return value.isoformat().replace("+00:00", "Z")
 
 
 def task_payload(task: Task) -> dict:

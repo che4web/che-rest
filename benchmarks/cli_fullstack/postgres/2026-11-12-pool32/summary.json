@@ -1,0 +1,194 @@
+[
+  {
+    "indexed": false,
+    "framework": "che-rest",
+    "scenario": "list",
+    "requests_per_second": 1559.81,
+    "mean_latency_ms": 32.055,
+    "p95_latency_ms": 40
+  },
+  {
+    "indexed": false,
+    "framework": "che-rest",
+    "scenario": "filtered-list",
+    "requests_per_second": 3204.47,
+    "mean_latency_ms": 15.603,
+    "p95_latency_ms": 20
+  },
+  {
+    "indexed": false,
+    "framework": "che-rest",
+    "scenario": "retrieve",
+    "requests_per_second": 18356.64,
+    "mean_latency_ms": 2.724,
+    "p95_latency_ms": 3
+  },
+  {
+    "indexed": false,
+    "framework": "fastapi",
+    "scenario": "list",
+    "requests_per_second": 821.58,
+    "mean_latency_ms": 60.858,
+    "p95_latency_ms": 88
+  },
+  {
+    "indexed": false,
+    "framework": "fastapi",
+    "scenario": "filtered-list",
+    "requests_per_second": 1068.97,
+    "mean_latency_ms": 46.774,
+    "p95_latency_ms": 66
+  },
+  {
+    "indexed": false,
+    "framework": "fastapi",
+    "scenario": "retrieve",
+    "requests_per_second": 1744.07,
+    "mean_latency_ms": 28.669,
+    "p95_latency_ms": 40
+  },
+  {
+    "indexed": false,
+    "framework": "fastapi-sqlalchemy",
+    "scenario": "list",
+    "requests_per_second": 1154.62,
+    "mean_latency_ms": 43.304,
+    "p95_latency_ms": 73
+  },
+  {
+    "indexed": false,
+    "framework": "fastapi-sqlalchemy",
+    "scenario": "filtered-list",
+    "requests_per_second": 1427.53,
+    "mean_latency_ms": 35.025,
+    "p95_latency_ms": 50
+  },
+  {
+    "indexed": false,
+    "framework": "fastapi-sqlalchemy",
+    "scenario": "retrieve",
+    "requests_per_second": 2938.71,
+    "mean_latency_ms": 17.014,
+    "p95_latency_ms": 25
+  },
+  {
+    "indexed": false,
+    "framework": "django",
+    "scenario": "list",
+    "requests_per_second": 735.52,
+    "mean_latency_ms": 67.979,
+    "p95_latency_ms": 94
+  },
+  {
+    "indexed": false,
+    "framework": "django",
+    "scenario": "filtered-list",
+    "requests_per_second": 850.33,
+    "mean_latency_ms": 58.8,
+    "p95_latency_ms": 82
+  },
+  {
+    "indexed": false,
+    "framework": "django",
+    "scenario": "retrieve",
+    "requests_per_second": 1252.52,
+    "mean_latency_ms": 39.919,
+    "p95_latency_ms": 55
+  },
+  {
+    "indexed": true,
+    "framework": "che-rest",
+    "scenario": "list",
+    "requests_per_second": 1571.83,
+    "mean_latency_ms": 31.81,
+    "p95_latency_ms": 39
+  },
+  {
+    "indexed": true,
+    "framework": "che-rest",
+    "scenario": "filtered-list",
+    "requests_per_second": 3201.7,
+    "mean_latency_ms": 15.617,
+    "p95_latency_ms": 20
+  },
+  {
+    "indexed": true,
+    "framework": "che-rest",
+    "scenario": "retrieve",
+    "requests_per_second": 18423.2,
+    "mean_latency_ms": 2.714,
+    "p95_latency_ms": 3
+  },
+  {
+    "indexed": true,
+    "framework": "fastapi",
+    "scenario": "list",
+    "requests_per_second": 841.62,
+    "mean_latency_ms": 59.409,
+    "p95_latency_ms": 85
+  },
+  {
+    "indexed": true,
+    "framework": "fastapi",
+    "scenario": "filtered-list",
+    "requests_per_second": 1064.36,
+    "mean_latency_ms": 46.977,
+    "p95_latency_ms": 67
+  },
+  {
+    "indexed": true,
+    "framework": "fastapi",
+    "scenario": "retrieve",
+    "requests_per_second": 1733.68,
+    "mean_latency_ms": 28.84,
+    "p95_latency_ms": 41
+  },
+  {
+    "indexed": true,
+    "framework": "fastapi-sqlalchemy",
+    "scenario": "list",
+    "requests_per_second": 1146.65,
+    "mean_latency_ms": 43.605,
+    "p95_latency_ms": 74
+  },
+  {
+    "indexed": true,
+    "framework": "fastapi-sqlalchemy",
+    "scenario": "filtered-list",
+    "requests_per_second": 1412.21,
+    "mean_latency_ms": 35.405,
+    "p95_latency_ms": 50
+  },
+  {
+    "indexed": true,
+    "framework": "fastapi-sqlalchemy",
+    "scenario": "retrieve",
+    "requests_per_second": 2908.98,
+    "mean_latency_ms": 17.188,
+    "p95_latency_ms": 25
+  },
+  {
+    "indexed": true,
+    "framework": "django",
+    "scenario": "list",
+    "requests_per_second": 730.68,
+    "mean_latency_ms": 68.429,
+    "p95_latency_ms": 95
+  },
+  {
+    "indexed": true,
+    "framework": "django",
+    "scenario": "filtered-list",
+    "requests_per_second": 855.57,
+    "mean_latency_ms": 58.441,
+    "p95_latency_ms": 82
+  },
+  {
+    "indexed": true,
+    "framework": "django",
+    "scenario": "retrieve",
+    "requests_per_second": 1244.36,
+    "mean_latency_ms": 40.181,
+    "p95_latency_ms": 55
+  }
+]

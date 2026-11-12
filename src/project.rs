@@ -144,7 +144,8 @@ its migrations. Existing applied migrations must retain their identities and
 checksums. An explicit `#[orm(table = "existing_table")]` preserves an existing
 physical table name.
 
-This framework build uses SQLite. Startup does not apply migrations.
+Select exactly one backend through Cargo features (`sqlite` or `postgres`) and
+use a matching URL in app.toml. Startup does not apply migrations.
 "#
     )
 }
@@ -391,8 +392,13 @@ fn validate_model_name(name: &str) -> ProjectResult<()> {
 }
 
 fn cargo_toml_template(name: &str, che_rest_path: &str, che_orm_path: &str) -> String {
-    let che_orm = dependency("che-orm", "0.3.3", che_orm_path);
+    let che_orm = dependency("che-orm", "0.4.0", che_orm_path);
     let che_rest = dependency("che-rest", env!("CARGO_PKG_VERSION"), che_rest_path);
+    let backend = if cfg!(feature = "postgres") {
+        "postgres"
+    } else {
+        "sqlite"
+    };
     format!(
         r#"[package]
 name = "{name}"
@@ -403,6 +409,11 @@ default-run = "{name}"
 publish = false
 
 [workspace]
+
+[features]
+default = ["{backend}"]
+sqlite = ["che-orm/sqlite", "che-rest/sqlite"]
+postgres = ["che-orm/postgres", "che-rest/postgres"]
 
 [dependencies]
 axum = "0.8"
@@ -417,13 +428,26 @@ tokio = {{ version = "1", features = ["macros", "net", "rt-multi-thread", "sync"
 
 fn dependency(name: &str, version: &str, path: &str) -> String {
     if path.is_empty() {
-        format!("{name} = \"{version}\"")
+        format!("{name} = {{ version = \"{version}\", default-features = false }}")
     } else {
-        format!("{name} = {{ version = \"{version}\", path = \"{path}\" }}")
+        format!(
+            "{name} = {{ version = \"{version}\", path = \"{path}\", default-features = false }}"
+        )
     }
 }
 
 fn app_toml_template() -> &'static str {
+    #[cfg(feature = "postgres")]
+    return r#"[database]
+url = "postgresql://localhost/che_rest"
+max_connections = 8
+
+[server]
+host = "127.0.0.1"
+port = 3000
+api_prefix = "/api"
+"#;
+    #[cfg(feature = "sqlite")]
     r#"[database]
 url = "sqlite://db.sqlite?mode=rwc"
 max_connections = 64
@@ -461,8 +485,10 @@ cargo run
 migration modules under `src/apps/<app>/migrations/`. Apps expose their compiled
 history through `AppModule::migrations()` and their source directory through
 `migration_path()`. `migrate` collects installed app histories through the built-in
-forward-only SQLite executor used by this che-rest build. The ORM also supports PostgreSQL
-in separately configured builds; changing only the database URL does not select a backend.
+forward-only executor for the selected backend. Enable exactly one application
+feature, `sqlite` or `postgres`; use `--no-default-features --features postgres`
+when selecting PostgreSQL in a SQLite-default application. All ORM/framework
+dependencies must use the same backend; changing only the URL is insufficient.
 `migrate` is the deployment command that creates or changes database tables;
 `Server::build()` does not alter the schema.
 
@@ -876,7 +902,7 @@ impl AppModule for {module_type} {{
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 

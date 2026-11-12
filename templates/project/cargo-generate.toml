@@ -1,6 +1,12 @@
 [template]
 cargo_generate_version = ">=0.23.0"
 
+[placeholders.backend]
+type = "string"
+prompt = "Database backend"
+choices = ["sqlite", "postgres"]
+default = "sqlite"
+
 [placeholders.che_rest_path]
 type = "string"
 prompt = "Local che-rest path (empty for crates.io)"

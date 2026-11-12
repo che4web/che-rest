@@ -1,0 +1,49 @@
+This is ApacheBench, Version 2.3 <$Revision: 1934973 $>
+Copyright 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
+Licensed to The Apache Software Foundation, http://www.apache.org/
+
+Benchmarking 127.0.0.1 (be patient)
+
+
+Server Software:        uvicorn
+Server Hostname:        127.0.0.1
+Server Port:            3102
+
+Document Path:          /api/tasks/?limit=50&name__contains=task
+Document Length:        9479 bytes
+
+Concurrency Level:      50
+Time taken for tests:   0.472 seconds
+Complete requests:      500
+Failed requests:        0
+Keep-Alive requests:    0
+Total transferred:      4803000 bytes
+HTML transferred:       4739500 bytes
+Requests per second:    1059.63 [#/sec] (mean)
+Time per request:       47.186 [ms] (mean)
+Time per request:       0.944 [ms] (mean, across all concurrent requests)
+Transfer rate:          9940.22 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    0   0.4      0       3
+Processing:    12   44  26.5     39     149
+Waiting:       11   42  24.5     38     149
+Total:         12   44  26.7     39     150
+
+Percentage of the requests served within a certain time (ms)
+  50%     39
+  66%     46
+  75%     48
+  80%     50
+  90%     60
+  95%    113
+  98%    146
+  99%    147
+ 100%    150 (longest request)
+Completed 100 requests
+Completed 200 requests
+Completed 300 requests
+Completed 400 requests
+Completed 500 requests
+Finished 500 requests

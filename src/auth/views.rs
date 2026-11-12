@@ -173,7 +173,7 @@ async fn create_user(
         .database()
         .query::<User>()
         .filter(User::USERNAME.eq(username.to_owned()))
-        .first(state.database())
+        .first()
         .await?
         .is_some()
     {
@@ -203,7 +203,7 @@ async fn find_user(state: &AppState, payload: LoginRequest) -> AppResult<User> {
         .database()
         .query::<User>()
         .filter(User::USERNAME.eq(payload.username))
-        .first(state.database())
+        .first()
         .await?
         .ok_or(AppError::Unauthorized("invalid session".into()))?;
     if !user.is_active {

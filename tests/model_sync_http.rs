@@ -1,4 +1,4 @@
-#![cfg(feature = "sync-http")]
+#![cfg(all(feature = "sqlite", feature = "sync-http"))]
 #[path = "../examples/model_sync/support.rs"]
 mod notes;
 

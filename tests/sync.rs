@@ -1,3 +1,5 @@
+#![cfg(feature = "sqlite")]
+
 #[path = "../examples/todo_sync/support.rs"]
 mod todo;
 
@@ -611,7 +613,7 @@ async fn scope_denial_returns_forbidden_and_crud_policy_rejection_rolls_back() {
         state
             .database()
             .query::<todo::Todo>()
-            .all(state.database())
+            .all()
             .await
             .unwrap()
             .is_empty()

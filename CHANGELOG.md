@@ -1,6 +1,19 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (unreleased)
+
+- **Breaking:** require che-orm 0.4.0 and che-sync 0.2.0, including bound-query
+  execution and explicit SQLite datetime normalization before existing apps start.
+
+- Add mutually exclusive `sqlite` (default) and `postgres` backends, forwarded
+  consistently to che-orm and che-sync. PostgreSQL URLs preserve TLS/options.
+- Support PostgreSQL in management schema/SQL previews, migration history,
+  apply/verify and both project generators. Metadata/client generation remains
+  offline through lazy ORM pools; startup does not migrate application tables.
+- Add live PostgreSQL coverage for authentication, CRUD/relations/datetime,
+  object ACLs, media, model journals, native HTTP sync retries and push delivery.
+- Align generated projects with ORM/REST 0.4.0. Dependencies remain local
+  candidates until core 0.4.0 and sync 0.2.0 are published and indexed.
 
 ## 0.3.4
 
